@@ -1,0 +1,108 @@
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -597,6 +597,74 @@ class PcSmsClient (threading.Thread):
+             return False
+         return True
+
++    def mark_sms_read(self, sms_id=None, hash_id=None):
++        """Mark a received SMS as read in the vendor database.
++
++        The FM350 path stores messages in SQLite after fetching them from the
++        modem.  PcModemClient has no read_sms method in this revision, so a
++        read operation must update the local record instead of calling a
++        missing modem API.
++        """
++        try:
++            if sms_id is not None:
++                self.exec_sql_param(
++                    "UPDATE sms SET status = 'REC READ' "
++                    "WHERE id = ? AND direction = 0", [int(sms_id)])
++            elif hash_id:
++                self.exec_sql_param(
++                    "UPDATE sms SET status = 'REC READ' "
++                    "WHERE hash_digest = ? AND direction = 0", [str(hash_id)])
++            else:
++                return False
++            return True
++        except (TypeError, ValueError, sqlite3.Error) as e:
++            pcat_logger.logger.error("Failed to mark SMS read: %s", e)
++            return False
++
++    def get_topic_messages(self, topic=None, sms_id=None):
++        """Return conversation rows in the format used by the vendor modal."""
++        try:
++            if topic:
++                rows = get_rows(self.modem_db_path,
++                                "SELECT * FROM sms WHERE topic = ? "
++                                "ORDER BY created_at ASC", (str(topic),))
++            elif sms_id is not None:
++                rows = get_rows(self.modem_db_path,
++                                "SELECT * FROM sms WHERE id = ?", (int(sms_id),))
++            else:
++                rows = []
++
++            messages = []
++            for row in rows:
++                item = {k: row[k] for k in row.keys()}
++                raw = item.get("raw_json")
++                if raw:
++                    try:
++                        parsed = json.loads(raw)
++                        if isinstance(parsed, dict):
++                            item.update(parsed)
++                    except (TypeError, ValueError, json.JSONDecodeError):
++                        pass
++                sender = item.get("sender") or item.get("from_num") or ""
++                content = item.get("content") or item.get("msg") or ""
++                timestamp = (item.get("timestamp") or item.get("send_at") or
++                             item.get("sent_at") or item.get("created_at") or "")
++                messages.append({
++                    "id": item.get("id"),
++                    "storage": item.get("storage") or "ME",
++                    "from": "me" if item.get("direction") == 1 else sender,
++                    "to": item.get("to") or item.get("to_num") or "",
++                    "msg": content,
++                    "content": content,
++                    "send_at": timestamp,
++                    "timestamp": timestamp,
++                    "status": item.get("status") or "",
++                    "direction": item.get("direction", 0),
++                })
++            return messages
++        except (TypeError, ValueError, sqlite3.Error) as e:
++            pcat_logger.logger.error("Failed to read SMS conversation: %s", e)
++            return []
+
+     # ============================================================================
+     # PYSMS_TOOL IMPLEMENTATION FUNCTIONS
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -6174,10 +6174,12 @@ def api_model_sms_read():
+ @flask_app.route("/api/v1/modem/sms/read.json", methods=['POST'])
+ def api_model_sms_read():
+-    p_data = request.get_json()
+-    pc_app.modem_client.read_sms(p_data.get("hash_id", None))
+-    response_json = {}
+-    response_json["status"] = "ok"
+-    response_json["topic_messages"] = pc_app.modem_client.get_topic_messages(p_data.get("topic", None))
++    p_data = request.get_json() or {}
++    sms_id = p_data.get("id", p_data.get("msg_id"))
++    hash_id = p_data.get("hash_id")
++    pc_app.sms_client.mark_sms_read(sms_id=sms_id, hash_id=hash_id)
++    response_json = {"status": "ok"}
++    response_json["topic_messages"] = pc_app.sms_client.get_topic_messages(
++        p_data.get("topic"), sms_id=sms_id)
+     rsp = make_response(response_json)
+     rsp.headers['Content-Type'] = 'application/json'
+     return rsp 
+--- a/app/templates/modem.html
++++ b/app/templates/modem.html
+@@ -2053,7 +2053,7 @@
+       select_message(message) {
+         this.selected_message = message;
+         this.sms_target = message.from;
+-        fetch("/api/v1/modem/sms/read.json", { body: JSON.stringify({ hash_id: message.hash_id, topic: message.topic }), method: "POST", headers: { "Content-Type": "application/json" } })
++        fetch("/api/v1/modem/sms/read.json", { body: JSON.stringify({ id: message.id, hash_id: message.hash_id, topic: message.topic }), method: "POST", headers: { "Content-Type": "application/json" } })
+           .then((response) => response.json())
+           .then((data) => {
+             this.topic_messages = data.topic_messages;

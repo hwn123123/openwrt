@@ -1,0 +1,11 @@
+--- a/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_platform.c
++++ b/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_platform.c
+@@ -2567,7 +2567,7 @@ s8_l get_txpwr_max(s8_l power)
+ 	    }
+ 	}
+ 
+-	AICWFDBG(LOGINFO, "%s:txpwr_max:%d \r\n",__func__,power);
++	AICWFDBG(LOGDEBUG, "%s:txpwr_max:%d \r\n",__func__,power);
+ 	return power;
+ }
+ 

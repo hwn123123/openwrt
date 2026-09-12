@@ -1,0 +1,733 @@
+#!/bin/sh
+
+SOCKET_CLIENT=/usr/libexec/photonicat2-socket
+SCREEN_URL=http://127.0.0.1:8081/api/v1
+HISTORY=/tmp/photonicat2-battery-history.jsonl
+
+error_json() {
+	jq -cn --arg error "$1" '{ok:false,error:$error}'
+}
+
+pcat() {
+	local result
+	result="$($SOCKET_CLIENT "$1" 2>/dev/null)" || {
+		error_json "无法连接 pcat-manager"
+		return 1
+	}
+	printf '%s' "$result" | jq -ce 'if type == "object" then . else error("bad response") end' 2>/dev/null || {
+		error_json "pcat-manager 返回了无效数据"
+		return 1
+	}
+}
+
+sysval() {
+	[ -r "$1" ] && { read -r value < "$1"; printf '%s' "$value"; }
+}
+
+first_glob_value() {
+	local path
+	for path in $1; do
+		[ -r "$path" ] || continue
+		read -r value < "$path"
+		printf '%s' "$value"
+		return
+	done
+}
+
+cpu_usage() {
+	local a_idle a_total b_idle b_total line user nice system idle iowait irq softirq steal
+	read -r line < /proc/stat
+	set -- $line
+	shift
+	user=${1:-0}; nice=${2:-0}; system=${3:-0}; idle=${4:-0}; iowait=${5:-0}; irq=${6:-0}; softirq=${7:-0}; steal=${8:-0}
+	a_idle=$((idle + iowait)); a_total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+	usleep 120000 2>/dev/null || sleep 1
+	read -r line < /proc/stat
+	set -- $line
+	shift
+	user=${1:-0}; nice=${2:-0}; system=${3:-0}; idle=${4:-0}; iowait=${5:-0}; irq=${6:-0}; softirq=${7:-0}; steal=${8:-0}
+	b_idle=$((idle + iowait)); b_total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+	[ "$b_total" -gt "$a_total" ] || { printf 0; return; }
+	printf '%s' $((100 * ((b_total - a_total) - (b_idle - a_idle)) / (b_total - a_total)))
+}
+
+cpu_powersave_state() {
+	local path state found=0
+	for path in /sys/devices/system/cpu/cpu[0-9]*/online; do
+		[ -r "$path" ] || continue
+		found=1
+		read -r state < "$path"
+		[ "$state" = 0 ] && { printf true; return; }
+	done
+	if [ "$found" -eq 0 ]; then
+		state="$(sysval /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+		[ "$state" = powersave ] && printf true || printf false
+	else
+		printf false
+	fi
+}
+
+fan_value() {
+	local path type
+	for path in /sys/class/thermal/cooling_device*; do
+		[ -r "$path/type" ] || continue
+		read -r type < "$path/type"
+		[ "$type" = pcat-pm-fan ] || continue
+		sysval "$path/cur_state"
+		return
+	done
+}
+
+thermal_zones() {
+	local path name temp
+	for path in /sys/class/thermal/thermal_zone*; do
+		[ -r "$path/temp" ] || continue
+		name="$(sysval "$path/type")"
+		temp="$(sysval "$path/temp")"
+		jq -cn --arg name "${name:-thermal}" --arg temp "$temp" '
+			{name:$name, temperature_c:(($temp | tonumber?) // 0) / 1000}'
+	done | jq -sc '.'
+}
+
+disk_stats() {
+	local row
+	row="$(df -kP "$1" 2>/dev/null | awk 'NR == 2 {gsub(/%/, "", $5); print $2, $3, $4, $5; exit}')"
+	set -- $row
+	[ "$#" -eq 4 ] || { printf '%s' '{}'; return; }
+	jq -cn --arg total "$1" --arg used "$2" --arg free "$3" --arg percent "$4" '
+		{
+			total_mb: ((($total | tonumber?) // 0) / 1024),
+			used_mb: ((($used | tonumber?) // 0) / 1024),
+			free_mb: ((($free | tonumber?) // 0) / 1024),
+			used_percent: (($percent | tonumber?) // 0)
+		}'
+}
+
+status() {
+	local pmu io charge battery fw soc voltage current power bstatus board_temp cpu_temp fan_rpm fan_level usage freq freq_max governor
+	local mem_total mem_avail mem_free swap_total swap_free uptime load1 load5 load15 cores_total cores_online cpu_path cpu_state
+	local board thermal root_disk overlay_disk tmp_disk netdev net_state net_ipv4 net_gateway
+	local net_rx net_tx net_rx_packets net_tx_packets net_rx_errors net_tx_errors net_speed net_duplex net_mac lan_ipv4 net_total net_up path
+	pmu="$(pcat '{"command":"pmu-status"}' 2>/dev/null)" || pmu='{}'
+	io="$(pcat '{"command":"pmu-io-get"}' 2>/dev/null)" || io='{}'
+	charge="$(pcat '{"command":"charge-threshold-get"}' 2>/dev/null)" || charge='{}'
+	battery="$(pcat '{"command":"battery-info-get"}' 2>/dev/null)" || battery='{}'
+	fw="$(pcat '{"command":"pmu-fw-version-get"}' 2>/dev/null)" || fw='{}'
+	board="$(ubus call system board 2>/dev/null)" || board='{}'
+
+	soc="$(sysval /sys/class/power_supply/battery/capacity)"
+	voltage="$(sysval /sys/class/power_supply/battery/voltage_now)"
+	current="$(sysval /sys/class/power_supply/battery/current_now)"
+	power="$(sysval /sys/class/power_supply/battery/power_now)"
+	bstatus="$(sysval /sys/class/power_supply/battery/status)"
+	board_temp="$(sysval /sys/class/power_supply/battery/temp)"
+	cpu_temp="$(first_glob_value '/sys/class/thermal/thermal_zone*/temp')"
+	fan_rpm="$(first_glob_value '/sys/class/hwmon/hwmon*/fan1_input')"
+	fan_level="$(fan_value)"
+	usage="$(cpu_usage)"
+	freq="$(for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_cur_freq; do [ -r "$path" ] && cat "$path"; done | sort -nr | head -n 1)"
+	freq_max="$(for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_max_freq; do [ -r "$path" ] && cat "$path"; done | sort -nr | head -n 1)"
+	governor="$(first_glob_value '/sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor')"
+	cores_total=0
+	cores_online=0
+	for cpu_path in /sys/devices/system/cpu/cpu[0-9]*; do
+		[ -d "$cpu_path" ] || continue
+		cores_total=$((cores_total + 1))
+		cpu_state="$(sysval "$cpu_path/online")"
+		[ -z "$cpu_state" ] || [ "$cpu_state" = 1 ] || continue
+		cores_online=$((cores_online + 1))
+	done
+	read -r load1 load5 load15 _ < /proc/loadavg
+	mem_total="$(awk '/^MemTotal:/ {print $2; exit}' /proc/meminfo)"
+	mem_avail="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)"
+	mem_free="$(awk '/^MemFree:/ {print $2; exit}' /proc/meminfo)"
+	swap_total="$(awk '/^SwapTotal:/ {print $2; exit}' /proc/meminfo)"
+	swap_free="$(awk '/^SwapFree:/ {print $2; exit}' /proc/meminfo)"
+	read -r uptime _ < /proc/uptime
+	thermal="$(thermal_zones)"
+	[ -n "$thermal" ] || thermal='[]'
+	root_disk="$(disk_stats /)"
+	overlay_disk="$(disk_stats /overlay)"
+	tmp_disk="$(disk_stats /tmp)"
+
+	netdev="$(ip -4 route show default 2>/dev/null | awk '{for (i=1; i<=NF; i++) if ($i == "dev") {print $(i+1); exit}}')"
+	if [ -n "$netdev" ] && [ -d "/sys/class/net/$netdev" ]; then
+		net_state="$(sysval "/sys/class/net/$netdev/operstate")"
+		[ "$net_state" = unknown ] && net_state=up
+		net_ipv4="$(ip -4 -o addr show dev "$netdev" scope global 2>/dev/null | awk 'NR == 1 {print $4}')"
+		net_gateway="$(ip -4 route show default dev "$netdev" 2>/dev/null | awk 'NR == 1 {print $3}')"
+		net_rx="$(sysval "/sys/class/net/$netdev/statistics/rx_bytes")"
+		net_tx="$(sysval "/sys/class/net/$netdev/statistics/tx_bytes")"
+		net_rx_packets="$(sysval "/sys/class/net/$netdev/statistics/rx_packets")"
+		net_tx_packets="$(sysval "/sys/class/net/$netdev/statistics/tx_packets")"
+		net_rx_errors="$(sysval "/sys/class/net/$netdev/statistics/rx_errors")"
+		net_tx_errors="$(sysval "/sys/class/net/$netdev/statistics/tx_errors")"
+		net_speed="$(sysval "/sys/class/net/$netdev/speed")"
+		net_duplex="$(sysval "/sys/class/net/$netdev/duplex")"
+		net_mac="$(sysval "/sys/class/net/$netdev/address")"
+	fi
+	lan_ipv4="$(ip -4 -o addr show dev br-lan scope global 2>/dev/null | awk 'NR == 1 {print $4}')"
+	net_total=0
+	net_up=0
+	for path in /sys/class/net/*; do
+		[ "${path##*/}" = lo ] && continue
+		net_total=$((net_total + 1))
+		cpu_state="$(sysval "$path/operstate")"
+		[ "$cpu_state" = up ] && net_up=$((net_up + 1))
+	done
+
+	jq -cn \
+		--argjson pmu "$pmu" --argjson io "$io" --argjson charge "$charge" \
+		--argjson info "$battery" --argjson fw "$fw" --argjson board "$board" \
+		--argjson thermal "$thermal" --argjson root_disk "$root_disk" --argjson overlay_disk "$overlay_disk" --argjson tmp_disk "$tmp_disk" \
+		--arg soc "$soc" --arg voltage "$voltage" --arg current "$current" --arg watts "$power" \
+		--arg bstatus "$bstatus" --arg board_temp "$board_temp" --arg cpu_temp "$cpu_temp" \
+		--arg fan_rpm "$fan_rpm" --arg fan_level "$fan_level" --arg cpu_usage "$usage" \
+		--arg cpu_freq "$freq" --arg cpu_freq_max "$freq_max" --arg governor "$governor" \
+		--arg cores_total "$cores_total" --arg cores_online "$cores_online" --arg load1 "$load1" --arg load5 "$load5" --arg load15 "$load15" \
+		--arg mem_total "$mem_total" --arg mem_avail "$mem_avail" --arg mem_free "$mem_free" --arg swap_total "$swap_total" --arg swap_free "$swap_free" \
+		--arg uptime "$uptime" --arg localtime "$(date +%s)" \
+		--arg netdev "$netdev" --arg net_state "$net_state" --arg net_ipv4 "$net_ipv4" --arg net_gateway "$net_gateway" \
+		--arg net_rx "$net_rx" --arg net_tx "$net_tx" --arg net_rx_packets "$net_rx_packets" --arg net_tx_packets "$net_tx_packets" \
+		--arg net_rx_errors "$net_rx_errors" --arg net_tx_errors "$net_tx_errors" --arg net_speed "$net_speed" --arg net_duplex "$net_duplex" \
+		--arg net_mac "$net_mac" --arg lan_ipv4 "$lan_ipv4" --arg net_total "$net_total" --arg net_up "$net_up" \
+		--arg fan_mode "$(uci -q get photonicat2.main.fan_mode)" \
+		--arg fan_max "$(uci -q get photonicat2.main.fan_max)" \
+		--arg cpu_cfg "$(uci -q get photonicat2.main.cpu_powersave)" \
+		--argjson cpu_active "$(cpu_powersave_state)" '
+		def number($v): ($v | tonumber?);
+		def percent($v): (number($v) | if . != null and . > 100 then . / 100 else . end);
+		def mv_to_v($v): (number($v) | if . == null then null elif . > 100000 then . / 1000000 else . / 1000 end);
+		def ua_to_a($v): (number($v) | if . == null then null else . / 1000000 end);
+		def temp_c($v; $scale): (number($v) | if . == null then null elif . > 1000 then . / $scale else . end);
+		($pmu["battery-voltage"] // null) as $pmuv |
+		($pmu["charge-percentage"] // null) as $pmup |
+		(mv_to_v(if $pmuv != null then $pmuv else $voltage end)) as $v |
+		(ua_to_a($current)) as $a |
+		{
+			ok: true,
+			timestamp: number($localtime),
+			system: {
+				hostname: ($board.hostname // null),
+				model: ($board.model // null),
+				board_name: ($board.board_name // null),
+				architecture: ($board.system // null),
+				kernel: ($board.kernel // null),
+				firmware: ($board.release.description // $board.release.distribution // null),
+				version: ($board.release.version // null),
+				revision: ($board.release.revision // null),
+				target: ($board.release.target // null),
+				rootfs: ($board.rootfs_type // null)
+			},
+			battery: {
+				percent: (percent(if $pmup != null then $pmup else $soc end)),
+				voltage: $v,
+				current: $a,
+				power: (if number($watts) != null then number($watts) / 1000000 elif $v != null and $a != null then $v * $a else null end),
+				charging: (if $pmu["on-battery"] != null then $pmu["on-battery"] == 0 else ($bstatus == "Charging") end),
+				status: $bstatus,
+				threshold: ($charge.value // null),
+				info: $info
+			},
+			temperature: {
+				board: (if $pmu["board-temperature"] != null then $pmu["board-temperature"] else temp_c($board_temp; 10) end),
+				cpu: temp_c($cpu_temp; 1000),
+				zones: $thermal
+			},
+			cpu: {
+				usage: number($cpu_usage),
+				frequency_mhz: (number($cpu_freq) / 1000),
+				max_frequency_mhz: (number($cpu_freq_max) / 1000),
+				governor: $governor,
+				cores_total: number($cores_total),
+				cores_online: number($cores_online),
+				load: [number($load1), number($load5), number($load15)],
+				powersave_configured: ($cpu_cfg == "1"),
+				powersave_active: $cpu_active
+			},
+			memory: {
+				used_percent: (if number($mem_total) > 0 then 100 * (number($mem_total) - number($mem_avail)) / number($mem_total) else null end),
+				total_mb: (number($mem_total) / 1024),
+				used_mb: ((number($mem_total) - number($mem_avail)) / 1024),
+				available_mb: (number($mem_avail) / 1024),
+				free_mb: (number($mem_free) / 1024),
+				swap_total_mb: (number($swap_total) / 1024),
+				swap_used_mb: ((number($swap_total) - number($swap_free)) / 1024)
+			},
+			storage: {root: $root_disk, overlay: $overlay_disk, tmp: $tmp_disk},
+			network: {
+				device: (if $netdev == "" then null else $netdev end),
+				state: (if $net_state == "" then "down" else $net_state end),
+				ipv4: (if $net_ipv4 == "" then null else $net_ipv4 end),
+				gateway: (if $net_gateway == "" then null else $net_gateway end),
+				lan_ipv4: (if $lan_ipv4 == "" then null else $lan_ipv4 end),
+				mac: (if $net_mac == "" then null else $net_mac end),
+				speed_mbps: number($net_speed),
+				duplex: (if $net_duplex == "" then null else $net_duplex end),
+				rx_bytes: number($net_rx), tx_bytes: number($net_tx),
+				rx_packets: number($net_rx_packets), tx_packets: number($net_tx_packets),
+				rx_errors: number($net_rx_errors), tx_errors: number($net_tx_errors),
+				interfaces_total: number($net_total), interfaces_up: number($net_up)
+			},
+			fan: {rpm: (number($fan_rpm) // 0), level: (number($fan_level) // 0), mode: $fan_mode, max: (number($fan_max) // 5)},
+			io: {led: ($io["status-led-v2-enabled"] // null), beeper: ($io["beeper-enabled"] // null)},
+			pmu: {firmware: ($fw.version // null), connected: ($pmu.code == 0)},
+			uptime: number($uptime)
+		}'
+}
+
+onboard_wifi_status() {
+	local usbdev usbpath usbname vendor product manufacturer product_name serial stage bound_driver
+	local kernel module_loader module_driver module_files driver_loaded firmware_count firmware_present
+	local phy phy_path candidate candidate_path radio radio_path radio_phy iface_section ifaces section section_device section_mode
+	local netif operstate mac ssid channel frequency txpower clients rx_bytes tx_bytes rx_packets tx_packets rx_errors tx_errors
+	local radio_disabled iface_disabled configured enabled running band htmode country encryption hidden network
+
+	# Photonicat 2 的板载无线固定在内部 USB 端口 1-1.3。必须同时匹配
+	# 物理端口和厂家 VID，避免把 PCIe MT7927 或外接 USB 网卡识别进来。
+	for candidate in /sys/bus/usb/devices/*; do
+		[ -r "$candidate/idVendor" ] && [ -r "$candidate/idProduct" ] || continue
+		vendor="$(sysval "$candidate/idVendor")"
+		product="$(sysval "$candidate/idProduct")"
+		[ "$vendor" = a69c ] || continue
+		case "${candidate##*/}:$product" in
+			1-1.3:8d80|1-1.3:8d81|1-1.3:8d83)
+				usbdev="$candidate"
+				break
+			;;
+		esac
+	done
+
+	if [ -n "$usbdev" ]; then
+		usbpath="$(readlink -f "$usbdev")"
+		usbname="${usbdev##*/}"
+		manufacturer="$(sysval "$usbdev/manufacturer")"
+		product_name="$(sysval "$usbdev/product")"
+		serial="$(sysval "$usbdev/serial")"
+		for candidate in "${usbdev}":*; do
+			[ -e "$candidate/driver" ] || continue
+			bound_driver="$(basename "$(readlink -f "$candidate/driver")")"
+			[ -n "$bound_driver" ] && break
+		done
+		case "$product" in
+			8d80) stage=bootloader ;;
+			8d81|8d83) stage=ready ;;
+			*) stage=unknown ;;
+		esac
+	else
+		vendor=a69c
+		product=''
+		stage=absent
+	fi
+
+	kernel="$(uname -r)"
+	module_loader="$(find "/lib/modules/$kernel" -type f -name 'aic_load_fw.ko*' 2>/dev/null | head -n 1)"
+	module_driver="$(find "/lib/modules/$kernel" -type f \( -name 'aic8800DC_fdrv.ko*' -o -name 'aic8800_fdrv.ko*' \) 2>/dev/null | head -n 1)"
+	[ -n "$module_loader" ] && [ -n "$module_driver" ] && module_files=true || module_files=false
+	if [ -d /sys/module/aic_load_fw ] && { [ -d /sys/module/aic8800DC_fdrv ] || [ -d /sys/module/aic8800_fdrv ]; }; then
+		driver_loaded=true
+	else
+		driver_loaded=false
+	fi
+	# 同时兼容原厂扁平固件目录和新版上游驱动按芯片型号划分的目录。
+	firmware_count="$(
+		for candidate in \
+			/lib/firmware/aic8800/usb \
+			/lib/firmware/aic8800D80 \
+			/lib/firmware/aic8800D80N \
+			/lib/firmware/aic8800D80X2 \
+			/lib/firmware/aic8800DC \
+			/lib/firmware/aic8800DLN; do
+			[ -d "$candidate" ] && find "$candidate" -type f 2>/dev/null
+		done | wc -l
+	)"
+	[ "${firmware_count:-0}" -gt 0 ] && firmware_present=true || firmware_present=false
+
+	# 从 AIC USB 父设备向下寻找 PHY；PCIe PHY 永远不会满足此前缀。
+	if [ -n "$usbpath" ]; then
+		for candidate in /sys/class/ieee80211/*; do
+			[ -e "$candidate" ] || continue
+			candidate_path="$(readlink -f "$candidate/device")"
+			case "$candidate_path" in
+				"$usbpath"*) phy="${candidate##*/}"; phy_path="$candidate_path"; break ;;
+			esac
+		done
+	fi
+
+	# UCI 节名不固定，按 PHY 或内部 USB 物理路径识别，绝不假定 radio0。
+	for candidate in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+		radio_path="$(uci -q get "wireless.$candidate.path")"
+		radio_phy="$(uci -q get "wireless.$candidate.phy")"
+		if { [ -n "$phy" ] && [ "$radio_phy" = "$phy" ]; } || \
+			{ [ -n "$radio_path" ] && echo "$radio_path" | grep -q '/usb1/1-1/1-1.3$'; }; then
+			radio="$candidate"
+			break
+		fi
+	done
+
+	ifaces='[]'
+	if [ -n "$radio" ]; then
+		for section in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.=]*\)=wifi-iface$/\1/p'); do
+			section_device="$(uci -q get "wireless.$section.device")"
+			[ "$section_device" = "$radio" ] || continue
+			section_mode="$(uci -q get "wireless.$section.mode")"
+			[ -z "$section_mode" ] || [ "$section_mode" = ap ] || continue
+			ifaces="$(printf '%s' "$ifaces" | jq -c --arg section "$section" '. + [$section]')"
+			[ -n "$iface_section" ] || iface_section="$section"
+		done
+	fi
+
+	# 运行接口也只从板载 PHY 下查找。
+	if [ -n "$phy" ]; then
+		for candidate in /sys/class/net/*; do
+			[ -e "$candidate/phy80211" ] || continue
+			[ "$(basename "$(readlink -f "$candidate/phy80211")")" = "$phy" ] || continue
+			netif="${candidate##*/}"
+			iw dev "$netif" info 2>/dev/null | grep -q 'type AP' && break
+		done
+	fi
+
+	configured=false
+	enabled=false
+	running=false
+	if [ -n "$radio" ]; then
+		configured=true
+		radio_disabled="$(uci -q get "wireless.$radio.disabled")"
+		iface_disabled="$(uci -q get "wireless.$iface_section.disabled")"
+		if [ "$radio_disabled" != 1 ] && [ -n "$iface_section" ] && [ "$iface_disabled" != 1 ]; then
+			enabled=true
+		fi
+		band="$(uci -q get "wireless.$radio.band")"
+		htmode="$(uci -q get "wireless.$radio.htmode")"
+		country="$(uci -q get "wireless.$radio.country")"
+		channel="$(uci -q get "wireless.$radio.channel")"
+		txpower="$(uci -q get "wireless.$radio.txpower")"
+		ssid="$(uci -q get "wireless.$iface_section.ssid")"
+		encryption="$(uci -q get "wireless.$iface_section.encryption")"
+		hidden="$(uci -q get "wireless.$iface_section.hidden")"
+		network="$(uci -q get "wireless.$iface_section.network")"
+	fi
+
+	if [ -n "$netif" ]; then
+		operstate="$(sysval "/sys/class/net/$netif/operstate")"
+		mac="$(sysval "/sys/class/net/$netif/address")"
+		rx_bytes="$(sysval "/sys/class/net/$netif/statistics/rx_bytes")"
+		tx_bytes="$(sysval "/sys/class/net/$netif/statistics/tx_bytes")"
+		rx_packets="$(sysval "/sys/class/net/$netif/statistics/rx_packets")"
+		tx_packets="$(sysval "/sys/class/net/$netif/statistics/tx_packets")"
+		rx_errors="$(sysval "/sys/class/net/$netif/statistics/rx_errors")"
+		tx_errors="$(sysval "/sys/class/net/$netif/statistics/tx_errors")"
+		candidate="$(iw dev "$netif" info 2>/dev/null)"
+		[ -n "$ssid" ] || ssid="$(printf '%s\n' "$candidate" | sed -n 's/^[[:space:]]*ssid //p' | head -n 1)"
+		channel="$(printf '%s\n' "$candidate" | awk '$1 == "channel" {print $2; exit}')"
+		frequency="$(printf '%s\n' "$candidate" | awk '$1 == "channel" {gsub(/[()]/, "", $3); print $3; exit}')"
+		txpower="$(printf '%s\n' "$candidate" | awk '$1 == "txpower" {print $2; exit}')"
+		clients="$(ubus call "hostapd.$netif" get_clients 2>/dev/null | jq -r '(.clients // {}) | length' 2>/dev/null)"
+		[ -n "$clients" ] || clients=0
+		[ "$operstate" = up ] || [ "$operstate" = unknown ] && running=true
+	fi
+
+	jq -cn \
+		--arg stage "$stage" --arg usb_name "$usbname" --arg usb_path "$usbpath" \
+		--arg vendor "$vendor" --arg product "$product" --arg manufacturer "$manufacturer" --arg product_name "$product_name" --arg serial "$serial" \
+		--arg bound_driver "$bound_driver" --arg kernel "$kernel" --arg module_loader "$module_loader" --arg module_driver "$module_driver" \
+		--arg firmware_count "$firmware_count" --arg phy "$phy" --arg phy_path "$phy_path" \
+		--arg radio "$radio" --arg radio_path "$radio_path" --argjson ifaces "$ifaces" --arg iface_section "$iface_section" \
+		--arg interface "$netif" --arg operstate "$operstate" --arg mac "$mac" --arg ssid "$ssid" \
+		--arg band "$band" --arg htmode "$htmode" --arg country "$country" --arg channel "$channel" --arg frequency "$frequency" \
+		--arg txpower "$txpower" --arg encryption "$encryption" --arg hidden "$hidden" --arg network "$network" \
+		--arg clients "$clients" --arg rx_bytes "$rx_bytes" --arg tx_bytes "$tx_bytes" \
+		--arg rx_packets "$rx_packets" --arg tx_packets "$tx_packets" --arg rx_errors "$rx_errors" --arg tx_errors "$tx_errors" \
+		--argjson module_files "$module_files" --argjson driver_loaded "$driver_loaded" --argjson firmware_present "$firmware_present" \
+		--argjson configured "$configured" --argjson enabled "$enabled" --argjson running "$running" '
+		def nullable: if . == "" then null else . end;
+		def number: try tonumber catch null;
+		{
+			ok:true,
+			timestamp:(now | floor),
+			hardware:{
+				name:"AIC8800 板载无线", present:($stage != "absent"), stage:$stage,
+				usb_name:($usb_name | nullable), sysfs_path:($usb_path | nullable),
+				vendor_id:$vendor, product_id:($product | nullable), manufacturer:($manufacturer | nullable),
+				product:($product_name | nullable), serial:($serial | nullable), bound_driver:($bound_driver | nullable)
+			},
+			driver:{
+				kernel:$kernel, files_present:$module_files, loaded:$driver_loaded,
+				loader_module:($module_loader | nullable), wlan_module:($module_driver | nullable),
+				firmware_present:$firmware_present, firmware_files:($firmware_count | number // 0)
+			},
+			phy:{name:($phy | nullable), sysfs_path:($phy_path | nullable), ready:($phy != "")},
+			config:{
+				present:$configured, radio:($radio | nullable), path:($radio_path | nullable),
+				ifaces:$ifaces, primary_iface:($iface_section | nullable), enabled:$enabled,
+				ssid:($ssid | nullable), band:($band | nullable), htmode:($htmode | nullable), country:($country | nullable),
+				channel:($channel | nullable), txpower_dbm:($txpower | number), encryption:($encryption | nullable),
+				hidden:($hidden == "1"), network:($network | nullable)
+			},
+			runtime:{
+				running:$running, interface:($interface | nullable), state:($operstate | nullable), mac:($mac | nullable),
+				frequency_mhz:($frequency | number), clients:($clients | number // 0),
+				rx_bytes:($rx_bytes | number // 0), tx_bytes:($tx_bytes | number // 0),
+				rx_packets:($rx_packets | number // 0), tx_packets:($tx_packets | number // 0),
+				rx_errors:($rx_errors | number // 0), tx_errors:($tx_errors | number // 0)
+			},
+			usable:($phy != "" and $driver_loaded and $firmware_present),
+			default_off:(($configured | not) or ($enabled | not))
+		}'
+}
+
+bool_arg() {
+	case "$1" in 0|1) return 0 ;; *) return 1 ;; esac
+}
+
+int_arg() {
+	case "$1" in *[!0-9]*|'') return 1 ;; esac
+	[ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+}
+
+time_arg() {
+	case "$1" in
+		[0-2][0-9]:[0-5][0-9]) ;;
+		*) return 1 ;;
+	esac
+	local hour="${1%%:*}"
+	[ "$hour" -le 23 ]
+}
+
+led_mode_state() {
+	local mode="$1" start="$2" end="$3" now
+	case "$mode" in
+		on) printf 1 ;;
+		off) printf 0 ;;
+		timed)
+			now="$(date +%H:%M)"
+			[ "$start" = "$end" ] && { printf 1; return; }
+			if [ "$start" \< "$end" ]; then
+				[ "$now" = "$start" ] || { [ "$now" \> "$start" ] && [ "$now" \< "$end" ]; }
+			else
+				[ "$now" = "$start" ] || [ "$now" \> "$start" ] || [ "$now" \< "$end" ]
+			fi
+			[ "$?" -eq 0 ] && printf 1 || printf 0
+		;;
+		*) return 1 ;;
+	esac
+}
+
+beeper_sound_tones() {
+	local sound="$1" tones
+	case "$sound" in
+		short) tones='[{"hz":2700,"ms":220}]' ;;
+		double) tones='[{"hz":2600,"ms":150},{"hz":0,"ms":90},{"hz":3200,"ms":190}]' ;;
+		notify) tones='[{"hz":1800,"ms":110},{"hz":2400,"ms":110},{"hz":3200,"ms":250}]' ;;
+		success) tones='[{"hz":1568,"ms":120},{"hz":2093,"ms":120},{"hz":2637,"ms":260}]' ;;
+		chime) tones='[{"hz":1047,"ms":160},{"hz":1319,"ms":160},{"hz":1568,"ms":180},{"hz":2093,"ms":320}]' ;;
+		down) tones='[{"hz":2093,"ms":150},{"hz":1568,"ms":150},{"hz":1319,"ms":180},{"hz":1047,"ms":300}]' ;;
+		warning) tones='[{"hz":3000,"ms":180},{"hz":0,"ms":90},{"hz":3000,"ms":180}]' ;;
+		alarm) tones='[{"hz":3200,"ms":220},{"hz":1800,"ms":180},{"hz":3200,"ms":220},{"hz":1800,"ms":180}]' ;;
+		custom) tones="$(uci -q get photonicat2.main.beeper_custom 2>/dev/null)" ;;
+		*) return 1 ;;
+	esac
+	printf '%s' "$tones" | jq -ce '
+		if type != "array" or length < 1 or length > 20 then error("length") else . end
+		| map(
+			if type != "object" then error("step") else . end
+			| {hz: ((.hz | tonumber?) // error("hz") | floor), ms: ((.ms | tonumber?) // error("ms") | floor)}
+			| if .hz < 0 or .hz > 12000 or .ms < 1 or .ms > 65535 then error("range") else . end
+		)
+	' 2>/dev/null
+}
+
+beeper_event_option() {
+	case "$1" in
+		boot) printf '%s %s' beeper_event_boot success ;;
+		shutdown) printf '%s %s' beeper_event_shutdown down ;;
+		charging) printf '%s %s' beeper_event_charging notify ;;
+		low_battery) printf '%s %s' beeper_event_low_battery warning ;;
+		cellular) printf '%s %s' beeper_event_cellular chime ;;
+		lan) printf '%s %s' beeper_event_lan short ;;
+		wan) printf '%s %s' beeper_event_wan double ;;
+		wifi_start) printf '%s %s' beeper_event_wifi_start success ;;
+		wifi_client) printf '%s %s' beeper_event_wifi_client short ;;
+		*) return 1 ;;
+	esac
+}
+
+beeper_event_play() {
+	local event="$1" mapping option default sound mode start end allowed tones duration result
+	mapping="$(beeper_event_option "$event")" || { error_json "未知设备事件"; return 2; }
+	set -- $mapping
+	option="$1"
+	default="$2"
+	sound="$(uci -q get "photonicat2.main.$option" 2>/dev/null || printf '%s' "$default")"
+	[ "$sound" != off ] || { jq -cn --arg event "$event" '{ok:true,event:$event,skipped:true,reason:"disabled"}'; return; }
+
+	mode="$(uci -q get photonicat2.main.beeper_mode 2>/dev/null || printf on)"
+	start="$(uci -q get photonicat2.main.beeper_start 2>/dev/null || printf 08:00)"
+	end="$(uci -q get photonicat2.main.beeper_end 2>/dev/null || printf 22:00)"
+	allowed="$(led_mode_state "$mode" "$start" "$end" 2>/dev/null || printf 0)"
+	[ "$allowed" = 1 ] || { jq -cn --arg event "$event" '{ok:true,event:$event,skipped:true,reason:"quiet_policy"}'; return; }
+
+	tones="$(beeper_sound_tones "$sound")" || {
+		sound="$default"
+		tones="$(beeper_sound_tones "$sound")" || { error_json "事件音效配置无效"; return 2; }
+	}
+	duration="$(printf '%s' "$tones" | jq -r 'map(.ms) | add // 0')"
+	result="$(pcat "$(jq -cn --argjson tones "$tones" '{command:"pmu-beep-play",tones:$tones,loop:0}')")" || return 1
+	jq -cn --arg event "$event" --arg sound "$sound" --argjson duration_ms "$duration" --argjson device "$result" \
+		'{ok:true,event:$event,sound:$sound,duration_ms:$duration_ms,device:$device}'
+}
+
+case "$1" in
+	status)
+		status
+	;;
+	onboard-wifi-status)
+		onboard_wifi_status
+	;;
+	io-get)
+		pcat '{"command":"pmu-io-get"}'
+	;;
+	io-set)
+		bool_arg "$2" && bool_arg "$3" || { error_json "开关值无效"; exit 2; }
+		pcat "$(jq -cn --argjson led "$2" --argjson beep "$3" '{command:"pmu-io-set","status-led-v2-enabled":$led,"beeper-enabled":$beep}')"
+	;;
+	led-set)
+		case "$2" in on|off|timed) ;; *) error_json "指示灯模式无效"; exit 2 ;; esac
+		start="${3:-$(uci -q get photonicat2.main.led_start 2>/dev/null || printf 07:00)}"
+		end="${4:-$(uci -q get photonicat2.main.led_end 2>/dev/null || printf 23:00)}"
+		time_arg "$start" && time_arg "$end" || { error_json "时间格式无效"; exit 2; }
+		io="$(pcat '{"command":"pmu-io-get"}' 2>/dev/null)" || { error_json "无法读取指示灯状态"; exit 1; }
+		beep="$(printf '%s' "$io" | jq -r '."beeper-enabled" // 0' 2>/dev/null)"
+		bool_arg "$beep" || beep=0
+		led="$(led_mode_state "$2" "$start" "$end")" || { error_json "指示灯模式无效"; exit 2; }
+		uci set photonicat2.main.led_mode="$2" || { error_json "无法写入指示灯模式"; exit 1; }
+		uci set photonicat2.main.led_start="$start" || { error_json "无法写入开启时间"; exit 1; }
+		uci set photonicat2.main.led_end="$end" || { error_json "无法写入关闭时间"; exit 1; }
+		uci commit photonicat2 || { error_json "无法保存指示灯配置"; exit 1; }
+		result="$(pcat "$(jq -cn --argjson led "$led" --argjson beep "$beep" '{command:"pmu-io-set","status-led-v2-enabled":$led,"beeper-enabled":$beep}')")" || exit 1
+		/etc/init.d/photonicat2 reload >/dev/null 2>&1 || true
+		final="$(pcat '{"command":"pmu-io-get"}' 2>/dev/null)" || final="$result"
+		jq -cn --arg mode "$2" --arg start "$start" --arg end "$end" --argjson io "$final" \
+			'{ok:true,mode:$mode,start:$start,end:$end,io:$io}'
+	;;
+	beep)
+		tones="$(beeper_sound_tones "$2")" || { error_json "未知蜂鸣器音效"; exit 2; }
+		pcat "$(jq -cn --argjson tones "$tones" '{command:"pmu-beep-play",tones:$tones,loop:0}')"
+	;;
+	beep-event)
+		beeper_event_play "$2"
+	;;
+	beep-play)
+		bool_arg "${3:-0}" || { error_json "循环参数无效"; exit 2; }
+		tones="$(printf '%s' "$2" | jq -ce '
+			if type != "array" or length < 1 or length > 20 then error("length") else . end
+			| map(
+				if type != "object" then error("step") else . end
+				| {hz: ((.hz | tonumber?) // error("hz") | floor), ms: ((.ms | tonumber?) // error("ms") | floor)}
+				| if .hz < 0 or .hz > 12000 or .ms < 1 or .ms > 65535 then error("range") else . end
+			)
+		' 2>/dev/null)" || { error_json "音序无效：每次需要 1–20 步，频率 0–12000 Hz，时长 1–65535 ms"; exit 2; }
+		pcat "$(jq -cn --argjson tones "$tones" --argjson loop "${3:-0}" '{command:"pmu-beep-play",tones:$tones,loop:$loop}')"
+	;;
+	beep-stop)
+		pcat '{"command":"pmu-beep-play","tones":[{"hz":0,"ms":1}],"loop":0}'
+	;;
+	power-get)
+		mode="$(pcat '{"command":"power-on-mode-get"}' 2>/dev/null)" || mode='{}'
+		charger="$(pcat '{"command":"charger-on-auto-start-get"}' 2>/dev/null)" || charger='{}'
+		charge="$(pcat '{"command":"charge-threshold-get"}' 2>/dev/null)" || charge='{}'
+		schedule="$(pcat '{"command":"schedule-power-event-get"}' 2>/dev/null)" || schedule='{}'
+		jq -cn --argjson mode "$mode" --argjson charger "$charger" --argjson charge "$charge" --argjson schedule "$schedule" \
+			'{ok:true,power_mode:$mode,charger:$charger,charge:$charge,schedule:$schedule}'
+	;;
+	power-mode-set)
+		int_arg "$2" 0 2 || { error_json "开机模式无效"; exit 2; }
+		pcat "$(jq -cn --argjson mode "$2" '{command:"power-on-mode-set",mode:$mode}')"
+	;;
+	charge-set)
+		int_arg "$2" 50 100 || { error_json "充电上限必须为 50–100"; exit 2; }
+		pcat "$(jq -cn --argjson value "$2" '{command:"charge-threshold-set",value:$value}')"
+	;;
+	charger-set)
+		bool_arg "$2" && int_arg "$3" 0 3600 || { error_json "车载模式参数无效"; exit 2; }
+		pcat "$(jq -cn --argjson state "$2" --argjson timeout "$3" '{command:"charger-on-auto-start-set",state:$state,timeout:$timeout}')"
+	;;
+	schedule-set)
+		bool_arg "$2" && int_arg "$3" 0 23 && int_arg "$4" 0 59 && bool_arg "$5" && int_arg "$6" 0 23 && int_arg "$7" 0 59 && int_arg "$8" 0 127 || {
+			error_json "定时事件参数无效"; exit 2;
+		}
+		payload="$(jq -cn --argjson off "$2" --argjson oh "$3" --argjson om "$4" --argjson on "$5" --argjson ih "$6" --argjson im "$7" --argjson days "$8" '
+			{command:"schedule-power-event-set","event-list":[
+				{action:0,enabled:$off,"enable-bits":56,year:0,month:0,day:0,hour:$oh,minute:$om,"dow-bits":$days},
+				{action:1,enabled:$on,"enable-bits":56,year:0,month:0,day:0,hour:$ih,minute:$im,"dow-bits":$days}
+			]}')"
+		pcat "$payload"
+	;;
+	history)
+		if [ -s "$HISTORY" ]; then
+			tail -n 2880 "$HISTORY" | jq -sc '{ok:true,samples:.}' 2>/dev/null || error_json "历史数据损坏"
+		else
+			printf '%s\n' '{"ok":true,"samples":[]}'
+		fi
+	;;
+	clear-history)
+		: > "$HISTORY"
+		printf '%s\n' '{"ok":true}'
+	;;
+	screen-get)
+		if [ -s /etc/pcat2_mini_display-user_config.json ]; then
+			user="$(jq -c . /etc/pcat2_mini_display-user_config.json 2>/dev/null)" || user='{}'
+		else
+			user='{}'
+		fi
+		effective="$(curl -fsS --max-time 3 "$SCREEN_URL/go_get_config.json" 2>/dev/null)" || {
+			if [ -s /etc/pcat2_mini_display-config.json ]; then
+				effective="$(jq -sc '.[0] * .[1]' /etc/pcat2_mini_display-config.json /etc/pcat2_mini_display-user_config.json 2>/dev/null)" || effective="$user"
+			else
+				effective="$user"
+			fi
+		}
+		printf '%s' "$effective" | jq -e . >/dev/null 2>&1 || effective='{}'
+		jq -cn --argjson user "$user" --argjson effective "$effective" '{ok:true,user:$user,effective:$effective}'
+	;;
+	screen-save)
+		tmp="/tmp/pcat2-screen-config.$$"
+		trap 'rm -f "$tmp"' EXIT
+		printf '%s' "$2" | base64 -d > "$tmp" 2>/dev/null || { error_json "配置解码失败"; exit 2; }
+		[ "$(wc -c < "$tmp")" -le 131072 ] || { error_json "屏幕配置超过 128 KiB"; exit 2; }
+		jq -e 'type == "object"' "$tmp" >/dev/null 2>&1 || { error_json "屏幕配置不是有效 JSON 对象"; exit 2; }
+		jq . "$tmp" > "${tmp}.pretty" && mv "${tmp}.pretty" "$tmp"
+		chmod 0644 "$tmp"
+		mv "$tmp" /etc/pcat2_mini_display-user_config.json || { error_json "无法保存屏幕配置"; exit 1; }
+		/etc/init.d/pcat2-display-mini restart >/dev/null 2>&1
+		printf '%s\n' '{"ok":true}'
+	;;
+	screen-reset)
+		printf '%s\n' '{}' > /etc/pcat2_mini_display-user_config.json
+		/etc/init.d/pcat2-display-mini restart >/dev/null 2>&1
+		printf '%s\n' '{"ok":true}'
+	;;
+	screen-frame)
+		frame="$(curl -fsS --max-time 4 "$SCREEN_URL/go_frame.png" 2>/dev/null | base64 | tr -d '\n')" || { error_json "屏幕预览不可用"; exit 1; }
+		[ -n "$frame" ] || { error_json "屏幕预览不可用"; exit 1; }
+		jq -cn --arg data "$frame" '{ok:true,mime:"image/png",data:$data}'
+	;;
+	screen-click)
+		curl -fsS --max-time 2 "$SCREEN_URL/go_changePage" 2>/dev/null || { error_json "屏幕服务不可用"; exit 1; }
+	;;
+	screen-sms)
+		curl -fsS --max-time 2 -X POST "$SCREEN_URL/go_show_sms" 2>/dev/null || { error_json "短信页不可用或未启用"; exit 1; }
+	;;
+	screen-data)
+		curl -fsS --max-time 3 "$SCREEN_URL/go_data.json" 2>/dev/null || { error_json "屏幕数据不可用"; exit 1; }
+	;;
+	apply)
+		uci commit photonicat2 || { error_json "无法提交 Photonicat 2 配置"; exit 1; }
+		/etc/init.d/photonicat2 reload >/dev/null 2>&1
+		printf '%s\n' '{"ok":true}'
+	;;
+	*)
+		error_json "未知操作"
+		exit 2
+	;;
+esac

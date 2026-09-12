@@ -1,0 +1,41 @@
+--- a/mtkclient/Library/DA/xmlflash/xml_lib.py
++++ b/mtkclient/Library/DA/xmlflash/xml_lib.py
+@@ -481,7 +481,10 @@ class DAXML(metaclass=LogBase):
+                     self.xsend(data=tmp)
+                     resp = self.get_response()
+                     if "OK" not in resp:
+-                        self.error(f"Error on writing stage2 at pos {hex(pos)}")
++                        self.error(
++                            f"Error on writing stage2 at pos {hex(pos)}; "
++                            f"DA response: {resp!r}"
++                        )
+                         return False
+                     pos += tmplen
+                     if display:
+@@ -1012,15 +1015,18 @@ class DAXML(metaclass=LogBase):
+             )
+         self.send_command(write_command, noack=True)
+         cmd, fileopresult = self.get_command_result()
+-        # WRITE-PARTITION first asks whether the host-side source exists.  Some
+-        # XML DAs then ask FILE-SIZE while the FM350 DA proceeds directly to
+-        # DOWNLOAD-FILE, so accept both valid sequences.
+-        if getattr(fileopresult, "key", None) == "EXISTS":
+-            self.ack_text("EXISTS")
+-            cmd, fileopresult = self.get_command_result()
+-        if getattr(fileopresult, "key", None) == "FILE-SIZE":
+-            self.ack_value(length)
++        # The stock XML DA may issue more than one host-file query before it
++        # requests the data. EXISTS expects an integer boolean (1), not the
++        # literal query name. Keep consuming valid queries until DOWNLOAD-FILE.
++        for _ in range(4):
++            key = getattr(fileopresult, "key", None)
++            if key == "EXISTS":
++                self.ack_value(1)
++            elif key == "FILE-SIZE":
++                self.ack_value(length)
++            else:
++                break
+             cmd, fileopresult = self.get_command_result()
+         if all(hasattr(fileopresult, name) for name in ("source_file", "packet_length")):
+             if fh:
+                 data = fh.read(length)

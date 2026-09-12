@@ -1,0 +1,35 @@
+{
+	"luci-app-fm350-flasher": {
+		"description": "Access the guarded FM350 firmware workflow",
+		"read": {
+			"cgi-io": [ "exec" ],
+			"file": {
+				"/usr/libexec/fm350-flasher status": [ "exec" ],
+				"/usr/libexec/fm350-flasher firmware-download *": [ "exec" ],
+				"/usr/libexec/fm350-flasher backup-download": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec", "read" ]
+			}
+		},
+		"write": {
+			"file": {
+				"/tmp/fm350-firmware-upload": [ "write" ],
+				"/tmp/fm350-backup-upload": [ "write" ],
+				"/usr/libexec/fm350-flasher set-workspace *": [ "exec" ],
+				"/usr/libexec/fm350-flasher import-firmware *": [ "exec" ],
+				"/usr/libexec/fm350-flasher select-firmware *": [ "exec" ],
+				"/usr/libexec/fm350-flasher delete-firmware *": [ "exec" ],
+				"/usr/libexec/fm350-flasher import-backup *": [ "exec" ],
+				"/usr/libexec/fm350-flasher delete-backup": [ "exec" ],
+				"/usr/libexec/fm350-flasher start-backup": [ "exec" ],
+				"/usr/libexec/fm350-flasher start-flash *": [ "exec" ],
+				"/usr/libexec/fm350-flasher restart-modem": [ "exec" ],
+				"/usr/libexec/fm350-flasher cleanup": [ "exec" ]
+			},
+			"ubus": {
+				"file": [ "exec", "write" ]
+			}
+		}
+	}
+}

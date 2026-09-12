@@ -1,0 +1,73 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -11,6 +11,7 @@
+ import random
+ import re
+ import os
++import fcntl
+ import requests
+ import asyncio
+ 
+@@ -40,6 +41,52 @@
+ sms_sent_flag = False   
+ 
+ 
++class SharedSerialLock:
++    """Serialize FM350 AT traffic across the Web UI and fm350-mm.
++
++    The modem has one primary application AT endpoint.  A normal threading
++    lock protects the Web UI's own workers, while flock on the shared lock file
++    prevents the separate dialer process from sending a command at the same
++    time and having either process consume the other's response.
++    """
++
++    def __init__(self, path="/tmp/pcat-fm350-at.lock"):
++        self._thread_lock = threading.Lock()
++        self._lock_fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
++
++    def acquire(self, blocking=True, timeout=-1):
++        if timeout == -1:
++            acquired = self._thread_lock.acquire(blocking)
++        else:
++            acquired = self._thread_lock.acquire(blocking, timeout)
++        if not acquired:
++            return False
++
++        operation = fcntl.LOCK_EX
++        if not blocking:
++            operation |= fcntl.LOCK_NB
++        try:
++            fcntl.flock(self._lock_fd, operation)
++        except BlockingIOError:
++            self._thread_lock.release()
++            return False
++        except Exception:
++            self._thread_lock.release()
++            raise
++        return True
++
++    def release(self):
++        fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
++        self._thread_lock.release()
++
++    def __enter__(self):
++        self.acquire()
++        return self
++
++    def __exit__(self, _exc_type, _exc_value, _traceback):
++        self.release()
++
++
+ class PcModemClient (threading.Thread):
+     def __init__(self, modem_dev, modem_db):
+         print("PcModemClient init")
+@@ -69,7 +116,7 @@
+         self.roaming_pref = pcat_config.get_user_config_key("roaming_pref", "any")
+ 
+         self.api_lookup_lock = threading.Lock()
+-        self.serial_lock = threading.Lock()
++        self.serial_lock = SharedSerialLock()
+         self.sms_notification_callback = None
+         self.unsolicited_buffer = b""
+ 
+

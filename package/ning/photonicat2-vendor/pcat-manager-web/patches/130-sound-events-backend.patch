@@ -1,0 +1,101 @@
+--- a/app/app.py
++++ b/app/app.py
+@@ -29,6 +29,7 @@
+ flask_app = None
+ main_app = None # Potin to App instance
+ timer_manager = None
++sound_events = None
+ 
+ def cmd_to_log(cmd_args, log_file):
+   with open(log_file,"wb") as out, open(log_file,"wb") as err:
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -17,6 +17,7 @@
+ from pc_sms_client import PcSmsClient
+ from pc_screen_client import PcScreenClient
+ from pcat_timer_manager import PcatTimerManager
++from pcat_sound_events import SoundEventManager
+ import app
+ 
+ if __name__ == "__main__":
+@@ -73,6 +74,12 @@
+     timer_manager_obj.set_socket_client(socket_client_obj)
+     app.timer_manager = timer_manager_obj
+     timer_manager_obj.start()
++
++    # Event sounds are a read-only observer of PMU/OpenWrt state.  It never
++    # opens the modem AT ports or participates in the cellular dial flow.
++    sound_events_obj = SoundEventManager(socket_client_obj)
++    app.sound_events = sound_events_obj
++    sound_events_obj.start()
+     
+     
+     # Apply saved network mode configuration at startup
+@@ -91,6 +98,7 @@
+     modem_client = PcModemClient(pcat_config.modem_dev, pcat_config.modem_db)
+     app.modem_client = modem_client
+     modem_client.start()
++    sound_events_obj.set_modem_client(modem_client)
+ 
+     screen_client = PcScreenClient()
+     app.screen_client = screen_client
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -4973,6 +4973,11 @@
+         rsp.headers['Content-Type'] = 'application/json'
+         return rsp, 401
+ 
++    try:
++        if pc_app.sound_events is not None:
++            pc_app.sound_events.play_event("shutdown")
++    except Exception as exc:
++        pcat_logger.logger.warning("Unable to play shutdown event sound: %s", exc)
+     threading.Timer(3.0, lambda: subprocess.run(["poweroff"])).start()
+     rsp = make_response("{\"status\": \"ok\"}")
+     rsp.headers['Content-Type'] = 'application/json'
+@@ -5743,6 +5748,45 @@
+     return rsp
+ 
+ @api_auth_required
++@flask_app.route("/sound_events")
++def sound_events_page():
++    if 'username' not in session:
++        return redirect(f"/login?next={request.path}")
++    return render_template("sound_events.html", locales=base_locales())
++
++@api_auth_required
++@flask_app.route("/api/v1/sound_events.json", methods=['GET'])
++def sound_events_api():
++    if pc_app.sound_events is None:
++        return jsonify({"status": "error", "message": "事件监测服务尚未启动"}), 503
++    return jsonify(pc_app.sound_events.snapshot())
++
++@api_auth_required
++@flask_app.route("/api/v1/sound_events.json", methods=['POST'])
++def save_sound_events_api():
++    if pc_app.sound_events is None:
++        return jsonify({"status": "error", "message": "事件监测服务尚未启动"}), 503
++    try:
++        data = request.get_json(force=True) or {}
++        return jsonify(pc_app.sound_events.save(data))
++    except (TypeError, ValueError, OSError) as exc:
++        return jsonify({"status": "error", "message": str(exc)}), 400
++
++@api_auth_required
++@flask_app.route("/api/v1/sound_events/preview.json", methods=['POST'])
++def preview_sound_event_api():
++    if pc_app.sound_events is None:
++        return jsonify({"status": "error", "message": "事件监测服务尚未启动"}), 503
++    try:
++        data = request.get_json(force=True) or {}
++        ok, message = pc_app.sound_events.preview(data.get("sound"), data.get("tones"))
++        if not ok:
++            return jsonify({"status": "error", "message": message}), 409
++        return jsonify({"status": "ok"})
++    except (TypeError, ValueError, OSError) as exc:
++        return jsonify({"status": "error", "message": str(exc)}), 400
++
++@api_auth_required
+ @flask_app.route("/api/v1/power_led_status.json", methods=['GET'])
+ def power_led_status_api():
+     """Get current Power LED runtime status"""

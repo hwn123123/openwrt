@@ -1,0 +1,206 @@
+.qmx-page {
+	--qmx-accent: var(--primary-color-medium, var(--primary-color, #36a9ff));
+	--qmx-good: #18cf8b;
+	--qmx-warn: #ffad3d;
+	--qmx-bad: #f25f70;
+	--qmx-panel: var(--background-color-high, rgba(127,127,127,.07));
+	--qmx-soft: color-mix(in srgb, var(--qmx-accent) 7%, transparent);
+	--qmx-line: var(--border-color-low, rgba(127,127,127,.2));
+	max-width: 1480px;
+	margin-right: auto;
+	margin-left: auto;
+	padding-bottom: 1rem;
+}
+
+.qmx-page * { box-sizing: border-box; }
+.qmx-page > h2 { margin: 0 0 .35rem; font-size: 1.35rem; }
+.qmx-page > .cbi-map-descr { margin: 0 0 1rem; opacity: .6; font-size: .76rem; }
+.qmx-page .cbi-section {
+	min-width: 0;
+	margin: 0 0 1rem;
+	padding: 1rem;
+	border: 1px solid var(--qmx-line);
+	border-radius: 13px;
+	background: var(--qmx-panel);
+	box-shadow: 0 6px 24px rgba(0,0,0,.055);
+}
+.qmx-page .cbi-section > legend,
+.qmx-page .cbi-section > h3 {
+	display: block;
+	width: auto;
+	margin: 0 0 .9rem;
+	padding: 0;
+	color: var(--qmx-accent);
+	font-size: 1rem;
+	font-weight: 700;
+}
+.qmx-page .cbi-section-descr { margin: -.45rem 0 .85rem; opacity: .58; font-size: .72rem; }
+.qmx-page .cbi-section-node { min-width: 0; }
+.qmx-page .cbi-value {
+	display: grid;
+	grid-template-columns: minmax(145px, .48fr) minmax(0, 1.52fr);
+	align-items: center;
+	gap: .35rem 1rem;
+	padding: .6rem 0;
+	border-bottom: 1px solid color-mix(in srgb, var(--qmx-line) 62%, transparent);
+}
+.qmx-page .cbi-value:last-child { border-bottom: 0; }
+.qmx-page .cbi-value-title { width: auto; min-width: 0; padding: 0; font-weight: 600; }
+.qmx-page .cbi-value-field { width: auto; min-width: 0; padding: 0; }
+.qmx-page .cbi-value-description { margin-top: .35rem; opacity: .58; font-size: .68rem; }
+.qmx-page input[type="text"],
+.qmx-page input[type="password"],
+.qmx-page input[type="number"],
+.qmx-page select,
+.qmx-page textarea {
+	max-width: 100%;
+	border-radius: 8px;
+}
+.qmx-page input[type="button"],
+.qmx-page input[type="submit"],
+.qmx-page .cbi-button,
+.qmx-page .btn { border-radius: 8px; }
+.qmx-page .cbi-page-actions {
+	display: flex;
+	justify-content: flex-end;
+	flex-wrap: wrap;
+	gap: .5rem;
+	margin-top: .5rem;
+	padding: .8rem 0 0;
+	border-top: 1px solid var(--qmx-line);
+}
+.qmx-page .table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.qmx-page .tr { border-bottom: 1px solid color-mix(in srgb, var(--qmx-line) 65%, transparent); }
+.qmx-page .th { opacity: .65; font-size: .7rem; }
+.qmx-page .td,.qmx-page .th { min-width: 0; padding: .62rem .55rem; vertical-align: middle; }
+.qmx-page .cbi-section-table-row:hover { background: var(--qmx-soft); }
+
+.qmx-selector-card {
+	position: relative;
+	display: grid;
+	grid-template-columns: minmax(120px, .42fr) minmax(180px, 1fr);
+	align-items: center;
+	gap: .8rem 1rem;
+	background:
+		radial-gradient(circle at 100% 0, color-mix(in srgb, var(--qmx-accent) 12%, transparent), transparent 34%),
+		var(--qmx-panel) !important;
+}
+.qmx-selector-card .qmx-selector-label { display: flex; align-items: center; gap: .65rem; font-weight: 700; }
+.qmx-selector-card .qmx-selector-label::before {
+	content: '';
+	width: 9px;
+	height: 9px;
+	border-radius: 50%;
+	background: var(--qmx-good);
+	box-shadow: 0 0 0 0 var(--qmx-good);
+	animation: qmx-pulse 1.8s ease-out infinite;
+}
+.qmx-selector-card select { width: min(100%, 320px); min-height: 36px; }
+@keyframes qmx-pulse { 70% { box-shadow: 0 0 0 8px transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }
+
+.qmx-page .cbi-tabmenu,
+.qmx-page .tabs {
+	display: flex;
+	align-items: center;
+	gap: .38rem;
+	margin: 0 0 1rem;
+	padding: .35rem;
+	overflow-x: auto;
+	border: 1px solid var(--qmx-line);
+	border-radius: 11px;
+	background: var(--qmx-panel);
+	scrollbar-width: thin;
+}
+.qmx-page .cbi-tabmenu li,
+.qmx-page .tabs li {
+	flex: 0 0 auto;
+	margin: 0;
+	padding: .48rem .72rem !important;
+	border: 0;
+	border-radius: 8px;
+	white-space: nowrap;
+	cursor: pointer;
+}
+.qmx-page .cbi-tabmenu .cbi-tab,
+.qmx-page .tabs .active { color: #fff; background: var(--qmx-accent); }
+
+.qmx-dial-page .cbi-section-modem-state {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(225px, 1fr));
+	gap: .75rem;
+}
+.qmx-dial-page .cbi-section-modem-state > h3 { grid-column: 1 / -1; margin-bottom: .1rem; }
+.qmx-dial-page .modem_status_box {
+	position: relative !important;
+	display: grid !important;
+	gap: .42rem;
+	width: auto !important;
+	min-width: 0;
+	margin: 0 !important;
+	padding: .85rem !important;
+	float: none !important;
+	transform: none !important;
+	border: 1px solid var(--qmx-line) !important;
+	border-left: 4px solid var(--qmx-warn) !important;
+	border-radius: 10px !important;
+	background: color-mix(in srgb, var(--qmx-warn) 5%, transparent) !important;
+	line-height: 1.35;
+}
+.qmx-dial-page .modem_status_box.success { border-left-color: var(--qmx-good) !important; background: color-mix(in srgb, var(--qmx-good) 5%, transparent) !important; }
+.qmx-dial-page .modem_status_box.danger { border-left-color: var(--qmx-bad) !important; background: color-mix(in srgb, var(--qmx-bad) 5%, transparent) !important; }
+.qmx-dial-page .modem_status_box > div:first-child { color: var(--qmx-accent); font-size: 1rem; }
+.qmx-dial-page .modem_status_box > div:nth-child(2) { position: absolute; top: .85rem; right: .85rem; font-size: .7rem; }
+.qmx-dial-page .cbi-section-modem-log textarea {
+	width: 100%;
+	min-height: 285px;
+	padding: .85rem;
+	border: 1px solid var(--qmx-line);
+	border-radius: 9px;
+	background: color-mix(in srgb, #091019 92%, transparent);
+	color: #d9f6ef;
+	font: .72rem/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+	resize: vertical;
+}
+.qmx-dial-page .cbi-section-modem-log textarea + div { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; }
+
+.qmx-debug-page .cbi-tabmenu { position: sticky; top: .35rem; z-index: 5; backdrop-filter: blur(12px); }
+.qmx-debug-page .band-container { min-width: 120px; margin: .35rem .55rem .35rem 0; padding: .42rem .55rem; border: 1px solid var(--qmx-line); border-radius: 8px; }
+.qmx-debug-page .flex_container { justify-content: flex-start; gap: .55rem; }
+.qmx-debug-page textarea { width: 100%; min-height: 170px; padding: .75rem; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+.qmx-sms-page > .cbi-section:nth-of-type(2) { border-left: 4px solid var(--qmx-accent); }
+.qmx-sms-page > .cbi-section:nth-of-type(3) { border-left: 4px solid var(--qmx-good); }
+.qmx-sms-page > .cbi-section:nth-of-type(4) { border-left: 4px solid var(--qmx-warn); }
+.qmx-sms-page .panel-title { display: none; }
+.qmx-sms-page .sms_recv_content { line-height: 1.6; }
+.qmx-sms-page .sms_recv_content strong { overflow-wrap: anywhere; }
+.qmx-sms-page textarea { width: 100%; min-height: 105px; padding: .7rem; resize: vertical; }
+.qmx-sms-page .alert { margin: 0; border-radius: 9px; }
+
+.qmx-forward-page .cbi-section-table { min-width: 740px; }
+.qmx-forward-page .cbi-section-table-container { overflow-x: auto; }
+.qmx-forward-page textarea { width: 100%; min-height: 220px; padding: .75rem; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+
+@media (max-width: 760px) {
+	.qmx-page { padding-bottom: 4.5rem; }
+	.qmx-page .cbi-section { padding: .8rem; border-radius: 11px; }
+	.qmx-page .cbi-value { grid-template-columns: 1fr; gap: .35rem; }
+	.qmx-page .cbi-value-field { width: 100%; }
+	.qmx-page .cbi-value-field input[type="text"],
+	.qmx-page .cbi-value-field input[type="password"],
+	.qmx-page .cbi-value-field input[type="number"],
+	.qmx-page .cbi-value-field select,
+	.qmx-page .cbi-value-field textarea { width: 100%; }
+	.qmx-selector-card { grid-template-columns: 1fr; }
+	.qmx-selector-card select { width: 100%; }
+	.qmx-page .table { display: block; overflow-x: auto; }
+	.qmx-page .cbi-page-actions { position: sticky; bottom: 0; z-index: 7; margin-right: -.8rem; margin-left: -.8rem; padding: .65rem .8rem; background: color-mix(in srgb, var(--qmx-panel) 94%, transparent); backdrop-filter: blur(12px); }
+	.qmx-dial-page .cbi-section-modem-state { grid-template-columns: 1fr; }
+	.qmx-dial-page .cbi-section-modem-log textarea { min-height: 230px; }
+	.qmx-sms-page .tr { display: grid; grid-template-columns: 1fr; padding: .55rem 0; }
+	.qmx-sms-page .td { display: block; width: 100% !important; padding: .25rem 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.qmx-selector-card .qmx-selector-label::before { animation: none; }
+}

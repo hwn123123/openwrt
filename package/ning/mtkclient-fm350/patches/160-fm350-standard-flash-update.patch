@@ -1,0 +1,242 @@
+--- a/mtkclient/Library/DA/xmlflash/xml_cmd.py
++++ b/mtkclient/Library/DA/xmlflash/xml_cmd.py
+@@ -524,12 +524,12 @@
+         cmd = self.create_cmd("ERASE-FLASH", content)
+         return cmd
+ 
+-    def cmd_flash_update(self):
++    def cmd_flash_update(self, scatter_file, backup_folder):
+         content = {
+             "arg": [
+                 "<path_separator>/</path_separator>",
+-                "<source_file>D:/scatter.xml</source_file>",
+-                "<backup_folder>D:/backup</backup_folder>"
++                f"<source_file>{xml_escape(scatter_file)}</source_file>",
++                f"<backup_folder>{xml_escape(backup_folder)}</backup_folder>"
+             ]
+         }
+         cmd = self.create_cmd("FLASH-UPDATE", content)
+--- a/mtkclient/Library/DA/xmlflash/xml_lib.py
++++ b/mtkclient/Library/DA/xmlflash/xml_lib.py
+@@ -367,7 +367,11 @@
+             return None
+ 
+     def get_response_without_progress(self, available_files=None):
+-        data = self.get_response()
++        data = getattr(self, "_batch_prefetched_response", None)
++        if data is not None:
++            self._batch_prefetched_response = None
++        else:
++            data = self.get_response()
+         while True:
+             command = get_field(data, "command")
+             if command == "CMD:PROGRESS-REPORT":
+@@ -399,6 +403,10 @@
+                     self.info(
+                         f"DA file query: FILE-SIZE {os.path.basename(requested)} -> {length}"
+                     )
++                elif key in ("MKDIR", "REMOVE", "REMOVE-ALL"):
++                    self.ack()
++                    self.ack_text(key)
++                    self.info(f"DA file operation acknowledged: {key}")
+                 else:
+                     return data
+                 data = self.get_response()
+@@ -568,6 +576,7 @@
+             return None, response
+ 
+         position = 0
++        prefetched = False
+         with open(filename, "rb") as source:
+             while position < length:
+                 self.ack_value(0)
+@@ -585,31 +594,44 @@
+                 self.xsend(data=chunk)
+                 response = self.get_response_without_progress(available_files)
+                 if "OK" not in response:
+-                    self.error(
+-                        f"DA rejected {filename} at {hex(position)}: {response!r}"
+-                    )
+-                    return None, response
++                    # FM350's FLASH-UPDATE flow omits the standalone packet
++                    # acknowledgement after the final chunk and immediately
++                    # starts the next XML request.  Preserve that already-read
++                    # request so get_command_result() can parse and acknowledge
++                    # it normally.
++                    if (position + len(chunk) == length and
++                            get_field(response, "command")):
++                        self._batch_prefetched_response = response
++                        prefetched = True
++                    else:
++                        self.error(
++                            f"DA rejected {filename} at {hex(position)}: {response!r}"
++                        )
++                        return None, response
+                 position += len(chunk)
+                 if display:
+                     pg.update(len(chunk))
++                if prefetched:
++                    break
+ 
+-        # Finish this host-side DOWNLOAD-FILE request. WRITE-PARTITIONS may
++        # Finish this host-side DOWNLOAD-FILE request. FLASH-UPDATE may
+         # immediately issue another file request instead of ending the outer
+         # command, so return the next protocol object to the caller.
+-        self.ack()
+         command, result = self.get_command_result()
+         if display:
+             pg.done()
+         return command, result
+ 
+-    def write_partitions(self, scatter_file, partitions, display=True):
++    def write_partitions(self, scatter_file, partitions, transfer_root, display=True):
+         if not os.path.isfile(scatter_file):
+             self.error(f"Scatter file doesn't exist: {scatter_file}")
+             return False
+         if not partitions:
+-            self.error("No partitions supplied to WRITE-PARTITIONS")
++            self.error("No partitions supplied to FLASH-UPDATE")
+             return False
+ 
++        transfer_root = os.path.realpath(transfer_root)
++        os.makedirs(transfer_root, mode=0o700, exist_ok=True)
+         files = {}
+         roles = {}
+ 
+@@ -620,6 +644,8 @@
+             keys = {
+                 self._batch_path_key(filename),
+                 self._batch_path_key(absolute),
++                self._batch_path_key(os.path.basename(absolute)),
++                self._batch_path_key("./" + os.path.basename(absolute)),
+             }
+             for key in keys:
+                 files[key] = absolute
+@@ -635,21 +661,22 @@
+                 filename = register_file(partition["file"], (index, name))
+                 command_partitions.append({"name": name, "file": filename})
+         except (KeyError, TypeError, FileNotFoundError) as error:
+-            self.error(f"Invalid WRITE-PARTITIONS manifest: {error}")
++            self.error(f"Invalid FLASH-UPDATE manifest: {error}")
+             return False
+ 
+         self.info(
+-            f"Using signed DA WRITE-PARTITIONS for {len(command_partitions)} partitions"
++            f"Using signed DA FLASH-UPDATE for {len(command_partitions)} partitions"
+         )
+         command_sent = self.send_command(
+-            self.cmd.cmd_write_partitions(scatter_file, command_partitions),
++            self.cmd.cmd_flash_update(scatter_file, transfer_root),
+             noack=True,
+         )
+         if command_sent is not True:
+-            self.error(f"WRITE-PARTITIONS command rejected: {command_sent!r}")
++            self.error(f"FLASH-UPDATE command rejected: {command_sent!r}")
+             return False
+         command, result = self.get_command_result()
+         completed = 0
++        upload_count = 0
+         request_limit = len(command_partitions) * 16 + 64
+ 
+         for _ in range(request_limit):
+@@ -661,6 +688,8 @@
+                     self.ack_value(1 if filename else 0)
+                 elif key == "FILE-SIZE" and filename:
+                     self.ack_value(os.path.getsize(filename))
++                elif key in ("MKDIR", "REMOVE", "REMOVE-ALL"):
++                    self.ack_text(key)
+                 else:
+                     self.error(
+                         f"Unsupported or unapproved file request: {key} {requested}"
+@@ -697,34 +726,67 @@
+                     )
+                 continue
+ 
++            if command == "CMD:UPLOAD-FILE":
++                upload_count += 1
++                requested = getattr(result, "target_file", "")
++                target = os.path.join(
++                    transfer_root, f"da-upload-{upload_count:02d}.bin"
++                )
++                if not self.download_raw(result, filename=target, display=False):
++                    self.error(f"FLASH-UPDATE could not receive DA backup file: {requested}")
++                    return False
++                for key in {
++                        self._batch_path_key(requested),
++                        self._batch_path_key(os.path.basename(requested)),
++                        self._batch_path_key(target)}:
++                    files[key] = target
++                self.info(
++                    f"FLASH-UPDATE received protected record {upload_count}: "
++                    f"{os.path.basename(requested)}"
++                )
++                command, result = self.get_command_result()
++                continue
++
+             if command == "CMD:END":
+                 if result != "OK":
+-                    self.error(f"WRITE-PARTITIONS failed: {result}")
++                    self.error(f"FLASH-UPDATE failed: {result}")
+                     return False
+                 self.ack()
+                 command, result = self.get_command_result()
+                 if command == "CMD:START":
++                    if completed != len(command_partitions):
++                        self.error(
++                            f"FLASH-UPDATE requested only {completed}/"
++                            f"{len(command_partitions)} partition files"
++                        )
++                        return False
+                     self.info(
+-                        f"WRITE-PARTITIONS completed for {len(command_partitions)} partitions; "
++                        f"FLASH-UPDATE completed for {len(command_partitions)} partitions; "
+                         f"received {completed} partition data requests"
+                     )
+                     return True
+                 continue
+ 
+             if command == "CMD:START":
++                if completed != len(command_partitions):
++                    self.error(
++                        f"FLASH-UPDATE requested only {completed}/"
++                        f"{len(command_partitions)} partition files"
++                    )
++                    return False
+                 self.info(
+-                    f"WRITE-PARTITIONS completed for {len(command_partitions)} partitions; "
++                    f"FLASH-UPDATE completed for {len(command_partitions)} partitions; "
+                     f"received {completed} partition data requests"
+                 )
+                 return True
+ 
+             self.error(
+-                f"Unexpected WRITE-PARTITIONS response: command={command!r} "
++                f"Unexpected FLASH-UPDATE response: command={command!r} "
+                 f"result={result!r}"
+             )
+             return False
+ 
+-        self.error("WRITE-PARTITIONS exceeded the protocol request limit")
++        self.error("FLASH-UPDATE exceeded the protocol request limit")
+         return False
+ 
+     def download_raw(self, result, filename: str = "", display: bool = False):
+--- a/mtkclient/Library/DA/mtk_daloader.py
++++ b/mtkclient/Library/DA/mtk_daloader.py
+@@ -327,12 +327,13 @@
+         return self.da.writeflash(addr=addr, length=length, filename=filename, offset=offset,
+                                   parttype=parttype, wdata=wdata, display=display)
+ 
+-    def write_partitions(self, scatter_file, partitions, display=True):
++    def write_partitions(self, scatter_file, partitions, transfer_root, display=True):
+         if self.flashmode != DAmodes.XML:
+-            self.error("WRITE-PARTITIONS requires an XML V6 download agent")
++            self.error("FLASH-UPDATE requires an XML V6 download agent")
+             return False
+         return self.da.write_partitions(
+-            scatter_file=scatter_file, partitions=partitions, display=display
++            scatter_file=scatter_file, partitions=partitions,
++            transfer_root=transfer_root, display=display
+         )
+ 
+     def formatflash(self, addr, length, partitionname, parttype, display=True):

@@ -1,0 +1,11 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+USE_PROCD=0
+
+start() {
+	local result
+	result="$(/usr/libexec/fm350-flasher workspace-check 2>&1)"
+	logger -t fm350-flasher -- "$result"
+	return 0
+}

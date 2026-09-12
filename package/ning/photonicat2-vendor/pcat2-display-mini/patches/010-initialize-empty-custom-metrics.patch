@@ -1,0 +1,33 @@
+--- a/main.go
++++ b/main.go
+@@ -929,18 +929,18 @@ func main() {
+ 	// Initialize power graph data recording
+ 	initPowerDataRecording()
+ 
+-	// Initialize and start custom metrics manager
+-	if len(cfg.CustomMetrics.Sources) > 0 {
+-		var err error
+-		customMetricsMgr, err = NewCustomMetricManager(cfg.CustomMetrics)
+-		if err != nil {
+-			log.Printf("Failed to create custom metrics manager: %v", err)
+-		} else {
+-			if err := customMetricsMgr.Start(); err != nil {
+-				log.Printf("Failed to start custom metrics manager: %v", err)
+-			} else {
+-				log.Printf("Custom metrics manager started with %d sources", len(cfg.CustomMetrics.Sources))
+-			}
++	// Always initialize the manager, including for an empty initial source
++	// list. This keeps the status and data APIs usable before the first source
++	// is added from the web interface.
++	var err error
++	customMetricsMgr, err = NewCustomMetricManager(cfg.CustomMetrics)
++	if err != nil {
++		log.Printf("Failed to create custom metrics manager: %v", err)
++	} else {
++		if err := customMetricsMgr.Start(); err != nil {
++			log.Printf("Failed to start custom metrics manager: %v", err)
++		} else {
++			log.Printf("Custom metrics manager started with %d sources", len(cfg.CustomMetrics.Sources))
+ 		}
+ 	}
+ 

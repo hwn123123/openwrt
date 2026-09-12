@@ -1,0 +1,8 @@
+{
+	"admin/system/photonicat2": {
+		"title": "photonicat2功能",
+		"order": 15,
+		"action": { "type": "firstchild" },
+		"depends": { "acl": [ "luci-app-photonicat2" ] }
+	}
+}

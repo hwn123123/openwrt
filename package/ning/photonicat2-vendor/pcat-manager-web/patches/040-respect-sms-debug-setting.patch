@@ -1,0 +1,7 @@
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -64,2 +64,3 @@
+ INTERVAL_SMS_HOOK = 30
+-SMS_DEBUG_BOOL = True
++# Keep raw AT traffic quiet by default and honor the existing UI setting.
++SMS_DEBUG_BOOL = pcat_config.get_show_debug_logs()

@@ -1,0 +1,174 @@
+--- a/processSms.go
++++ b/processSms.go
+@@ -232,14 +232,16 @@ func collectAndDrawSms(cfg *Config) int {
+ 	jsonContent := getJsonContent(cfg)
+ 	newReceivedSms := observeReceivedSms(jsonContent)
+ 
+-	if len(jsonContent) < 50 { //dummy message
+-		jsonContent = fmt.Sprintf("{\"msg\":[{\"sender\":\"System\",\"timestamp\":\"%s\",\"content\":\"No SMS - 无消息\"}]}", time.Now().Format("2006-01-02 15:04:05"))
++	if len(jsonContent) < 50 { // stable empty-state message
++		// Do not put the current time in this placeholder. The SMS endpoint is
++		// polled frequently, so a changing timestamp made an empty inbox look
++		// different on every poll and needlessly redrew the display.
++		jsonContent = "{\"msg\":[{\"sender\":\"System\",\"timestamp\":\"--\",\"content\":\"No SMS - 无消息\"}]}"
+ 	}
+ 
+ 	// Re-render when the messages change OR when the config was remerged (a
+ 	// theme change): the palette is baked into the cached images.
+ 	if jsonContent == lastSmsJsonContent && lastSmsConfigVersion == configVersion {
+-		log.Println("collectAndDrawSms: No new SMS, lastNumPages:", lastNumPages)
+ 		return lastNumPages
+ 	}
+ 
+@@ -832,8 +834,6 @@ func getSmsPages() {
+ 				log.Println("First successful SMS fetch! Switching to normal interval. lenSmsPagesImages:", lenSmsPagesImages)
+ 				ticker.Stop()
+ 				ticker = time.NewTicker(getSmsInterval())
+-			} else {
+-				log.Println("collect lenSmsPagesImages:", lenSmsPagesImages)
+ 			}
+ 
+ 			totalNumPages = cfgNumPages + lenSmsPagesImages
+--- a/pcatPmu.go
++++ b/pcatPmu.go
+@@ -275,6 +275,20 @@ func pmuKernelDriverPresent() bool {
+ 	return false
+ }
+ 
++// pmuStartSysfsIfPresent switches to the kernel-owned PMU data path. The
++// display often starts before the photonicat-pm driver has finished probing,
++// so this must be safe to call again from the deferred UART path.
++func pmuStartSysfsIfPresent() bool {
++	if !pmuKernelDriverPresent() {
++		return false
++	}
++	if pmuSysfsActive.CompareAndSwap(false, true) {
++		log.Println("PMU: photonicat-pm kernel driver present, using sysfs data source")
++		go pmuSysfsLoop()
++	}
++	return true
++}
++
+ // pmuDetectSerialDevice finds the UART wired to the PMU by scanning the
+ // device-tree serial aliases for the node with a "photonicat-pm" child
+ // (e.g. photonicat2: serial10 → /dev/ttyS10; photonicat1 used ttyS4).
+@@ -327,10 +341,7 @@ func pmuPortUsers(dev string) []string {
+ // startPmuManager launches the PMU data source in the background. Safe to
+ // call on any machine: it exits quietly when no photonicat PMU is present.
+ func startPmuManager() {
+-	if pmuKernelDriverPresent() {
+-		log.Println("PMU: photonicat-pm kernel driver present, using sysfs data source")
+-		pmuSysfsActive.Store(true)
+-		go pmuSysfsLoop()
++	if pmuStartSysfsIfPresent() {
+ 		return
+ 	}
+ 	dev := pmuDetectSerialDevice()
+@@ -402,6 +413,11 @@ func pmuUartManager(dev string) {
+ 	time.Sleep(pmuUartSettleDelay)
+ 
+ 	for {
++		// The serdev driver may have appeared while we were waiting for boot to
++		// settle. Never try to open its consumed tty; hand over to sysfs.
++		if pmuStartSysfsIfPresent() {
++			return
++		}
+ 		if users := pmuPortUsers(dev); len(users) > 0 {
+ 			log.Printf("PMU: %s in use by PID(s) %s, backing off", dev,
+ 				strings.Join(users, ","))
+@@ -411,6 +427,9 @@ func pmuUartManager(dev string) {
+ 		// The port looks free — wait a little longer and confirm nobody
+ 		// grabbed it in between before claiming it.
+ 		time.Sleep(pmuUartRecheckDelay)
++		if pmuStartSysfsIfPresent() {
++			return
++		}
+ 		if users := pmuPortUsers(dev); len(users) > 0 {
+ 			time.Sleep(pmuUartRetryDelay)
+ 			continue
+--- a/processData.go
++++ b/processData.go
+@@ -209,6 +209,37 @@ type DashboardInfo struct {
+ 	WiFiInterfaces      []WiFiInterface `json:"wifi_interfaces"`
+ }
+ 
++// ModemTemperature tolerates the vendor API's boot-time placeholder string
++// (usually "N/A") as well as its normal object form. Rejecting that one field
++// used to discard the entire modem status response during startup.
++type ModemTemperature map[string]int
++
++func (mt *ModemTemperature) UnmarshalJSON(data []byte) error {
++	value := strings.TrimSpace(string(data))
++	if value == "" || value == "null" || strings.HasPrefix(value, "\"") {
++		*mt = nil
++		return nil
++	}
++
++	var raw map[string]interface{}
++	if err := secureUnmarshal(data, &raw); err != nil {
++		return err
++	}
++	parsed := make(ModemTemperature, len(raw))
++	for name, value := range raw {
++		switch number := value.(type) {
++		case float64:
++			parsed[name] = int(number)
++		case string:
++			if n, err := strconv.ParseFloat(strings.TrimSpace(number), 64); err == nil {
++				parsed[name] = int(n)
++			}
++		}
++	}
++	*mt = parsed
++	return nil
++}
++
+ type ModemBasicInfo struct {
+ 	CellCarrierInfo     string         `json:"cell_carrier_info"`
+ 	FirmwareVersion     string         `json:"firmware_version"`
+@@ -224,7 +255,7 @@ type ModemBasicInfo struct {
+ 	ModemRoamPref       string         `json:"modem_roam_pref"`
+ 	ModemServingInfo    string         `json:"modem_serving_info"`
+ 	ModemServingQuality string         `json:"modem_serving_quality"`
+-	ModemTemperature    map[string]int `json:"modem_temperature"`
++	ModemTemperature    ModemTemperature `json:"modem_temperature"`
+ 	ModemUSBSpeed       string         `json:"modem_usb_speed"`
+ 	ModemUSBNetMode     string         `json:"modem_usbnet_mode"`
+ 	ModemValid          bool           `json:"modem_valid"`
+--- /dev/null
++++ b/runtimeFixes_test.go
+@@ -0,0 +1,34 @@
++package main
++
++import "testing"
++
++func TestModemTemperatureAcceptsBootPlaceholderAndObject(t *testing.T) {
++	tests := []struct {
++		name string
++		json string
++		want int
++	}{
++		{name: "placeholder", json: `{"modem_temperature":"N/A"}`, want: 0},
++		{name: "null", json: `{"modem_temperature":null}`, want: 0},
++		{name: "object", json: `{"modem_temperature":{"ambient":48,"pa":"42.9"}}`, want: 2},
++	}
++
++	for _, tc := range tests {
++		t.Run(tc.name, func(t *testing.T) {
++			var got ModemBasicInfo
++			if err := secureUnmarshal([]byte(tc.json), &got); err != nil {
++				t.Fatalf("secureUnmarshal: %v", err)
++			}
++			if len(got.ModemTemperature) != tc.want {
++				t.Fatalf("temperature count = %d, want %d", len(got.ModemTemperature), tc.want)
++			}
++		})
++	}
++}
++
++func TestModemTemperatureRejectsInvalidContainer(t *testing.T) {
++	var got ModemBasicInfo
++	if err := secureUnmarshal([]byte(`{"modem_temperature":[48]}`), &got); err == nil {
++		t.Fatal("array temperature unexpectedly accepted")
++	}
++}

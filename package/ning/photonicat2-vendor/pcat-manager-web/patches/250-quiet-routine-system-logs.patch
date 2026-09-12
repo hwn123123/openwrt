@@ -1,0 +1,147 @@
+--- a/app/pcat_util/pcat_logger.py
++++ b/app/pcat_util/pcat_logger.py
+@@ -49,7 +49,11 @@
+ import os
+ if os.environ.get('PCAT_LOG_STDOUT', '1') != '0':
+     stdout_handler = logging.StreamHandler(sys.stdout)
+-    stdout_handler.setLevel(logging.DEBUG)
++    # Keep full diagnostics in the rotating file, but do not flood OpenWrt's
++    # system log with routine DEBUG/INFO records. The existing debug switch
++    # can still opt in when troubleshooting is requested.
++    stdout_handler.setLevel(
++        logging.DEBUG if pcat_config.get_show_debug_logs() else logging.WARNING)
+     colored_formatter = ColoredFormatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+     stdout_handler.setFormatter(colored_formatter)
+-    logger.addHandler(stdout_handler)
+\ No newline at end of file
++    logger.addHandler(stdout_handler)
+--- a/app/pcat_timer_manager.py
++++ b/app/pcat_timer_manager.py
+@@ -238,8 +238,7 @@
+             user_max_display = user_max_speed if user_max_speed is not None else "N/A"
+             actual_display = actual_speed if actual_speed is not None else "N/A"
+ 
+-            # Log for dev panel (always log smart fan control activity)
+-            pcat_logger.logger.warning(f"[Smart Fan] mode={fan_mode}, temp={temp_display}, charging={charging_display}, user_max={user_max_display}, actual_speed={actual_display}")
++            pcat_logger.logger.debug(f"[Smart Fan] mode={fan_mode}, temp={temp_display}, charging={charging_display}, user_max={user_max_display}, actual_speed={actual_display}")
+ 
+         except Exception as e:
+             # Log errors but don't let them crash the timer loop
+@@ -306,4 +305,4 @@
+ 
+             except Exception as e:
+                 pcat_logger.logger.error(f"Error in timer manager loop: {e}")
+-                time.sleep(10)  # Wait a bit before retrying
+\ No newline at end of file
++                time.sleep(10)  # Wait a bit before retrying
+--- a/app/pcat_config.py
++++ b/app/pcat_config.py
+@@ -504,7 +504,6 @@
+                 # Set the fan speed
+                 with open(state_path, "w") as f:
+                     f.write(str(speed))
+-                print(f"Smart fan control: Set fan speed to {speed} for cooling_device{device_num}")
+ 
+         except (FileNotFoundError, PermissionError) as e:
+             # Device doesn't exist or permission denied, continue to next
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -1271,11 +1271,11 @@
+             generation_time = (time.time() - start_time) * 1000  # Convert to milliseconds
+             network_interfaces_cache['generation_time'] = generation_time
+ 
+-            # Log slow network interface generation (>50ms)
++            # Timing is diagnostic, not a system warning.
+             if generation_time > 50:
+-                pcat_logger.logger.warning(f"Slow network interfaces generation: {generation_time:.1f}ms")
++                pcat_logger.logger.debug(f"Slow network interfaces generation: {generation_time:.1f}ms")
+             elif generation_time > 25:
+-                pcat_logger.logger.info(f"Network interfaces generation: {generation_time:.1f}ms")
++                pcat_logger.logger.debug(f"Network interfaces generation: {generation_time:.1f}ms")
+ 
+             # Cache the data
+             network_interfaces_cache['data'] = response_json
+@@ -1677,10 +1677,10 @@
+         # Log slow dashboard generation (>100ms) with breakdown
+         if generation_time > 100:
+             breakdown_str = ", ".join([f"{k}: {v:.1f}ms" for k, v in timing_breakdown.items()])
+-            pcat_logger.logger.warning(f"Slow dashboard generation: {generation_time:.1f}ms [{breakdown_str}]")
++            pcat_logger.logger.debug(f"Slow dashboard generation: {generation_time:.1f}ms [{breakdown_str}]")
+         elif generation_time > 50:
+             breakdown_str = ", ".join([f"{k}: {v:.1f}ms" for k, v in timing_breakdown.items()])
+-            pcat_logger.logger.info(f"Dashboard generation: {generation_time:.1f}ms [{breakdown_str}]")
++            pcat_logger.logger.debug(f"Dashboard generation: {generation_time:.1f}ms [{breakdown_str}]")
+         
+         # Cache the data
+         dashboard_cache['data'] = dashboard
+@@ -6509,7 +6509,6 @@
+             # If cache is valid (less than 15 seconds old), use cached data
+             if (sms_cache['data'] is not None and
+                 current_time - sms_cache['timestamp'] < SMS_CACHE_DURATION):
+-                print(f"SMS list served from cache (age: {current_time - sms_cache['timestamp']:.1f}s)")
+                 cached_result = sms_cache['data']
+ 
+             # Cache expired - check if we should fetch or serve old cache
+@@ -6518,7 +6517,6 @@
+                   (sms_cache['data'] is not None and
+                    current_time - sms_cache['last_fetch_time'] < SMS_FETCH_THROTTLE)):
+                 if sms_cache['data'] is not None:
+-                    print(f"SMS list served from old cache due to throttle (last fetch: {current_time - sms_cache['last_fetch_time']:.1f}s ago)")
+                     cached_result = sms_cache['data']
+ 
+     if cached_result:
+@@ -6527,7 +6525,6 @@
+             limited_result = dict(cached_result)  # Create a copy
+             if len(limited_result["msg"]) > requested_limit:
+                 limited_result["msg"] = limited_result["msg"][:requested_limit]
+-                print(f"SMS list limited to {requested_limit} messages from cache")
+             rsp = make_response(limited_result)
+         else:
+             rsp = make_response(cached_result)
+@@ -6536,9 +6533,6 @@
+ 
+     # Force refresh or cache miss - acquire lock and fetch fresh data
+     with sms_cache['lock']:
+-        if force_refresh:
+-            print("SMS list force refresh requested")
+-
+         # Mark fetch in progress to prevent concurrent calls
+         sms_cache['fetch_in_progress'] = True
+         sms_cache['last_fetch_time'] = current_time
+@@ -6546,7 +6540,6 @@
+     try:
+         # Cache miss or expired, fetch fresh data
+         sms_list = pc_app.sms_client.get_sms(refresh_modem=force_refresh)
+-        print("sms_list length:   ", len(sms_list["msg"]))
+         if sms_list is None:
+             sms_list = {}
+             sms_list["msg"] = []
+@@ -6567,12 +6560,10 @@
+             screen_limit = pcat_config.get_sms_limit_for_screen()
+             if len(sms_list["msg"]) > screen_limit:
+                 sms_list["msg"] = sms_list["msg"][:screen_limit]
+-                print(f"SMS list limited to {screen_limit} messages for screen display")
+ 
+         # Apply explicit limit if requested (overrides screen limit)
+         if requested_limit and len(sms_list["msg"]) > requested_limit:
+             sms_list["msg"] = sms_list["msg"][:requested_limit]
+-            print(f"SMS list limited to {requested_limit} messages as requested")
+ 
+         # Update cache with full data (not limited version)
+         with sms_cache['lock']:
+--- a/app/app.py
++++ b/app/app.py
+@@ -923,10 +923,10 @@
+ 
+         if 'usb' in device_path.lower():
+           usb_phy = phy
+-          pcat_logger.logger.info(f"📶 Found USB WiFi: {phy}")
++          pcat_logger.logger.debug(f"📶 Found USB WiFi: {phy}")
+         elif 'pcie' in device_path.lower():
+           pcie_phy = phy
+-          pcat_logger.logger.info(f"📶 Found PCIe WiFi: {phy}")
++          pcat_logger.logger.debug(f"📶 Found PCIe WiFi: {phy}")
+ 
+   except Exception as e:
+     pcat_logger.logger.error(f"❌ Error detecting WiFi phy mapping: {e}")
+

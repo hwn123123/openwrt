@@ -1,0 +1,82 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -6078,6 +6078,18 @@ def api_modem_dial_log():
+         except (OSError, subprocess.SubprocessError):
+             return ""
+ 
++    manager_pid = process_pid("pcat-manager")
++    clear_marker_path = pathlib.Path("/tmp/pcat-modem-log-clear.json")
++    requested_log_offset = -1
++    try:
++        clear_marker = json.loads(clear_marker_path.read_text())
++        if (manager_pid and
++                str(clear_marker.get("manager_pid", "")) == manager_pid):
++            requested_log_offset = max(
++                0, int(clear_marker.get("offset", -1)))
++    except (OSError, TypeError, ValueError):
++        requested_log_offset = -1
++
+     interface = {
+         "up": False, "pending": False, "available": False,
+         "device": "", "ipv4": "", "gateway": "", "dns": [],
+@@ -6123,7 +6135,7 @@ def api_modem_dial_log():
+         if not include_log:
+             raise FileNotFoundError
+         command = json.dumps({
+-            "command": "modem-log-get", "offset": -1,
++            "command": "modem-log-get", "offset": requested_log_offset,
+             "max-size": 262144,
+         }).encode("utf-8") + b"\0"
+         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+@@ -6191,7 +6203,7 @@ def api_modem_dial_log():
+     return jsonify({
+         "status": "ok",
+         "generated_at": datetime.now().strftime("%H:%M:%S"),
+-        "manager_pid": process_pid("pcat-manager"),
++        "manager_pid": manager_pid,
+         "dialer_pid": process_pid("fm350-mm"),
+         "interface": interface,
+         "latest_signal": latest_signal,
+@@ -6202,6 +6214,42 @@ def api_modem_dial_log():
+         "raw_count": len(raw_lines),
+     })
+ 
++@flask_app.route("/api/v1/modem/dial-log/clear.json", methods=['POST'])
++@api_auth_required
++def api_modem_dial_log_clear():
++    """Hide log records before the supplied live-ring offset.
++
++    This does not stop the dialer or alter its in-memory ring.  The marker is
++    tied to the current pcat-manager PID so a restarted manager cannot inherit
++    an offset belonging to an older process.
++    """
++    try:
++        data = request.get_json(force=True) or {}
++        offset = int(data.get("offset"))
++        manager_pid = str(data.get("manager_pid") or "")
++        if offset < 0 or offset > 9223372036854775807:
++            raise ValueError("日志位置无效")
++        result = subprocess.run(
++            ["pidof", "pcat-manager"], capture_output=True, text=True,
++            timeout=2, check=False)
++        active_pid = (result.stdout.strip().split() or [""])[0]
++        if not active_pid or manager_pid != active_pid:
++            return jsonify({
++                "status": "error",
++                "message": "拨号管理进程状态已变化，请刷新后重试",
++            }), 409
++        marker_path = pathlib.Path("/tmp/pcat-modem-log-clear.json")
++        temporary_path = pathlib.Path(str(marker_path) + ".tmp")
++        temporary_path.write_text(json.dumps({
++            "manager_pid": active_pid,
++            "offset": offset,
++            "cleared_at": int(time.time()),
++        }))
++        os.replace(temporary_path, marker_path)
++        return jsonify({"status": "ok", "cleared_before_offset": offset})
++    except (OSError, TypeError, ValueError, subprocess.SubprocessError) as exc:
++        return jsonify({"status": "error", "message": str(exc)}), 400
++
+ @api_auth_required
+ @flask_app.route("/api/v1/modem/basic.json", methods=['POST'])
+ def api_modem_refresh():

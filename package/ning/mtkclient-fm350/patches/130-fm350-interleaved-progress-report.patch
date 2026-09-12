@@ -1,0 +1,53 @@
+--- a/mtkclient/Library/DA/xmlflash/xml_lib.py
++++ b/mtkclient/Library/DA/xmlflash/xml_lib.py
+@@ -368,7 +368,24 @@
+             return None
+ 
++    def get_response_without_progress(self):
++        data = self.get_response()
++        while get_field(data, "command") == "CMD:PROGRESS-REPORT":
++            message = get_field(data, "message")
++            if message:
++                self.info(f"DA progress: {message}")
++            self.ack()
++            progress_response = ""
++            while progress_response != "OK!EOT":
++                progress_response = self.get_response()
++                self.ack()
++            data = self.get_response()
++        return data
++
+     def get_command_result(self):
+-        data = self.get_response()
++        # Stock XML V6 DAs can interleave progress reports with command and
++        # packet acknowledgements.  Drain every complete report before
++        # interpreting the actual response that follows it.
++        data = self.get_response_without_progress()
+         cmd = get_field(data, "command")
+         result = ""
+         if cmd == '' and "OK@" in data:
+@@ -519,6 +536,6 @@
+         pg = progress(total=length, prefix="Upload:", guiprogress=self.mtk.config.guiprogress)
+         self.ack_value(length)
+-        response = self.get_response()
++        response = self.get_response_without_progress()
+         if response != "OK":
+             self.error(f"DA refused file {filename}: {response!r}")
+             return None, response
+@@ -529,6 +546,6 @@
+             while position < length:
+                 self.ack_value(0)
+-                response = self.get_response()
++                response = self.get_response_without_progress()
+                 if "OK" not in response:
+                     self.error(
+                         f"DA refused packet for {filename} at {hex(position)}: "
+@@ -543,7 +560,7 @@
+                     self.error(f"Unexpected end of file while sending {filename}")
+                     return None, "unexpected end of file"
+                 self.xsend(data=chunk)
+-                response = self.get_response()
++                response = self.get_response_without_progress()
+                 if "OK" not in response:
+                     self.error(
+                         f"DA rejected {filename} at {hex(position)}: {response!r}"

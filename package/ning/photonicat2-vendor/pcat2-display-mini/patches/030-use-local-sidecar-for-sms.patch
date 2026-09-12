@@ -1,0 +1,36 @@
+--- a/processSms.go
++++ b/processSms.go
+@@ -294,16 +294,14 @@ func getJsonContent(cfg *Config) string {
+ 	}
+ 
+ 	// 1. Make the request
+-	url := fmt.Sprintf("http://localhost/api/v2/sms/list.json?n=%d", smsLimit)
++	// SMS data comes from the independent read-only sidecar. The display does
++	// not depend on the vendor Web server and does not access a modem port.
++	url := fmt.Sprintf("http://127.0.0.1:8092/v1/sms?limit=%d", smsLimit)
+ 	resp, err := localHTTPClient.Get(url)
+ 	if err != nil {
+-		log.Printf("GET /sms/list.json failed: %v", err)
+-		// pcat-manager-web is down: try reading the messages straight from
+-		// ModemManager before falling back to cached data.
+-		if fallback := getSmsJsonFromModemManager(smsLimit); fallback != "" {
+-			lastSuccessfulSmsJsonContent = fallback
+-			return fallback
+-		}
++		log.Printf("GET pcat-sidecar /v1/sms failed: %v", err)
++		// Never query ModemManager here: the vendor dialer remains the sole
++		// owner of modem access. Use the last sidecar result while it recovers.
+ 		if lastSuccessfulSmsJsonContent != "" {
+ 			log.Printf("Using cached SMS data due to request failure")
+ 			return lastSuccessfulSmsJsonContent
+@@ -315,10 +313,6 @@ func getJsonContent(cfg *Config) string {
+ 	// 2. Check HTTP status
+ 	if resp.StatusCode != http.StatusOK {
+ 		log.Printf("unexpected HTTP status: %s", resp.Status)
+-		if fallback := getSmsJsonFromModemManager(smsLimit); fallback != "" {
+-			lastSuccessfulSmsJsonContent = fallback
+-			return fallback
+-		}
+ 		// Return last successful result if we have one, otherwise return empty
+ 		if lastSuccessfulSmsJsonContent != "" {
+ 			log.Printf("Using cached SMS data due to HTTP error")

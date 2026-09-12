@@ -1,0 +1,11 @@
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -26,8 +26,3 @@ executable('pcat-manager',
+         thread_deps
+     ]
+ )
+-
+-executable('fm350-mm',
+-    ['fm350-mm.c'],
+-    install: true
+-)

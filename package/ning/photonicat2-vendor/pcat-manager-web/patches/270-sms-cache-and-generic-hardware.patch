@@ -1,0 +1,191 @@
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -125,6 +125,7 @@
+         self.last_recv_time = None
+         self.recv_in_progress = False
+         self.recv_lock = threading.Lock()
++        self.database_changed_callback = None
+         self.sms_notification_event = threading.Event()
+         self.modem_client.set_sms_notification_callback(
+             self._on_modem_sms_notification)
+@@ -135,12 +136,14 @@
+         self.ensure_hook_history_table(modem_db_path)
+         
+         connect_db(modem_db_path)
+-        print("SMS database initialization completed")
+-
+     def _on_modem_sms_notification(self, _line):
+-        """Wake the SMS worker when FM350 reports a new stored message."""
++        """Wake the SMS worker when the modem reports a stored message."""
+         self.sms_notification_event.set()
+ 
++    def set_database_changed_callback(self, callback):
++        """Register an in-process observer for Web cache invalidation."""
++        self.database_changed_callback = callback if callable(callback) else None
++
+     def _notify_database_changed(self):
+         """Notify the local display sidecar without sending message content."""
+         request = Request(
+@@ -154,6 +157,13 @@
+             # The database is authoritative. A stopped/restarting display
+             # sidecar must never make SMS receive or send fail.
+             pass
++        callback = self.database_changed_callback
++        if callback is not None:
++            try:
++                callback()
++            except Exception as error:
++                pcat_logger.logger.warning(
++                    "SMS database change callback failed: %s", error)
+ 
+     def _ensure_notification_session(self):
+         """Open the vendor-owned AT port and enable +CMTI notifications."""
+@@ -623,7 +633,6 @@
+         def escape_sql_string(value):
+             return str(value).replace("'", "''") if value is not None else ''
+ 
+-        print("save_sms_to_db: ", sms_list)
+         messages_to_delete = []  # Track messages to delete from modem after saving
+         inserted_count = 0
+         
+@@ -633,11 +642,9 @@
+             hash_digest = hashlib.sha256(payload.encode('utf-8')).hexdigest()
+             # Skip if exists
+             sql = "SELECT 1 FROM sms WHERE hash_digest = ?;"
+-            print("sql: ", sql, "params:", [hash_digest])
+             from database import get_rows_param
+             rows = get_rows_param(self.modem_db_path, sql, [hash_digest])
+             if len(rows) > 0:
+-                print(f"SMS already exists in database, skipping duplicate")
+                 # Still add to delete list if message exists in database but not yet deleted from modem
+                 message_index = sms.get('index')
+                 message_storage = sms.get('storage', 'SM')  # Default to SM if not specified
+@@ -675,19 +682,15 @@
+                 '{escape_sql_string(raw_json)}',
+                 '{escape_sql_string(created_at)}'
+             );"""
+-            print("complete_sql: ", complete_sql)
+-            
+             try:
+                 self.exec_sql(complete_sql)
+                 inserted_count += 1
+-                print(f"SMS saved to database successfully")
+                 
+                 # Add to delete list only after successful database save
+                 message_index = sms.get('index')
+                 message_storage = sms.get('storage', 'SM')  # Default to SM if not specified
+                 if message_index:
+                     messages_to_delete.append((message_index, message_storage))
+-                    print(f"Queued SMS index {message_index} from storage {message_storage} for deletion")
+                     
+             except Exception as e:
+                 print(f"Failed to save SMS to database: {e}")
+@@ -826,7 +829,6 @@
+             print("Cannot send SMS: WWAN powered off")
+             return False
+ 
+-        print(f"send_sms (pysms_tool): {send_to_number} - {sms_text}")
+         pcat_logger.logger.info(f"Sending SMS via pysms_tool to {send_to_number}")
+         send_success = False
+         
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -118,4 +118,5 @@
+ 
+     sms_client = PcSmsClient(pcat_config.modem_dev, modem_client, pcat_config.modem_db)
+     app.sms_client = sms_client
++    sms_client.set_database_changed_callback(web_app.notify_sms_changed)
+     sms_client.start()
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -111,7 +111,11 @@
+         sms_cache['timestamp'] = 0
+         sms_cache['fetch_in_progress'] = False
+         sms_cache['last_fetch_time'] = 0
+-        print("SMS cache invalidated")
++
++def notify_sms_changed():
++    """Publish a database revision after receive/send/delete completes."""
++    invalidate_sms_cache()
++    socketio.emit('sms_updated', {'timestamp': time.time()}, namespace='/')
+ 
+ # Helper function for robust HTTP requests
+ def robust_urlopen(url, timeout=20, max_retries=2):
+@@ -5951,8 +5955,9 @@
+     # Both FM350 and Qualcomm now store in qtemp_sensors as {"modem-ambient-usr": value, ...}
+     response_json["modem_temperature"] = pc_app.modem_client.basic.get("qtemp_sensors", "")
+     response_json["modem_temperature_decimal"] = pc_app.modem_client.basic.get("modem_temperature_decimal", "")
+-    response_json["thermal_sensors"] = pc_app.modem_client.basic.get(
+-        "fm350_temperature_sensors", {})
++    response_json["thermal_sensors"] = (
++        pc_app.modem_client.basic.get("fm350_temperature_sensors") or
++        pc_app.modem_client.basic.get("qtemp_sensors") or {})
+     response_json["modem_isp_details"] = pc_app.modem_client.basic.get("isp_details", "")
+     response_json["modem_network_info"] = pc_app.modem_client.basic.get("network_info", "")
+     response_json["modem_cell_id"] = pc_app.modem_client.basic.get("serving_cellid", "")
+@@ -6055,20 +6060,45 @@
+ 
+     interface = {
+         "up": False, "pending": False, "available": False,
+-        "device": "", "ipv4": "", "gateway": "", "dns": [],
++        "name": "", "device": "", "ipv4": "", "gateway": "", "dns": [],
+         "uptime": 0, "rx_bytes": 0, "tx_bytes": 0,
+     }
+     try:
+         result = subprocess.run(
+-            ["ubus", "call", "network.interface.wwan_fm350", "status"],
++            ["ubus", "call", "network.interface", "dump"],
+             capture_output=True, text=True, timeout=3, check=False)
+         if result.returncode == 0:
+-            status = json.loads(result.stdout)
++            candidates = []
++            for status in json.loads(result.stdout).get("interface", []):
++                name = str(status.get("interface") or "")
++                device = str(status.get("l3_device") or status.get("device") or "")
++                lowered = (name + " " + device).lower()
++                if name in ("loopback", "lan", "wan", "wifiwan"):
++                    continue
++                score = 0
++                if any(word in lowered for word in (
++                        "wwan", "cell", "modem", "mobile", "lte", "5g")):
++                    score += 8
++                if device.startswith(("wwan", "rmnet", "usb")):
++                    score += 5
++                if status.get("up"):
++                    score += 3
++                if status.get("available"):
++                    score += 1
++                if status.get("ipv4-address"):
++                    score += 6
++                if any(route.get("target") == "0.0.0.0"
++                       for route in status.get("route") or []):
++                    score += 2
++                if score:
++                    candidates.append((score, status))
++            status = max(candidates, key=lambda item: item[0])[1] if candidates else {}
+             addresses = status.get("ipv4-address") or []
+             routes = status.get("route") or []
+             default_route = next(
+                 (row for row in routes if row.get("target") == "0.0.0.0"), {})
+             interface.update({
++                "name": status.get("interface") or "",
+                 "up": bool(status.get("up")),
+                 "pending": bool(status.get("pending")),
+                 "available": bool(status.get("available")),
+@@ -6160,11 +6189,15 @@
+         if any(word in line.lower() for word in error_words)
+     ]
+ 
++    dialer_exec = str(log_meta.get("exec") or "").strip()
++    dialer_name = os.path.basename(dialer_exec.split()[0]) if dialer_exec else ""
++
+     return jsonify({
+         "status": "ok",
+         "generated_at": datetime.now().strftime("%H:%M:%S"),
+         "manager_pid": manager_pid,
+-        "dialer_pid": process_pid("fm350-mm"),
++        "dialer_name": dialer_name,
++        "dialer_pid": process_pid(dialer_name) if dialer_name else "",
+         "interface": interface,
+         "latest_signal": latest_signal,
+         "log": log_meta,

@@ -1,0 +1,48 @@
+--- pcat2-display-mini-1.0.0/processData.go
++++ pcat2-display-mini-1.0.0/processData.go
+@@ -227,6 +227,27 @@
+ 	return nil
+ }
+ 
++type StringOrIntMap string
++
++func (s *StringOrIntMap) UnmarshalJSON(data []byte) error {
++	var single string
++	if err := json.Unmarshal(data, &single); err == nil {
++		*s = StringOrIntMap(single)
++		return nil
++	}
++
++	var values map[string]int
++	if err := json.Unmarshal(data, &values); err != nil {
++		return err
++	}
++	encoded, err := json.Marshal(values)
++	if err != nil {
++		return err
++	}
++	*s = StringOrIntMap(encoded)
++	return nil
++}
++
+ type ModemBasicInfo struct {
+ 	CellCarrierInfo     string         `json:"cell_carrier_info"`
+ 	FirmwareVersion     string         `json:"firmware_version"`
+@@ -242,7 +263,7 @@
+ 	ModemRoamPref       string         `json:"modem_roam_pref"`
+ 	ModemServingInfo    string         `json:"modem_serving_info"`
+ 	ModemServingQuality string         `json:"modem_serving_quality"`
+-	ModemTemperature    map[string]int `json:"modem_temperature"`
++	ModemTemperature    StringOrIntMap `json:"modem_temperature"`
+ 	ModemUSBSpeed       string         `json:"modem_usb_speed"`
+ 	ModemUSBNetMode     string         `json:"modem_usbnet_mode"`
+ 	ModemValid          bool           `json:"modem_valid"`
+@@ -590,7 +611,7 @@
+ 				globalData.Store("SMSCheckInterval", mb.SMSCheckInterval)
+ 				globalData.Store("SMSForward", mb.SMSForward)
+ 				globalData.Store("SMSForwardTo", mb.SMSForwardTo)
+-				globalData.Store("ModemTemperature", mb.ModemTemperature)
++				globalData.Store("ModemTemperature", string(mb.ModemTemperature))
+ 			}
+ 		}
+ 	}

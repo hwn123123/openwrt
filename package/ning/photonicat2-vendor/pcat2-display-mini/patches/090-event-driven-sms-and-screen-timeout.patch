@@ -1,0 +1,425 @@
+--- a/processSms.go
++++ b/processSms.go
+@@ -56,12 +56,16 @@
+ 	// with a non-blocking send: coalescing several rapid theme saves into one
+ 	// re-render is exactly the desired behaviour.
+ 	smsRerender = make(chan struct{}, 1)
+-	
++	// smsDatabaseSignal is emitted by the local sidecar long-poll endpoint.
++	// It carries no SMS content; the display reads the independent SQLite view
++	// only after the database has actually changed.
++	smsDatabaseSignal = make(chan struct{}, 1)
++
+ 	// The first successful fetch establishes a baseline so rebooting does not
+ 	// pop up every old message. Subsequent previously unseen received-message
+ 	// keys cause exactly one display notification.
+ 	smsNotificationInitialized bool
+-	seenReceivedSms             = make(map[string]struct{})
++	seenReceivedSms            = make(map[string]struct{})
+ 
+ 	// Memory pool for SMS images to reduce allocations
+ 	smsImagePool = sync.Pool{
+@@ -173,6 +177,57 @@
+ 	}
+ }
+ 
++type smsEventResponse struct {
++	Version int64 `json:"version"`
++	Changed bool  `json:"changed"`
++}
++
++func watchSmsDatabaseEvents() {
++	client := &http.Client{Timeout: 65 * time.Second}
++	var since int64
++	connected := false
++	failureLogged := false
++	for {
++		url := fmt.Sprintf(
++			"http://127.0.0.1:8092/v1/sms/events?since=%d&timeout=55", since)
++		resp, err := client.Get(url)
++		if err != nil {
++			if !failureLogged {
++				log.Printf("SMS event listener unavailable: %v", err)
++				failureLogged = true
++			}
++			connected = false
++			time.Sleep(5 * time.Second)
++			continue
++		}
++		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
++		resp.Body.Close()
++		var event smsEventResponse
++		if resp.StatusCode != http.StatusOK || readErr != nil ||
++			secureUnmarshal(body, &event) != nil || event.Version <= 0 {
++			if !failureLogged {
++				log.Printf("SMS event listener received an invalid response")
++				failureLogged = true
++			}
++			connected = false
++			time.Sleep(5 * time.Second)
++			continue
++		}
++
++		// Signal once on initial connection/recovery so startup cannot miss a
++		// database change that happened while the sidecar was unavailable.
++		if !connected || event.Changed {
++			select {
++			case smsDatabaseSignal <- struct{}{}:
++			default:
++			}
++		}
++		connected = true
++		failureLogged = false
++		since = event.Version
++	}
++}
++
+ // signalSmsNotification wakes the render loop without blocking the SMS
+ // collector. Multiple messages arriving in one modem poll are intentionally
+ // coalesced into one jump to the SMS page.
+@@ -356,7 +411,7 @@
+ 	if isValidSmsResponse(result) {
+ 		lastSuccessfulSmsJsonContent = result
+ 	}
+-	
++
+ 	return result
+ }
+ 
+@@ -464,9 +519,9 @@
+ 
+ 	// Prepare pagination
+ 	type Line struct {
+-		Text        string
+-		IsTitle     bool
+-		IsSentByMe  bool
++		Text          string
++		IsTitle       bool
++		IsSentByMe    bool
+ 		MessageSender string
+ 	}
+ 
+@@ -487,7 +542,7 @@
+ 	for _, msg := range smsData.Msg {
+ 		timestamp, _ := time.Parse(layout, msg.Timestamp)
+ 		formattedTime := timestamp.Format(titleTimeLayout)
+-		
++
+ 		// Change display: show "> number" instead of "me" for sent messages
+ 		var displaySender string
+ 		if msg.Sender == "me" && msg.To != "" {
+@@ -495,10 +550,10 @@
+ 		} else {
+ 			displaySender = msg.Sender
+ 		}
+-		
++
+ 		title := fmt.Sprintf("%s|%s", displaySender, formattedTime)
+ 		message := msg.Content
+-		
++
+ 		// Check if this is a sent message from "me" with status "SENT"
+ 		isSentByMe := msg.Sender == "me" && msg.Status == "SENT"
+ 
+@@ -546,8 +601,7 @@
+ 	}
+ 
+ 	// Render pages to PNG
+-	for i, page := range pages {
+-		fmt.Printf("Rendering page %d\n", i)
++	for _, page := range pages {
+ 		// Use pooled image buffer
+ 		img := smsImagePool.Get().(*image.RGBA)
+ 		// Clear the image before use
+@@ -621,7 +675,7 @@
+ 					// Received: the theme's primary colour (yellow unthemed)
+ 					fc.SetSrc(image.NewUniform(smsRecvColor))
+ 				}
+-				
++
+ 				pt := freetype.Pt(xStart, int(y+fontSize))
+ 				_, err := fc.DrawString(line.Text, pt)
+ 				if err != nil {
+@@ -782,60 +836,29 @@
+ }
+ 
+ func getSmsPages() {
+-	firstFetchComplete := false
+-	startupRetryInterval := 3 * time.Second
+-
+-	getSmsInterval := func() time.Duration {
+-		if !firstFetchComplete {
+-			return startupRetryInterval
+-		}
+-		// Same 1-minute cadence as other dynamic data (idle and active).
+-		return baseSmsInterval
+-	}
++	go watchSmsDatabaseEvents()
+ 
+-	// Try to collect SMS immediately on startup
++	// Establish the baseline once at startup. Afterwards the display performs
++	// no periodic SMS requests; it wakes only for a sidecar change event or an
++	// explicit local theme/config repaint.
+ 	if cfg.ShowSms {
+-		log.Println("Startup: attempting immediate SMS fetch...")
+ 		lenSmsPagesImages = collectAndDrawSms(&cfg)
+ 		if lenSmsPagesImages == 0 {
+ 			lenSmsPagesImages = 1
+ 		}
+-		if lenSmsPagesImages > 0 && lastSuccessfulSmsJsonContent != "" {
+-			firstFetchComplete = true
+-			log.Println("Startup: SMS fetch successful on first try, lenSmsPagesImages:", lenSmsPagesImages)
+-		} else {
+-			log.Println("Startup: SMS fetch failed, will retry every 3 seconds...")
+-		}
+ 		totalNumPages = cfgNumPages + lenSmsPagesImages
+ 	}
+ 
+-	ticker := time.NewTicker(getSmsInterval())
+-	defer ticker.Stop()
+-
+ 	for {
+-		// Either the poll interval elapsed or a config remerge asked for an
+-		// immediate repaint (theme change).
+ 		select {
+-		case <-ticker.C:
++		case <-smsDatabaseSignal:
+ 		case <-smsRerender:
+ 		}
+ 		if cfg.ShowSms {
+-			if !firstFetchComplete {
+-				log.Println("Startup retry: attempting SMS fetch...")
+-			}
+ 			lenSmsPagesImages = collectAndDrawSms(&cfg)
+ 			if lenSmsPagesImages == 0 {
+ 				lenSmsPagesImages = 1
+ 			}
+-
+-			// Check if this is the first successful fetch
+-			if !firstFetchComplete && lastSuccessfulSmsJsonContent != "" {
+-				firstFetchComplete = true
+-				log.Println("First successful SMS fetch! Switching to normal interval. lenSmsPagesImages:", lenSmsPagesImages)
+-				ticker.Stop()
+-				ticker = time.NewTicker(getSmsInterval())
+-			}
+-
+ 			totalNumPages = cfgNumPages + lenSmsPagesImages
+ 		} else {
+ 			// SMS disabled - only JSON config pages
+--- a/main.go
++++ b/main.go
+@@ -60,20 +60,19 @@
+ 	STATE_FADE_OUT = 3
+ 	STATE_OFF      = 4
+ 
+-	DEFAULT_FPS               = 3
++	DEFAULT_FPS = 3
+ 	// SCROLL_FPS is the frame rate used only while a text value is actively
+ 	// scrolling as a ticker (long SSID/IP/etc.). It is high enough for smooth
+ 	// motion; the loop drops back to DEFAULT_FPS the moment nothing overflows,
+ 	// so idle power draw is unchanged.
+-	SCROLL_FPS                = 30
+-	DEFAULT_IDLE_TIMEOUT      = 60 * time.Second
+-	ON_CHARGING_IDLE_TIMEOUT  = 365 * 86400 * time.Second
+-	KEYBOARD_DEBOUNCE_TIME    = 40 * time.Millisecond
+-	ZERO_BACKLIGHT_DELAY      = 5 * time.Second
+-	OFF_TIMEOUT               = 3 * time.Second
+-	// Dynamic data (SMS, and anything not shown on the current page) refreshes
+-	// once a minute whether the screen is on or idle-dark, so wake shows current
+-	// values without a burst of collectors.
++	SCROLL_FPS               = 30
++	DEFAULT_IDLE_TIMEOUT     = 60 * time.Second
++	ON_CHARGING_IDLE_TIMEOUT = 365 * 86400 * time.Second
++	KEYBOARD_DEBOUNCE_TIME   = 40 * time.Millisecond
++	ZERO_BACKLIGHT_DELAY     = 5 * time.Second
++	OFF_TIMEOUT              = 3 * time.Second
++	// Dynamic data not shown on the current page refreshes once a minute.
++	// SMS is event-driven through the local sidecar and has no polling cadence.
+ 	INTERVAL_DATA_COLLECT = 60 * time.Second
+ 	// Ping is page-sensitive: when the screen is awake and the current page
+ 	// shows Ping0/Ping1, poll at 1 Hz; otherwise the same 1-minute cadence.
+@@ -89,10 +88,6 @@
+ 	// collectors together so every value on page 0 stays live.
+ 	INTERVAL_PAGE0_ACTIVE = 500 * time.Millisecond
+ 	INTERVAL_PAGE0_IDLE   = INTERVAL_DATA_COLLECT
+-	// The vendor SMS backend throttles modem reads to roughly eight seconds.
+-	// Poll just above that limit so an incoming message reaches the display
+-	// promptly without increasing access to the modem's AT port.
+-	INTERVAL_SMS_COLLECT = 10 * time.Second
+ 	// Link status (carrier-aware egress + public-IP flush/reprobe): fast while
+ 	// the screen is awake so unplug/plug updates the top-bar icon and PUBLIC
+ 	// IP row within a couple of seconds on any page; relaxed when dark.
+@@ -145,21 +140,21 @@
+ 
+ 	frameMutex sync.RWMutex
+ 	// Optimized buffer manager
+-	bufferManager   *BufferManager
+-	frames          int
+-	dataMutex       sync.RWMutex
+-	dynamicData     map[string]string
+-	imageCache      map[string]*image.RGBA
+-	imageCacheMu    sync.RWMutex
+-	cfg             Config
+-	dftCfg          Config
+-	userCfg         Config
+-	currPageIdx     int
+-	fonts              map[string]FontConfig
+-	assetsPrefix       = "."
+-	globalData         sync.Map
+-	autoRotatePages    = false
+-	customMetricsMgr   *CustomMetricManager
++	bufferManager    *BufferManager
++	frames           int
++	dataMutex        sync.RWMutex
++	dynamicData      map[string]string
++	imageCache       map[string]*image.RGBA
++	imageCacheMu     sync.RWMutex
++	cfg              Config
++	dftCfg           Config
++	userCfg          Config
++	currPageIdx      int
++	fonts            map[string]FontConfig
++	assetsPrefix     = "."
++	globalData       sync.Map
++	autoRotatePages  = false
++	customMetricsMgr *CustomMetricManager
+ 
+ 	// Frame buffer pool is now managed by BufferManager
+ 
+@@ -179,12 +174,10 @@
+ 	battChargingStatus = false
+ 	battSOC            = 0
+ 
+-	// Collection intervals. SMS stays at 1 minute; ping, linux stats and page-0
+-	// data change with page/idle state (see currentPingInterval /
++	// Collection intervals for ping, linux stats and page-0 data change with
++	// page/idle state (see currentPingInterval /
+ 	// currentLinuxInterval / currentPage0Interval). These runtime vars just
+ 	// mirror the live cadence for the HTTP status page and diagnostics.
+-	baseSmsInterval = INTERVAL_SMS_COLLECT
+-
+ 	batteryDataInterval   = INTERVAL_DATA_COLLECT
+ 	dataGatherInterval    = INTERVAL_DATA_COLLECT
+ 	networkGatherInterval = INTERVAL_DATA_COLLECT
+@@ -386,21 +379,21 @@
+ 
+ // DisplayElement represents one UI element to render.
+ type DisplayElement struct {
+-	Type        string       `json:"type"`
+-	Label       string       `json:"label"`
+-	Position    Position     `json:"position"`
+-	Font        string       `json:"font,omitempty"`
+-	Color       []int        `json:"color,omitempty"`
+-	Units       string       `json:"units,omitempty"`
+-	DataKey     string       `json:"data_key,omitempty"`
++	Type     string   `json:"type"`
++	Label    string   `json:"label"`
++	Position Position `json:"position"`
++	Font     string   `json:"font,omitempty"`
++	Color    []int    `json:"color,omitempty"`
++	Units    string   `json:"units,omitempty"`
++	DataKey  string   `json:"data_key,omitempty"`
+ 	// LabelDataKey, when set on an hbar, loads a string (e.g. MemUsage "3.2/16")
+ 	// drawn centered over the bar; Units is appended if present ("GB" → "3.2/16GB").
+-	LabelDataKey string       `json:"label_data_key,omitempty"`
+-	UnitsFont    string       `json:"units_font,omitempty"`
++	LabelDataKey string `json:"label_data_key,omitempty"`
++	UnitsFont    string `json:"units_font,omitempty"`
+ 	// UnitsDy nudges the units text vertically off wherever it would otherwise
+ 	// land (negative = up, positive = down). A fine-tuning knob; for stacking
+ 	// the unit under the value use UnitsBelow.
+-	UnitsDy      int          `json:"units_dy,omitempty"`
++	UnitsDy int `json:"units_dy,omitempty"`
+ 	// UnitsBelow, when > 0, moves the units onto their own line under the
+ 	// value's left edge, with exactly this many pixels of clear space between
+ 	// the two inks. Trailing units share the value's baseline 1px past its
+@@ -408,12 +401,12 @@
+ 	// against the GPS page's 62px speed digits the 12px "km/h" ends up nested
+ 	// in the digits' bottom-right corner, and the panel has no spare width to
+ 	// push it further right. 0 (the default) keeps the trailing placement.
+-	UnitsBelow   int          `json:"units_below,omitempty"`
+-	IconPath     string       `json:"icon_path,omitempty"`
+-	Enable       int          `json:"enable,omitempty"`
+-	Size         *Size        `json:"size,omitempty"`         // for icons, if provided
+-	Size2        *Size        `json:"_size,omitempty"`        // sometimes provided as _size
+-	GraphConfig  *GraphConfig `json:"graph_config,omitempty"` // for graph elements
++	UnitsBelow  int          `json:"units_below,omitempty"`
++	IconPath    string       `json:"icon_path,omitempty"`
++	Enable      int          `json:"enable,omitempty"`
++	Size        *Size        `json:"size,omitempty"`         // for icons, if provided
++	Size2       *Size        `json:"_size,omitempty"`        // sometimes provided as _size
++	GraphConfig *GraphConfig `json:"graph_config,omitempty"` // for graph elements
+ 	// AnchorAfterDataKey, when set on an icon, positions the icon immediately to
+ 	// the right of the named text data_key's rendered value (Position.X is then
+ 	// the text's start x, and the icon is offset by the measured text width plus
+@@ -444,12 +437,12 @@
+ 
+ // Config represents the overall config JSON.
+ type Config struct {
+-	ScreenDimmerTimeOnBatterySeconds int                 `json:"screen_dimmer_time_on_battery_seconds"`
+-	ScreenDimmerTimeOnDCSeconds      int                 `json:"screen_dimmer_time_on_dc_seconds"`
+-	ScreenMaxBrightness              int                 `json:"screen_max_brightness"`
+-	ScreenMinBrightness              int                 `json:"screen_min_brightness"`
+-	PingSite0                        string              `json:"ping_site0"`
+-	PingSite1                        string              `json:"ping_site1"`
++	ScreenDimmerTimeOnBatterySeconds int    `json:"screen_dimmer_time_on_battery_seconds"`
++	ScreenDimmerTimeOnDCSeconds      int    `json:"screen_dimmer_time_on_dc_seconds"`
++	ScreenMaxBrightness              int    `json:"screen_max_brightness"`
++	ScreenMinBrightness              int    `json:"screen_min_brightness"`
++	PingSite0                        string `json:"ping_site0"`
++	PingSite1                        string `json:"ping_site1"`
+ 	// PingType0/1 select each row's probe: "icmp" (default), "tcp" (one TCP
+ 	// handshake to host[:port], port 443 when omitted), "http" or "https"
+ 	// (one GET, gen_204 style — any HTTP response counts; https times the
+@@ -462,12 +455,12 @@
+ 	// forces the shipped value, so a stale copy in user_config never wins.
+ 	// History: 100 = pre-versioned scheme, 101 = ping_type0/1 (tcp/http
+ 	// ping), 102 = "https" ping type.
+-	ConfigVersion int `json:"config_version,omitempty"`
+-	DisplayTemplate                  DisplayTemplate     `json:"display_template"`
+-	ShowSms                          bool                `json:"show_sms"`
+-	SmsLimitForScreen                int                 `json:"sms_limit_for_screen"`
+-	CustomMetrics                    CustomMetricsConfig `json:"custom_metrics,omitempty"`
+-	PublicIPLookup                   PublicIPLookup      `json:"public_ip_lookup,omitempty"`
++	ConfigVersion     int                 `json:"config_version,omitempty"`
++	DisplayTemplate   DisplayTemplate     `json:"display_template"`
++	ShowSms           bool                `json:"show_sms"`
++	SmsLimitForScreen int                 `json:"sms_limit_for_screen"`
++	CustomMetrics     CustomMetricsConfig `json:"custom_metrics,omitempty"`
++	PublicIPLookup    PublicIPLookup      `json:"public_ip_lookup,omitempty"`
+ 	// ColorTheme is the name of the color theme the web UI last applied. The
+ 	// firmware only round-trips it so the UI can highlight the active theme.
+ 	ColorTheme string `json:"color_theme,omitempty"`
+@@ -1645,10 +1638,7 @@
+ 				}
+ 				now := time.Now()
+ 				fps = 100 / now.Sub(lastUpdate).Seconds()
+-				log.Printf("FPS: %0.1f, Total Frames: %d\n", fps, middleFrames)
+ 				lastUpdate = now
+-				log.Printf("Pages: total=%d, current=%d, cfg=%d, sms=%d, showSms=%t",
+-					totalNumPages, currPageIdx, cfgNumPages, lenSmsPagesImages, cfg.ShowSms)
+ 			}
+ 		} else {
+ 			time.Sleep(50 * time.Millisecond) //not inf loop
+--- a/config.json
++++ b/config.json
+@@ -30,7 +30,7 @@
+     "show_sms": true,
+     "sms_limit_for_screen": 50,
+     "screen_dimmer_time_on_battery_seconds": 60,
+-    "screen_dimmer_time_on_dc_seconds": 86400,
++    "screen_dimmer_time_on_dc_seconds": 300,
+     "screen_max_brightness": 100,
+     "screen_min_brightness": 0,
+     "display_template": {
+--- a/processData.go
++++ b/processData.go
+@@ -2332,7 +2332,6 @@
+ 		ipStr, err := fetchOnePublicIP(src, userAgent, wantV6)
+ 		if err != nil {
+ 			lastErr = err
+-			log.Printf("public IP lookup via %s failed: %v", src.URL, err)
+ 			continue
+ 		}
+ 		return ipStr, nil
+

@@ -1,0 +1,20 @@
+--- a/app/templates/device_control.html
++++ b/app/templates/device_control.html
+@@ -181,7 +181,7 @@
+         <div class="mb-6">
+           <div class="flex items-start space-x-2 sm:space-x-4">
+             <div class="flex flex-col flex-wrap">
+-              <div class="flex items-center w-40 text-gray-700 mb-2"><img :src="getInterfaceIcon(onboard_wifi_enabled, '/static/wifi_active.svg', '/static/wifi_inactive.svg')" class="mr-2 h-6 w-6"/>Onboard WiFi</div>
++              <div class="flex items-center w-40 text-gray-700 mb-2"><img :src="getInterfaceIcon(onboard_wifi_enabled, '/static/wifi_active.svg', '/static/wifi_inactive.svg')" class="mr-2 h-6 w-6"/>{{locales["onboard_wifi"]}}</div>
+               <label class="relative flex cursor-pointer items-center" :class="isInterfaceUnknown(onboard_wifi_enabled) ? 'opacity-60' : ''">
+                 <input class="peer sr-only" type="checkbox" :checked="isInterfaceChecked(onboard_wifi_enabled)" @change="onboard_wifi_enabled = $event.target.checked" :disabled="isInterfaceUnknown(onboard_wifi_enabled)" />
+                 <div
+@@ -198,7 +198,7 @@
+         <div class="mb-6">
+           <div class="flex items-start space-x-2 sm:space-x-4">
+             <div class="flex flex-col flex-wrap">
+-              <div class="flex items-center w-40 text-gray-700 mb-2"><img :src="getInterfaceIcon(pcie_wifi_enabled, '/static/wifi_active.svg', '/static/wifi_inactive.svg')" class="mr-2 h-6 w-6"/>PCIE WiFi</div>
++              <div class="flex items-center w-40 text-gray-700 mb-2"><img :src="getInterfaceIcon(pcie_wifi_enabled, '/static/wifi_active.svg', '/static/wifi_inactive.svg')" class="mr-2 h-6 w-6"/>{{locales["pcie_wifi"]}}</div>
+               <label class="relative flex cursor-pointer items-center" :class="isInterfaceUnknown(pcie_wifi_enabled) ? 'opacity-60' : ''">
+                 <input class="peer sr-only" type="checkbox" :checked="isInterfaceChecked(pcie_wifi_enabled)" @change="pcie_wifi_enabled = $event.target.checked" :disabled="isInterfaceUnknown(pcie_wifi_enabled)" />
+                 <div

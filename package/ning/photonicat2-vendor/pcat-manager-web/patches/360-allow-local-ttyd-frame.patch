@@ -1,0 +1,27 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -407,6 +407,10 @@
+     response.headers['X-Content-Type-Options'] = 'nosniff'
+     response.headers['X-XSS-Protection'] = '1; mode=block'
+     response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
++    terminal_hostname = urllib.parse.urlsplit(request.host_url).hostname or '192.168.66.1'
++    if ':' in terminal_hostname:
++        terminal_hostname = '[' + terminal_hostname + ']'
++    terminal_frame_origin = 'http://{}:7681'.format(terminal_hostname)
+     # CSP allowing inline scripts for AlpineJS but restricting other sources
+     response.headers['Content-Security-Policy'] = ("default-src 'self'; "
+                                                    "script-src 'self' 'unsafe-inline' 'unsafe-eval'; "
+@@ -414,6 +418,7 @@
+                                                    "img-src 'self' data:; "
+                                                    "connect-src 'self' ws: wss: *; "
+                                                    "font-src 'self'; "
++                                                   f"frame-src 'self' {terminal_frame_origin}; "
+                                                    "object-src 'none'; "
+                                                    "base-uri 'self';")
+     # Cache static assets for 3 months; versioned files (?v=) are cache-busted on deploy
+@@ -8468,4 +8473,3 @@
+ 
+     locales.update(base_locales())
+     return render_template(nt.terminal_file_name, locales=locales)
+-
+

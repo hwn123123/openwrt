@@ -1,0 +1,61 @@
+--- a/processSms.go
++++ b/processSms.go
+@@ -286,6 +286,22 @@ func collectAndDrawSms(cfg *Config) int {
+ 	return numPages
+ }
+ 
++// isValidSmsResponse validates the sidecar contract rather than using the
++// response byte length as a proxy for success.  An empty inbox is returned as
++// {"msg":[]} (exactly ten bytes) and is a perfectly successful response.
++func isValidSmsResponse(content string) bool {
++	var envelope map[string]interface{}
++	if content == "" || secureUnmarshal([]byte(content), &envelope) != nil {
++		return false
++	}
++	messages, exists := envelope["msg"]
++	if !exists {
++		return false
++	}
++	_, isArray := messages.([]interface{})
++	return isArray
++}
++
+ func getJsonContent(cfg *Config) string {
+ 	// Use config value or default to 10 if not specified
+ 	smsLimit := 10
+@@ -337,8 +351,8 @@ func getJsonContent(cfg *Config) string {
+ 
+ 	result := string(data)
+ 	// Cache successful result
+-	if len(result) > 10 { // Basic validation that we got actual data
++	if isValidSmsResponse(result) {
+ 		lastSuccessfulSmsJsonContent = result
+ 	}
+ 	
+ 	return result
+--- /dev/null
++++ b/smsFetch_test.go
+@@ -0,0 +1,23 @@
++package main
++
++import "testing"
++
++func TestIsValidSmsResponseAcceptsEmptyInbox(t *testing.T) {
++	if !isValidSmsResponse(`{"msg":[]}`) {
++		t.Fatal("an empty SMS list is a successful sidecar response")
++	}
++}
++
++func TestIsValidSmsResponseAcceptsMessages(t *testing.T) {
++	if !isValidSmsResponse(`{"msg":[{"id":1,"content":"test"}]}`) {
++		t.Fatal("a populated SMS list must be accepted")
++	}
++}
++
++func TestIsValidSmsResponseRejectsInvalidPayloads(t *testing.T) {
++	for _, payload := range []string{"", `{}`, `{"msg":null}`, `{"msg":"bad"}`, `{bad`} {
++		if isValidSmsResponse(payload) {
++			t.Fatalf("invalid SMS response accepted: %q", payload)
++		}
++	}
++}

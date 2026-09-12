@@ -1,0 +1,79 @@
+--- a/src/pmu-manager.c
++++ b/src/pmu-manager.c
+@@ -143,6 +143,7 @@ typedef struct _PCatPMUManagerData
+     PCatPMUManagerCommandData *dev_write_current_command_data;
+     GQueue *dev_write_command_queue;
+ 
++    gboolean shutdown_pending;
+     gboolean shutdown_request;
+     gboolean shutdown_planned;
+ 
+@@ -378,8 +379,8 @@ static inline guint16 pcat_pmu_compute_crc16(const guint8 *data,
+ static void pcat_pmu_poweroff_request(PCatPMUManagerData *pmu_data)
+ {
+     GError *error = NULL;
+ 
+-    if(pmu_data->shutdown_request)
++    if(pmu_data->shutdown_pending || pmu_data->shutdown_request)
+     {
+         return;
+     }
+@@ -402,6 +403,41 @@ static void pcat_pmu_poweroff_request(PCatPMUManagerData *pmu_data)
+     }
+ }
+ 
++/* The PMU reports this only for a physical long press.  Play the same
++ * one-shot tone exposed by the native beeper control, then start the normal
++ * shutdown path.  Scheduled and web-triggered poweroffs stay unchanged. */
++static gboolean pcat_pmu_physical_poweroff_timeout(gpointer user_data)
++{
++    PCatPMUManagerData *pmu_data = (PCatPMUManagerData *)user_data;
++
++    pmu_data->shutdown_pending = FALSE;
++    pcat_pmu_poweroff_request(pmu_data);
++
++    return G_SOURCE_REMOVE;
++}
++
++static void pcat_pmu_physical_poweroff_request(PCatPMUManagerData *pmu_data)
++{
++    const guint16 tone_hz[] = {2700};
++    const guint16 tone_ms[] = {300};
++
++    if(pmu_data->shutdown_pending || pmu_data->shutdown_request)
++    {
++        return;
++    }
++
++    if(!pmu_data->beeper_state)
++    {
++        pcat_pmu_poweroff_request(pmu_data);
++        return;
++    }
++
++    pcat_pmu_manager_beeper_play(tone_hz, tone_ms,
++        G_N_ELEMENTS(tone_hz), FALSE);
++    pmu_data->shutdown_pending = TRUE;
++    g_timeout_add(300, pcat_pmu_physical_poweroff_timeout, pmu_data);
++}
++
+ static gboolean pcat_pmu_pm_dev_write_watch_func(GIOChannel *source,
+     GIOCondition condition, gpointer user_data)
+ {
+@@ -1215,7 +1246,7 @@ static gboolean pcat_pmu_pm_dev_read_watch_func(GIOChannel *source,
+                 {
+                     case PCAT_PMU_MANAGER_COMMAND_PMU_REQUEST_SHUTDOWN:
+                     {
+-                        pcat_pmu_poweroff_request(pmu_data);
++                        pcat_pmu_physical_poweroff_request(pmu_data);
+ 
+                         if(need_ack)
+                         {
+@@ -2226,6 +2257,7 @@ gboolean pcat_pmu_manager_init()
+         return TRUE;
+     }
+ 
++    g_pcat_pmu_manager_data.shutdown_pending = FALSE;
+     g_pcat_pmu_manager_data.shutdown_request = FALSE;
+     g_pcat_pmu_manager_data.charger_on_auto_start_last_timestamp =
+         g_get_monotonic_time();

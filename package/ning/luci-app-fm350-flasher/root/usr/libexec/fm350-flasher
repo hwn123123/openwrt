@@ -1,0 +1,1999 @@
+#!/usr/bin/python3
+"""Guarded FM350-GL backup and firmware flashing helper for LuCI.
+
+Large files live in an explicitly enabled persistent workspace.  The helper
+accepts only the known MT6880 FM350 layout, refuses device-unique identity/NV
+partitions, requires a full backup, and sends the validated Scatter to the
+signed DA's standard FLASH-UPDATE workflow.  A writable WWAN rfkill node is used when available;
+otherwise the operator is prompted to power-cycle the modem.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import importlib.util
+import json
+import os
+import pathlib
+import re
+import select
+import shutil
+import subprocess
+import sys
+import tarfile
+import time
+import uuid
+import xml.etree.ElementTree as ET
+import zipfile
+from datetime import datetime, timezone
+
+
+UCI_CONFIG = "fm350-flasher"
+UCI_SECTION = "main"
+DEFAULT_WORKSPACE = "/fm350-workspace"
+WORKSPACE_MARKER = ".fm350-workspace-v1"
+MIN_WORKSPACE_BYTES = 2 * 1024 * 1024 * 1024
+FORBIDDEN_WORKSPACES = {
+    pathlib.Path("/"), pathlib.Path("/tmp"), pathlib.Path("/var"),
+    pathlib.Path("/etc"), pathlib.Path("/usr"), pathlib.Path("/overlay"),
+    pathlib.Path("/rom"), pathlib.Path("/dev"), pathlib.Path("/proc"),
+    pathlib.Path("/sys"), pathlib.Path("/run"), pathlib.Path("/mnt"),
+    pathlib.Path("/media"),
+}
+
+
+def uci_get(option, default=""):
+    override = os.environ.get(f"FM350_FLASHER_{option.upper()}")
+    if override is not None:
+        return override
+    command = shutil.which("uci") or "/sbin/uci"
+    try:
+        result = subprocess.run(
+            [command, "-q", "get", f"{UCI_CONFIG}.{UCI_SECTION}.{option}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, timeout=5, check=False,
+        )
+        value = result.stdout.strip()
+        return value if result.returncode == 0 and value else default
+    except (OSError, subprocess.SubprocessError):
+        return default
+
+
+STATE_ROOT = pathlib.Path(uci_get("workspace", DEFAULT_WORKSPACE))
+LEGACY_PACKAGE_DIR = STATE_ROOT / "package"
+LEGACY_FIRMWARE_IMPORT_RESULT = STATE_ROOT / "firmware-import.json"
+FIRMWARE_LIBRARY = STATE_ROOT / "firmwares"
+FIRMWARE_SELECTION = STATE_ROOT / "firmware-selection.json"
+FIRMWARE_MIGRATION_MARKER = STATE_ROOT / ".firmware-library-v1"
+BACKUP_PATH = STATE_ROOT / "fm350-full-backup.bin"
+BACKUP_META = STATE_ROOT / "backup.json"
+JOB_PATH = STATE_ROOT / "job.json"
+UPLOAD_FIRMWARE = pathlib.Path("/tmp/fm350-firmware-upload")
+UPLOAD_BACKUP = pathlib.Path("/tmp/fm350-backup-upload")
+MTK_ROOT = pathlib.Path("/usr/lib/mtkclient")
+MTK_SCRIPT = MTK_ROOT / "mtk.py"
+
+EXPECTED_PLATFORM = "MT6880"
+EXPECTED_PROJECT = "k6880v1_mdot2_datacard"
+MTK_USB_VENDOR = "0e8d"
+DOWNLOAD_USB_IDS = {"0e8d:7101", "0e8d:2000", "0e8d:0003"}
+USB_MODES = {
+    "0e8d:7127": "正常 USB/RNDIS",
+    "0e8d:7101": "恢复/DA 模式",
+    "0e8d:2000": "Preloader 下载模式",
+    "0e8d:0003": "BootROM 模式",
+}
+
+PROTECTED_PARTITIONS = {
+    "proinfo", "misc", "expdb", "nvcfg", "nvdata", "protect1", "protect2",
+    "seccfg", "boot_para", "nvram", "cfginfo", "mddata_bak", "mdcode_bak",
+    "user_data", "pmt",
+}
+DEVICE_BOOTCHAIN_PARTITIONS = {"preloader", "para", "loader_ext1", "loader_ext2"}
+REQUIRED_UPDATE_PARTITIONS = {"md1img", "md1dsp", "lk", "lk2", "boot", "rootfs"}
+
+# The service guide specifies the inclusive range 0x0..0x1feffffe as a
+# 0x1fefffff-byte readback.  The signed DA rejects a 0x1ff00000 request.
+FULL_BACKUP_BYTES = 0x1FEFFFFF
+NAND_LIMIT = 0x1FF00000
+MAX_ARCHIVE_ENTRIES = 4096
+MAX_EXTRACTED_BYTES = 512 * 1024 * 1024
+MAX_FIRMWARE_UPLOAD = 300 * 1024 * 1024
+MAX_LOG_LINES = 600
+MANAGED_SERVICES = (
+    "pcat2-display-mini",
+    "pcat-sidecar",
+    "pcat-manager",
+    "modemmanager",
+)
+
+
+class FlasherError(RuntimeError):
+    pass
+
+
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def human_bytes(value):
+    number = float(int(value or 0))
+    for unit in ("B", "KiB", "MiB", "GiB"):
+        if number < 1024 or unit == "GiB":
+            return f"{int(number)} B" if unit == "B" else f"{number:.1f} {unit}"
+        number /= 1024
+    return "0 B"
+
+
+def empty_job(message="当前没有任务"):
+    return {
+        "id": "", "kind": "", "state": "idle", "progress": 0,
+        "message": message, "logs": [], "pid": 0,
+    }
+
+
+def normalized_workspace(value):
+    raw = str(value or "").strip()
+    if not raw.startswith("/"):
+        raise FlasherError("工作区必须使用绝对路径")
+    candidate = pathlib.Path(raw).resolve(strict=False)
+    if candidate in FORBIDDEN_WORKSPACES:
+        raise FlasherError("不能把系统目录或临时目录直接作为刷写工作区")
+    protected_trees = (
+        pathlib.Path("/tmp"), pathlib.Path("/var"), pathlib.Path("/etc"),
+        pathlib.Path("/usr"), pathlib.Path("/overlay"), pathlib.Path("/rom"),
+        pathlib.Path("/dev"), pathlib.Path("/proc"), pathlib.Path("/sys"),
+        pathlib.Path("/run"),
+    )
+    if any(prefix in candidate.parents for prefix in protected_trees):
+        raise FlasherError("工作区不能放在系统目录或易失性目录中")
+    if len(candidate.parts) > 8:
+        raise FlasherError("工作区目录层级过深")
+    return candidate
+
+
+def nearest_existing(path):
+    candidate = path
+    while not candidate.exists() and candidate != candidate.parent:
+        candidate = candidate.parent
+    if not candidate.exists() or not candidate.is_dir():
+        raise FlasherError("工作区的上级目录不存在")
+    return candidate
+
+
+def disk_details(path):
+    usage = shutil.disk_usage(nearest_existing(path))
+    return {
+        "total": usage.total,
+        "total_text": human_bytes(usage.total),
+        "free": usage.free,
+        "free_text": human_bytes(usage.free),
+    }
+
+
+def marker_valid(path):
+    try:
+        return (path / WORKSPACE_MARKER).read_text(encoding="utf-8") == "fm350-flasher\n"
+    except OSError:
+        return False
+
+
+def decode_mount_field(value):
+    return (value.replace("\\040", " ").replace("\\011", "\t")
+            .replace("\\012", "\n").replace("\\134", "\\"))
+
+
+def block_capacity(source):
+    if not source.startswith("/dev/"):
+        return 0
+    try:
+        name = pathlib.Path(source).resolve(strict=False).name
+        sectors = int((pathlib.Path("/sys/class/block") / name / "size")
+                      .read_text(encoding="utf-8").strip())
+        return sectors * 512
+    except (OSError, ValueError):
+        return 0
+
+
+def storage_partitions():
+    virtual = {
+        "proc", "sysfs", "devtmpfs", "devpts", "tmpfs", "cgroup", "cgroup2",
+        "debugfs", "tracefs", "securityfs", "pstore", "configfs", "ramfs",
+        "squashfs", "fusectl", "mqueue", "hugetlbfs",
+    }
+    mounted = {}
+    mounted_by_path = {}
+    try:
+        lines = pathlib.Path("/proc/mounts").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        source = decode_mount_field(fields[0])
+        mountpoint = pathlib.Path(decode_mount_field(fields[1])).resolve(strict=False)
+        fstype = fields[2]
+        options = set(fields[3].split(","))
+        record = {
+            "mountpoint": mountpoint, "filesystem": fstype,
+            "options": options,
+        }
+        mounted[source] = record
+        mounted_by_path[str(mountpoint)] = record
+
+    devices = {}
+    block_command = shutil.which("block") or "/sbin/block"
+    try:
+        result = subprocess.run(
+            [block_command, "info"], stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, text=True, timeout=10, check=False,
+        )
+        if result.returncode == 0:
+            for line in result.stdout.splitlines():
+                match = re.match(r"^(\S+):\s*(.*)$", line)
+                if not match:
+                    continue
+                source = match.group(1)
+                if not source.startswith("/dev/"):
+                    continue
+                attrs = dict(re.findall(r'([A-Z0-9_]+)="([^"]*)"', match.group(2)))
+                devices[source] = attrs
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    try:
+        for entry in pathlib.Path("/sys/class/block").iterdir():
+            if (entry / "partition").is_file():
+                devices.setdefault(f"/dev/{entry.name}", {})
+    except OSError:
+        pass
+
+    found = []
+    for source in sorted(devices):
+        attrs = devices[source]
+        mount = mounted.get(source)
+        if mount is None and attrs.get("MOUNT"):
+            advertised = pathlib.Path(attrs["MOUNT"]).resolve(strict=False)
+            mount = mounted_by_path.get(str(advertised))
+        capacity = block_capacity(source)
+        if mount is None:
+            found.append({
+                "path": "", "mountpoint": "", "workspace_path": "",
+                "filesystem": attrs.get("TYPE", "") or "未知",
+                "source": source, "uuid": attrs.get("UUID", ""),
+                "mounted": False, "writable": False, "suitable": False,
+                "reason": "未挂载",
+                "total": capacity, "total_text": human_bytes(capacity),
+                "free": 0, "free_text": "—",
+            })
+            continue
+
+        mountpoint = mount["mountpoint"]
+        fstype = mount["filesystem"]
+        options = mount["options"]
+        try:
+            details = disk_details(mountpoint)
+            normalized_workspace(mountpoint)
+            safe = True
+        except (OSError, FlasherError):
+            details = {
+                "total": capacity, "total_text": human_bytes(capacity),
+                "free": 0, "free_text": "—",
+            }
+            safe = False
+        writable = "rw" in options and os.access(mountpoint, os.W_OK | os.X_OK)
+        capacity_ok = details["total"] >= MIN_WORKSPACE_BYTES
+        suitable = safe and writable and capacity_ok and fstype not in virtual
+        if not safe or fstype in virtual:
+            reason = "系统或只读分区"
+        elif not writable:
+            reason = "不可写"
+        elif not capacity_ok:
+            reason = "不足 2 GiB"
+        else:
+            reason = "可用"
+        workspace_path = str(mountpoint / "fm350-workspace")
+        found.append({
+            "path": str(mountpoint), "mountpoint": str(mountpoint),
+            "workspace_path": workspace_path,
+            "filesystem": fstype, "source": source,
+            "uuid": attrs.get("UUID", ""), "mounted": True,
+            "writable": writable, "suitable": suitable, "reason": reason,
+            **details,
+        })
+
+    if not any(item["mountpoint"] == "/" for item in found):
+        try:
+            details = disk_details(pathlib.Path("/"))
+            suitable = details["total"] >= MIN_WORKSPACE_BYTES
+            found.append({
+                "path": "/", "mountpoint": "/",
+                "workspace_path": DEFAULT_WORKSPACE,
+                "filesystem": "overlay", "source": "系统根分区", "uuid": "",
+                "mounted": True, "writable": True, "suitable": suitable,
+                "reason": "可用" if suitable else "不足 2 GiB", **details,
+            })
+        except OSError:
+            pass
+    return sorted(
+        found,
+        key=lambda item: (
+            not item["suitable"], not item["mounted"], item["source"]
+        ),
+    )
+
+
+def workspace_info(path=None, enabled=None, include_mounts=True):
+    configured = path if path is not None else STATE_ROOT
+    try:
+        configured = normalized_workspace(configured)
+        details = disk_details(configured)
+        error = ""
+    except (FlasherError, OSError) as exc:
+        configured = pathlib.Path(str(configured))
+        details = {"total": 0, "total_text": "0 B", "free": 0, "free_text": "0 B"}
+        error = str(exc)
+    active = (uci_get("enabled", "0") == "1") if enabled is None else bool(enabled)
+    exists = configured.is_dir()
+    marked = exists and marker_valid(configured)
+    capacity_ok = details["total"] >= MIN_WORKSPACE_BYTES
+    writable = exists and os.access(configured, os.W_OK | os.X_OK)
+    ready = active and exists and marked and capacity_ok and writable and not error
+    if error:
+        reason = error
+    elif active and not exists:
+        reason = "工作区目录不存在；可能是外接磁盘尚未挂载"
+    elif not capacity_ok:
+        reason = "工作区所在文件系统总容量不足 2 GiB"
+    elif not active:
+        reason = "工作区尚未启用"
+    elif not marked:
+        reason = "目录不是本工具创建的工作区"
+    elif not writable:
+        reason = "工作区不可写"
+    else:
+        reason = "工作区可用"
+    result = {
+        "enabled": active, "ready": ready, "path": str(configured),
+        "exists": exists, "marked": marked, "writable": writable,
+        "minimum": MIN_WORKSPACE_BYTES,
+        "minimum_text": human_bytes(MIN_WORKSPACE_BYTES),
+        "reason": reason, **details,
+    }
+    if include_mounts:
+        partitions = storage_partitions()
+        result["partitions"] = partitions
+        # Keep the old field for one release so a cached LuCI script can still
+        # display the newly discovered devices during package upgrades.
+        result["mounts"] = partitions
+    return result
+
+
+def ensure_workspace():
+    info = workspace_info(include_mounts=False)
+    if not info["ready"]:
+        raise FlasherError(info["reason"] + "；请先在 LuCI 中选择容量不小于 2 GiB 的持久化工作区")
+    return info
+
+
+def ensure_free(required, description):
+    info = ensure_workspace()
+    if info["free"] < required:
+        raise FlasherError(
+            f"工作区可用空间不足；{description}至少需要 {human_bytes(required)}，"
+            f"当前仅 {info['free_text']}"
+        )
+    return info
+
+
+def configure_workspace(value):
+    ensure_idle()
+    target = normalized_workspace(value)
+    parent = target.parent
+    if not parent.is_dir():
+        raise FlasherError("工作区的直接上级目录不存在；请先挂载并创建上级目录")
+    if target.exists() and not target.is_dir():
+        raise FlasherError("所选工作区路径已经被普通文件占用")
+    details = disk_details(parent)
+    if details["total"] < MIN_WORKSPACE_BYTES:
+        raise FlasherError(
+            f"所选文件系统总容量只有 {details['total_text']}，至少需要 2.0 GiB"
+        )
+    old = STATE_ROOT.resolve(strict=False)
+    if old != target and old.is_dir() and marker_valid(old):
+        remaining = [entry.name for entry in old.iterdir() if entry.name != WORKSPACE_MARKER]
+        if remaining:
+            raise FlasherError("原工作区仍有固件、备份或日志；请先清理后再切换")
+
+    created = False
+    if not target.exists():
+        target.mkdir(mode=0o700)
+        created = True
+    entries = [entry.name for entry in target.iterdir() if entry.name != WORKSPACE_MARKER]
+    if entries and not marker_valid(target):
+        if created:
+            target.rmdir()
+        raise FlasherError("目标目录已有其他文件，不能接管为刷写工作区")
+    marker = target / WORKSPACE_MARKER
+    try:
+        with open(marker, "w", encoding="utf-8") as stream:
+            stream.write("fm350-flasher\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(target, 0o700)
+        os.chmod(marker, 0o600)
+        probe = target / f".write-test-{os.getpid()}"
+        with open(probe, "wb") as stream:
+            stream.write(b"ok")
+            stream.flush()
+            os.fsync(stream.fileno())
+        probe.unlink()
+        command = shutil.which("uci") or "/sbin/uci"
+        operations = (
+            [command, "set", f"{UCI_CONFIG}.{UCI_SECTION}=fm350"],
+            [command, "set", f"{UCI_CONFIG}.{UCI_SECTION}.workspace={target}"],
+            [command, "set", f"{UCI_CONFIG}.{UCI_SECTION}.enabled=1"],
+            [command, "commit", UCI_CONFIG],
+        )
+        for operation in operations:
+            result = subprocess.run(operation, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.PIPE, text=True, timeout=10,
+                                    check=False)
+            if result.returncode != 0:
+                raise FlasherError("无法保存工作区设置：" + result.stderr.strip())
+    except Exception:
+        if created:
+            try:
+                marker.unlink()
+                target.rmdir()
+            except OSError:
+                pass
+        raise
+
+    if old != target and old.is_dir() and marker_valid(old):
+        try:
+            (old / WORKSPACE_MARKER).unlink()
+            old.rmdir()
+        except OSError:
+            pass
+    return workspace_info(target, enabled=True)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for chunk in iter(lambda: stream.read(4 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def read_json(path, default=None):
+    try:
+        with open(path, "r", encoding="utf-8") as stream:
+            return json.load(stream)
+    except (OSError, ValueError, TypeError):
+        return default
+
+
+def atomic_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with open(temporary, "w", encoding="utf-8") as stream:
+            json.dump(value, stream, ensure_ascii=False, indent=2, sort_keys=True)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def valid_firmware_id(value):
+    firmware_id = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", firmware_id):
+        raise FlasherError("固件编号无效")
+    return firmware_id
+
+
+def firmware_dir(firmware_id):
+    return FIRMWARE_LIBRARY / valid_firmware_id(firmware_id)
+
+
+def selected_firmware_id():
+    value = read_json(FIRMWARE_SELECTION, {}) or {}
+    firmware_id = value.get("id", "")
+    try:
+        directory = firmware_dir(firmware_id)
+    except FlasherError:
+        return ""
+    metadata = read_json(directory / "metadata.json", {}) or {}
+    if (metadata.get("state") != "accepted" or
+            not (directory / "content").is_dir()):
+        return ""
+    return firmware_id
+
+
+def migrate_legacy_firmware_state():
+    """Move the r6 single-package state into the multi-package library once."""
+    if FIRMWARE_MIGRATION_MARKER.exists():
+        return
+    FIRMWARE_LIBRARY.mkdir(mode=0o700, parents=True, exist_ok=True)
+    selected_id = ""
+    if LEGACY_PACKAGE_DIR.is_dir():
+        metadata = read_json(LEGACY_PACKAGE_DIR / "metadata.json", {}) or {}
+        if metadata:
+            firmware_id = uuid.uuid4().hex
+            metadata.update(
+                id=firmware_id,
+                state="accepted",
+                message="固件包校验通过",
+                downloadable=(LEGACY_PACKAGE_DIR / "source.archive").is_file(),
+            )
+            atomic_json(LEGACY_PACKAGE_DIR / "metadata.json", metadata)
+            os.replace(LEGACY_PACKAGE_DIR, firmware_dir(firmware_id))
+            selected_id = firmware_id
+        else:
+            shutil.rmtree(LEGACY_PACKAGE_DIR)
+
+    legacy_result = read_json(LEGACY_FIRMWARE_IMPORT_RESULT, {}) or {}
+    if legacy_result and legacy_result.get("state") != "accepted":
+        firmware_id = uuid.uuid4().hex
+        state = legacy_result.get("state")
+        if state == "validating":
+            state = "failed"
+            legacy_result["message"] = "升级后发现未完成的历史校验记录"
+        directory = firmware_dir(firmware_id)
+        directory.mkdir(mode=0o700)
+        atomic_json(directory / "metadata.json", {
+            "id": firmware_id,
+            "name": legacy_result.get("name") or "历史上传记录",
+            "created_at": legacy_result.get("created_at") or utc_now(),
+            "size": int(legacy_result.get("size") or 0),
+            "size_text": legacy_result.get("size_text") or human_bytes(legacy_result.get("size")),
+            "sha256": "",
+            "state": state or "failed",
+            "message": legacy_result.get("message") or "历史固件包校验失败",
+            "archive_file": "",
+            "downloadable": False,
+        })
+    try:
+        LEGACY_FIRMWARE_IMPORT_RESULT.unlink()
+    except FileNotFoundError:
+        pass
+    if selected_id:
+        atomic_json(FIRMWARE_SELECTION, {"id": selected_id})
+    with open(FIRMWARE_MIGRATION_MARKER, "w", encoding="utf-8") as stream:
+        stream.write("fm350-firmware-library-v1\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.chmod(FIRMWARE_MIGRATION_MARKER, 0o600)
+
+
+def firmware_records():
+    ensure_workspace()
+    migrate_legacy_firmware_state()
+    active_id = selected_firmware_id()
+    records = []
+    try:
+        directories = list(FIRMWARE_LIBRARY.iterdir())
+    except FileNotFoundError:
+        directories = []
+    for directory in directories:
+        if not directory.is_dir() or not re.fullmatch(r"[0-9a-f]{32}", directory.name):
+            continue
+        metadata = read_json(directory / "metadata.json", {}) or {}
+        if not metadata:
+            continue
+        metadata["id"] = directory.name
+        records.append(public_package(metadata, directory.name == active_id))
+    records.sort(key=lambda item: (item.get("created_at") or "", item.get("id") or ""), reverse=True)
+    return records
+
+
+def active_firmware():
+    ensure_workspace()
+    migrate_legacy_firmware_state()
+    firmware_id = selected_firmware_id()
+    if not firmware_id:
+        raise FlasherError("请先从固件库选择一个兼容的待刷固件")
+    directory = firmware_dir(firmware_id)
+    metadata = read_json(directory / "metadata.json", {}) or {}
+    if metadata.get("state") != "accepted":
+        raise FlasherError("当前选择的固件不可用于这个模组")
+    return firmware_id, directory, metadata
+
+
+def public_package(metadata, active=False):
+    if not metadata:
+        return None
+    keys = (
+        "id", "name", "created_at", "size", "size_text", "sha256", "state",
+        "message", "platform",
+        "project", "storage", "build_time", "build_version",
+        "partition_count", "update_partition_count", "update_names",
+        "downloadable",
+    )
+    result = {key: metadata.get(key) for key in keys}
+    result["active"] = bool(active)
+    return result
+
+
+def public_backup(metadata):
+    if not metadata:
+        return None
+    keys = ("name", "created_at", "size", "size_text", "sha256", "source", "usb_id")
+    return {key: metadata.get(key) for key in keys}
+
+
+def usb_devices():
+    result = []
+    for device in pathlib.Path("/sys/bus/usb/devices").glob("*"):
+        # Only return physical USB devices, not their interface nodes (1-1:1.0)
+        # or host controllers (usb1).  The physical port name remains stable
+        # when a modem changes PID between normal, Preloader and BootROM modes.
+        if not re.fullmatch(r"\d+-\d+(?:\.\d+)*", device.name):
+            continue
+        try:
+            vendor = (device / "idVendor").read_text().strip().lower()
+            product = (device / "idProduct").read_text().strip().lower()
+        except OSError:
+            continue
+        values = {}
+        for key in ("manufacturer", "product", "serial"):
+            try:
+                values[key] = (device / key).read_text(errors="replace").strip()
+            except OSError:
+                values[key] = ""
+        try:
+            generation = ":".join(
+                (device / key).read_text().strip()
+                for key in ("busnum", "devnum")
+            )
+        except OSError:
+            generation = ""
+        result.append({
+            "path": device.name,
+            "usb_id": f"{vendor}:{product}",
+            "generation": generation,
+            **values,
+        })
+    return result
+
+
+def modem_usb_candidate(device):
+    if not device:
+        return False
+    usb_id = device.get("usb_id", "")
+    if usb_id.startswith(MTK_USB_VENDOR + ":"):
+        return True
+    identity = " ".join(
+        str(device.get(key, "")) for key in ("manufacturer", "product")
+    ).lower()
+    if "fibocom" in identity or "fm350" in identity:
+        return True
+    return False
+
+
+def current_usb_device():
+    devices = usb_devices()
+    candidates = [device for device in devices if modem_usb_candidate(device)]
+    candidates.sort(key=lambda item: item["usb_id"] not in DOWNLOAD_USB_IDS)
+    return candidates[0] if candidates else None
+
+
+def current_usb():
+    device = current_usb_device()
+    return device["usb_id"] if device else ""
+
+
+def modem_tty_candidates(target_path=""):
+    """Return serial ports belonging to the selected modem USB device."""
+    candidates = []
+    for tty_class in ("ttyUSB", "ttyACM"):
+        for tty in pathlib.Path("/sys/class/tty").glob(tty_class + "*"):
+            try:
+                device_path = str((tty / "device").resolve(strict=True))
+            except OSError:
+                continue
+            if target_path and f"/{target_path}/" not in device_path:
+                continue
+            candidates.append(pathlib.Path("/dev") / tty.name)
+    return sorted(
+        candidates,
+        key=lambda item: (
+            item.name.rstrip("0123456789"),
+            int(re.search(r"\d+$", item.name).group())
+            if re.search(r"\d+$", item.name) else -1,
+        ),
+    )
+
+
+def send_at_restart(target_path=""):
+    """Probe the modem's real AT port and request a standards-based reset."""
+    try:
+        import serial
+    except ImportError:
+        return "", "Python serial support is unavailable"
+
+    for port in modem_tty_candidates(target_path):
+        connection = None
+        try:
+            connection = serial.Serial(
+                str(port), baudrate=115200, timeout=0.25,
+                write_timeout=1, exclusive=True,
+            )
+            connection.reset_input_buffer()
+            connection.write(b"AT\r")
+            connection.flush()
+            probe = b""
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                probe += connection.read(256)
+                if b"OK" in probe:
+                    break
+            if b"OK" not in probe:
+                continue
+
+            connection.reset_input_buffer()
+            connection.write(b"AT+CFUN=1,1\r")
+            connection.flush()
+            response = b""
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    response += connection.read(256)
+                except serial.SerialException:
+                    return str(port), "USB disconnected after reset command"
+                if b"OK" in response:
+                    return str(port), "OK"
+            if not port.exists():
+                return str(port), "USB disconnected after reset command"
+        except (OSError, ValueError, serial.SerialException) as error:
+            if not port.exists():
+                return str(port), f"USB disconnected: {error}"
+        finally:
+            if connection is not None:
+                try:
+                    connection.close()
+                except (OSError, serial.SerialException):
+                    pass
+    return "", "no responsive AT port"
+
+
+def usb_mode(usb_id):
+    if not usb_id:
+        return "未检测到"
+    if usb_id in USB_MODES:
+        return USB_MODES[usb_id]
+    return "USB 模式" if usb_id not in DOWNLOAD_USB_IDS else "下载模式"
+
+
+def rfkill_path(required=True):
+    for candidate in pathlib.Path("/sys/class/rfkill").glob("rfkill*"):
+        try:
+            control = candidate / "soft"
+            if ((candidate / "type").read_text().strip() == "wwan" and
+                    control.is_file() and os.access(control, os.W_OK)):
+                return control
+        except OSError:
+            continue
+    if required:
+        raise FlasherError("未找到可写的 WWAN 电源控制节点")
+    return None
+
+
+def set_power(enabled, control=None, announce=True):
+    (control or rfkill_path()).write_text("0\n" if enabled else "1\n")
+    if announce:
+        log_line("WWAN 电源已" + ("开启" if enabled else "关闭"))
+
+
+def process_alive(pid, job_id=""):
+    try:
+        pid = int(pid)
+        if pid <= 1:
+            return False
+        cmdline = pathlib.Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\x00", b" ")
+        if b"fm350-flasher" not in cmdline:
+            return False
+        if job_id and job_id.encode() not in cmdline:
+            return False
+        os.kill(pid, 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def get_job(mark_stale=True):
+    job = read_json(JOB_PATH, {}) or {}
+    if not job:
+        return empty_job()
+    # Older releases treated a slow post-flash USB re-enumeration as a flash
+    # failure even after the signed DA had confirmed every partition.  Repair
+    # that stale result once the modem is visible in normal mode again.
+    if (job.get("state") == "failed" and
+            "签名 DA 已确认固件连续写入" in str(job.get("message", "")) and
+            (lambda device: device and device.get("usb_id") not in DOWNLOAD_USB_IDS)(
+                current_usb_device()
+            )):
+        job.update(
+            state="completed", progress=100,
+            message="全部固件分区已由签名 DA 连续写入，模组已正常启动",
+        )
+        atomic_json(JOB_PATH, job)
+    if (mark_stale and job.get("state") in ("waiting", "running") and
+            not process_alive(job.get("pid"), job.get("id", ""))):
+        job.update(
+            state="failed",
+            message="刷写工作进程意外停止；未将任务标记为成功",
+            finished_at=utc_now(),
+        )
+        logs = job.setdefault("logs", [])
+        logs.append("后台进程已经退出。请先确认模组已恢复正常 USB 模式，再重试。")
+        atomic_json(JOB_PATH, job)
+    job["logs"] = list(job.get("logs", []))[-MAX_LOG_LINES:]
+    return job
+
+
+def update_job(**values):
+    job = get_job(mark_stale=False)
+    job.update(values)
+    job["logs"] = list(job.get("logs", []))[-MAX_LOG_LINES:]
+    atomic_json(JOB_PATH, job)
+    return job
+
+
+def log_line(value):
+    clean = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", str(value)).strip()
+    if not clean:
+        return
+    job = get_job(mark_stale=False)
+    lines = job.setdefault("logs", [])
+    lines.append(clean[-2000:])
+    job["logs"] = lines[-MAX_LOG_LINES:]
+    atomic_json(JOB_PATH, job)
+
+
+def tool_status():
+    required_modules = ("usb", "serial", "Cryptodome", "colorama")
+    missing = [name for name in required_modules if importlib.util.find_spec(name) is None]
+    ready = MTK_SCRIPT.is_file() and not missing
+    revision = ""
+    try:
+        revision = (MTK_ROOT / "REVISION").read_text().strip()[:12]
+    except OSError:
+        pass
+    return {
+        "ready": ready,
+        "revision": revision,
+        "missing": missing,
+        "detail": "刷写执行层已就绪" if ready else "缺少刷写执行层或 Python 依赖",
+    }
+
+
+def status():
+    workspace = workspace_info()
+    usb_device = current_usb_device()
+    usb_id = usb_device["usb_id"] if usb_device else ""
+    automatic_power = rfkill_path(required=False) is not None
+    job = get_job() if workspace["ready"] else empty_job(workspace["reason"])
+    firmwares = firmware_records() if workspace["ready"] else []
+    active_id = next((item["id"] for item in firmwares if item.get("active")), "")
+    active_package = next((item for item in firmwares if item.get("active")), None)
+    return {
+        "tool": tool_status(),
+        "modem": {
+            "present": bool(usb_id),
+            "compatible": bool(usb_device),
+            "usb_id": usb_id,
+            "usb_path": usb_device.get("path", "") if usb_device else "",
+            "mode": usb_mode(usb_id),
+            "automatic_power": automatic_power,
+            "power_mode": "自动 WWAN 电源切换" if automatic_power else "手动断电或重新插拔",
+        },
+        "package": active_package,
+        "firmwares": firmwares,
+        "active_firmware_id": active_id,
+        "backup": public_backup(read_json(BACKUP_META)),
+        "job": job,
+        "workspace": workspace,
+        "storage": {"free": workspace["free"], "free_text": workspace["free_text"]},
+        "policy": {
+            "platform": EXPECTED_PLATFORM,
+            "project": EXPECTED_PROJECT,
+            "backup_size": FULL_BACKUP_BYTES,
+            "backup_size_text": human_bytes(FULL_BACKUP_BYTES),
+            "temporary": False,
+            "minimum_workspace": MIN_WORKSPACE_BYTES,
+            "bootchain_write": True,
+            "identity_write": False,
+        },
+    }
+
+
+def ensure_idle():
+    job = get_job()
+    if job.get("state") in ("waiting", "running"):
+        raise FlasherError("已有备份或刷写任务正在运行")
+
+
+def safe_archive_name(name):
+    candidate = pathlib.PurePosixPath(str(name).replace("\\", "/"))
+    if candidate.is_absolute() or not candidate.parts or ".." in candidate.parts:
+        raise FlasherError(f"压缩包包含不安全路径：{name}")
+    return candidate
+
+
+def extract_archive(archive_path, target):
+    target.mkdir(parents=True, exist_ok=False)
+    count = 0
+    expanded = 0
+    if zipfile.is_zipfile(archive_path):
+        with zipfile.ZipFile(archive_path) as archive:
+            for info in archive.infolist():
+                relative = safe_archive_name(info.filename)
+                count += 1
+                expanded += max(0, int(info.file_size))
+                mode = (info.external_attr >> 16) & 0o170000
+                if mode == 0o120000:
+                    raise FlasherError("固件包不能包含符号链接")
+                if count > MAX_ARCHIVE_ENTRIES or expanded > MAX_EXTRACTED_BYTES:
+                    raise FlasherError("固件包解压规模超过安全限制")
+                destination = target.joinpath(*relative.parts)
+                if info.is_dir():
+                    destination.mkdir(parents=True, exist_ok=True)
+                else:
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(info) as source, open(destination, "wb") as output:
+                        shutil.copyfileobj(source, output, 4 * 1024 * 1024)
+        return
+
+    try:
+        archive = tarfile.open(archive_path, "r:*")
+    except tarfile.TarError as exc:
+        raise FlasherError("仅支持 ZIP、TAR、TAR.GZ、TAR.XZ 固件包") from exc
+    with archive:
+        for member in archive.getmembers():
+            relative = safe_archive_name(member.name)
+            count += 1
+            expanded += max(0, int(member.size))
+            if member.issym() or member.islnk() or member.isdev():
+                raise FlasherError("固件包不能包含链接或设备文件")
+            if count > MAX_ARCHIVE_ENTRIES or expanded > MAX_EXTRACTED_BYTES:
+                raise FlasherError("固件包解压规模超过安全限制")
+            destination = target.joinpath(*relative.parts)
+            if member.isdir():
+                destination.mkdir(parents=True, exist_ok=True)
+                continue
+            if not member.isfile():
+                continue
+            source = archive.extractfile(member)
+            if source is None:
+                raise FlasherError(f"无法读取固件包文件：{member.name}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with source, open(destination, "wb") as output:
+                shutil.copyfileobj(source, output, 4 * 1024 * 1024)
+
+
+def parse_scatter(search_root):
+    scatter_files = list(search_root.rglob("Scatter.xml"))
+    if len(scatter_files) != 1:
+        raise FlasherError("固件包必须且只能包含一个 Scatter.xml")
+    scatter = scatter_files[0]
+    content_root = scatter.parent
+    if len(scatter.relative_to(search_root).parts) > 3:
+        raise FlasherError("Scatter.xml 目录层级过深")
+    try:
+        xml_root = ET.parse(scatter).getroot()
+    except (ET.ParseError, OSError) as exc:
+        raise FlasherError("Scatter.xml 无法解析") from exc
+
+    platform = (xml_root.findtext(".//platform") or "").strip()
+    project = (xml_root.findtext(".//project") or "").strip()
+    storage_node = xml_root.find(".//storage_type")
+    storage = ((storage_node.get("name") if storage_node is not None else "") or "").strip()
+    if (platform, project, storage) != (EXPECTED_PLATFORM, EXPECTED_PROJECT, "NAND"):
+        raise FlasherError(
+            f"固件不兼容：需要 {EXPECTED_PLATFORM}/{EXPECTED_PROJECT}/NAND，"
+            f"实际为 {platform or '?'}/{project or '?'}/{storage or '?'}"
+        )
+
+    partitions = []
+    seen = set()
+    preloader_file = ""
+    for node in xml_root.findall(".//partition_index"):
+        name = (node.findtext("partition_name") or "").strip()
+        filename = (node.findtext("file_name") or "").strip()
+        operation = (node.findtext("operation_type") or "").strip().upper()
+        downloadable = (node.findtext("is_download") or "").strip().lower() == "true"
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+            raise FlasherError(f"分区名称不安全：{name or '?'}")
+        lower_name = name.lower()
+        if lower_name in seen:
+            raise FlasherError(f"固件包包含重复分区：{name}")
+        seen.add(lower_name)
+        try:
+            start = int((node.findtext("linear_start_addr") or "0"), 0)
+            partition_size = int((node.findtext("partition_size") or "0"), 0)
+        except ValueError as exc:
+            raise FlasherError(f"分区 {name} 地址格式错误") from exc
+        if lower_name == "preloader" and filename and filename != "NONE":
+            preloader_file = filename
+        if not downloadable:
+            continue
+        if start < 0 or partition_size <= 0 or start + partition_size > NAND_LIMIT:
+            raise FlasherError(f"分区 {name} 超出已验证的 FM350 NAND 范围")
+        if operation != "UPDATE" or not filename or filename == "NONE":
+            raise FlasherError(f"分区 {name} 不是安全的 UPDATE 项")
+        if lower_name in PROTECTED_PARTITIONS:
+            raise FlasherError(f"固件包要求写入身份/NV 保护分区 {name}，已拒绝")
+        image_name = pathlib.PurePosixPath(filename.replace("\\", "/"))
+        if image_name.is_absolute() or ".." in image_name.parts or len(image_name.parts) != 1:
+            raise FlasherError(f"分区 {name} 的固件文件路径不安全")
+        image = content_root / filename
+        if not image.is_file():
+            raise FlasherError(f"固件包缺少 {filename}（分区 {name}）")
+        image_size = image.stat().st_size
+        if image_size <= 0 or image_size > partition_size:
+            raise FlasherError(f"{filename} 大小超过分区 {name} 容量")
+        partitions.append({
+            "name": name,
+            "file": filename,
+            "start": start,
+            "partition_size": partition_size,
+            "image_size": image_size,
+            "sha256": sha256_file(image),
+        })
+
+    update_names = {entry["name"].lower() for entry in partitions}
+    if not REQUIRED_UPDATE_PARTITIONS.issubset(update_names):
+        missing = sorted(REQUIRED_UPDATE_PARTITIONS - update_names)
+        raise FlasherError("固件包缺少关键升级分区：" + ", ".join(missing))
+    if not preloader_file or pathlib.PurePath(preloader_file).name != preloader_file:
+        raise FlasherError("固件包缺少安全进入下载模式所需的 Preloader")
+
+    support_paths = {
+        "preloader": content_root / preloader_file,
+        "scatter": scatter,
+        "da": content_root / "download_agent" / "DA_BR.bin",
+        "auth": content_root / "download_agent" / "auth_sv5.auth",
+        "flash_xml": content_root / "download_agent" / "flash.xml",
+    }
+    for label, path in support_paths.items():
+        if not path.is_file():
+            raise FlasherError(f"固件包缺少刷写支持文件：{label}")
+    try:
+        flash_root = ET.parse(support_paths["flash_xml"]).getroot()
+    except (ET.ParseError, OSError) as exc:
+        raise FlasherError("download_agent/flash.xml 无法解析") from exc
+    if (flash_root.findtext("project") or "").strip() != EXPECTED_PROJECT:
+        raise FlasherError("download_agent 与 Scatter.xml 的项目不一致")
+
+    return {
+        "content_root": str(content_root),
+        "platform": platform,
+        "project": project,
+        "storage": storage,
+        "build_time": (flash_root.findtext("build_time") or "").strip(),
+        "build_version": (flash_root.findtext("build_version") or "").strip(),
+        "partition_count": len(seen),
+        "update_partition_count": len(partitions),
+        "update_names": [entry["name"] for entry in partitions],
+        "updates": partitions,
+        "preloader_file": preloader_file,
+        "support_hashes": {
+            label: sha256_file(path) for label, path in support_paths.items()
+        },
+    }
+
+
+def import_firmware(source, display_name):
+    ensure_idle()
+    ensure_workspace()
+    migrate_legacy_firmware_state()
+    source = pathlib.Path(source)
+    if source != UPLOAD_FIRMWARE or not source.is_file():
+        raise FlasherError("未找到 LuCI 上传的固件包")
+    size = source.stat().st_size
+    safe_name = pathlib.Path(display_name or "FM350-firmware").name[:160]
+    created_at = utc_now()
+    firmware_id = uuid.uuid4().hex
+    work = STATE_ROOT / f"import-{uuid.uuid4().hex}"
+    staging = STATE_ROOT / f".firmware-{firmware_id}.import"
+    final = firmware_dir(firmware_id)
+    try:
+        if size < 1024 or size > MAX_FIRMWARE_UPLOAD:
+            raise FlasherError("固件包为空或超过 300 MiB 限制")
+        ensure_free(size + MAX_EXTRACTED_BYTES + 64 * 1024 * 1024,
+                    "保留原包并解压固件")
+        FIRMWARE_LIBRARY.mkdir(mode=0o700, parents=True, exist_ok=True)
+        staging.mkdir(mode=0o700)
+        archive_hash = sha256_file(source)
+        with open(source, "rb") as input_stream, open(staging / "source.archive", "wb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream, 4 * 1024 * 1024)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        os.chmod(staging / "source.archive", 0o600)
+        if ((staging / "source.archive").stat().st_size != size or
+                sha256_file(staging / "source.archive") != archive_hash):
+            raise FlasherError("保存到工作区的固件原包校验失败")
+        base_metadata = {
+            "id": firmware_id,
+            "name": safe_name,
+            "created_at": created_at,
+            "size": size,
+            "size_text": human_bytes(size),
+            "sha256": archive_hash,
+            "archive_file": "source.archive",
+            "downloadable": True,
+        }
+        atomic_json(staging / "metadata.json", {
+            **base_metadata, "state": "validating", "message": "正在校验固件包",
+        })
+        try:
+            extract_archive(source, work)
+            parsed = parse_scatter(work)
+            parsed_root = pathlib.Path(parsed.pop("content_root"))
+            shutil.move(str(parsed_root), staging / "content")
+            total_size = sum(
+                path.stat().st_size for path in (staging / "content").rglob("*")
+                if path.is_file()
+            )
+            metadata = {
+                **base_metadata,
+                "expanded_size": total_size,
+                "state": "accepted",
+                "message": "已识别为兼容的 FM350 固件，可选择用于备份和刷写",
+                **parsed,
+            }
+        except Exception as exc:
+            if (staging / "content").exists():
+                shutil.rmtree(staging / "content", ignore_errors=True)
+            metadata = {
+                **base_metadata,
+                "state": "failed",
+                "message": str(exc),
+            }
+        atomic_json(staging / "metadata.json", metadata)
+        os.replace(staging, final)
+        return public_package(metadata, False)
+    finally:
+        try:
+            source.unlink()
+        except FileNotFoundError:
+            pass
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+
+def verify_firmware_archive(firmware_id):
+    ensure_workspace()
+    migrate_legacy_firmware_state()
+    directory = firmware_dir(firmware_id)
+    metadata = read_json(directory / "metadata.json", {}) or {}
+    if not metadata or metadata.get("archive_file") != "source.archive":
+        raise FlasherError("这个历史记录没有可下载的原始压缩包，请重新上传")
+    archive = directory / "source.archive"
+    if not archive.is_file():
+        raise FlasherError("固件原始压缩包不存在")
+    if (archive.stat().st_size != metadata.get("size") or
+            sha256_file(archive) != metadata.get("sha256")):
+        raise FlasherError("固件原始压缩包大小或 SHA-256 校验失败")
+    return archive, metadata
+
+
+def select_firmware(firmware_id):
+    ensure_idle()
+    ensure_workspace()
+    migrate_legacy_firmware_state()
+    directory = firmware_dir(firmware_id)
+    metadata = read_json(directory / "metadata.json", {}) or {}
+    if metadata.get("state") != "accepted":
+        raise FlasherError("不兼容或文件不完整的固件不能设为待刷固件")
+    verify_package_files(directory, metadata)
+    atomic_json(FIRMWARE_SELECTION, {"id": valid_firmware_id(firmware_id)})
+    return public_package(metadata, True)
+
+
+def delete_firmware(firmware_id):
+    ensure_idle()
+    ensure_workspace()
+    migrate_legacy_firmware_state()
+    firmware_id = valid_firmware_id(firmware_id)
+    directory = firmware_dir(firmware_id)
+    if not directory.is_dir():
+        raise FlasherError("固件记录不存在")
+    was_active = selected_firmware_id() == firmware_id
+    shutil.rmtree(directory)
+    if was_active:
+        try:
+            FIRMWARE_SELECTION.unlink()
+        except FileNotFoundError:
+            pass
+    return {"deleted": True, "id": firmware_id, "active_removed": was_active}
+
+
+def delete_backup():
+    ensure_idle()
+    ensure_workspace()
+    removed = False
+    for path in (BACKUP_PATH, BACKUP_META):
+        try:
+            path.unlink()
+            removed = True
+        except FileNotFoundError:
+            pass
+    if not removed:
+        raise FlasherError("全量备份不存在或已经删除")
+    return {"deleted": True}
+
+
+def import_backup(source, display_name):
+    ensure_idle()
+    ensure_free(FULL_BACKUP_BYTES + 64 * 1024 * 1024, "导入全量备份")
+    source = pathlib.Path(source)
+    if source != UPLOAD_BACKUP or not source.is_file():
+        raise FlasherError("未找到 LuCI 上传的全量备份")
+    temporary = None
+    try:
+        size = source.stat().st_size
+        if size != FULL_BACKUP_BYTES:
+            raise FlasherError(
+                f"备份大小必须为 {human_bytes(FULL_BACKUP_BYTES)}，实际为 {human_bytes(size)}"
+            )
+        checksum = sha256_file(source)
+        temporary = STATE_ROOT / f".backup-import-{uuid.uuid4().hex}.partial"
+        with open(source, "rb") as input_stream, open(temporary, "wb") as output_stream:
+            shutil.copyfileobj(input_stream, output_stream, 4 * 1024 * 1024)
+            output_stream.flush()
+            os.fsync(output_stream.fileno())
+        if temporary.stat().st_size != size or sha256_file(temporary) != checksum:
+            temporary.unlink(missing_ok=True)
+            raise FlasherError("复制到持久化工作区后的全量备份校验失败")
+        os.replace(temporary, BACKUP_PATH)
+        metadata = {
+            "name": pathlib.Path(display_name or "FM350-full-backup.bin").name[:160],
+            "created_at": utc_now(),
+            "size": size,
+            "size_text": human_bytes(size),
+            "sha256": checksum,
+            "source": "导入并校验大小/SHA-256",
+            "usb_id": "",
+        }
+        atomic_json(BACKUP_META, metadata)
+        return public_backup(metadata)
+    finally:
+        try:
+            source.unlink()
+        except FileNotFoundError:
+            pass
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def verify_package_files(directory, metadata):
+    content = directory / "content"
+    if not metadata or metadata.get("state") != "accepted" or not content.is_dir():
+        raise FlasherError("请先选择一个兼容的 FM350 固件包")
+    paths = {
+        "preloader": content / metadata["preloader_file"],
+        "scatter": content / "Scatter.xml",
+        "da": content / "download_agent" / "DA_BR.bin",
+        "auth": content / "download_agent" / "auth_sv5.auth",
+        "flash_xml": content / "download_agent" / "flash.xml",
+    }
+    for label, path in paths.items():
+        if not path.is_file() or sha256_file(path) != metadata["support_hashes"].get(label):
+            raise FlasherError(f"固件支持文件 {label} 已变化或损坏")
+    for item in metadata.get("updates", []):
+        image = content / item["file"]
+        if (not image.is_file() or image.stat().st_size != item["image_size"] or
+                sha256_file(image) != item["sha256"]):
+            raise FlasherError(f"固件文件 {item['file']} 已变化或损坏")
+
+
+def verify_backup():
+    metadata = read_json(BACKUP_META)
+    if not metadata or not BACKUP_PATH.is_file():
+        raise FlasherError("刷写前必须制作或导入一份完整备份")
+    if BACKUP_PATH.stat().st_size != FULL_BACKUP_BYTES:
+        raise FlasherError("全量备份大小不正确")
+    if sha256_file(BACKUP_PATH) != metadata.get("sha256"):
+        raise FlasherError("全量备份 SHA-256 校验失败")
+    return metadata
+
+
+def service_running(name):
+    script = pathlib.Path("/etc/init.d") / name
+    if not script.is_file():
+        return False
+    return subprocess.run(
+        [str(script), "running"], stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, timeout=10, check=False,
+    ).returncode == 0
+
+
+def prepare_services():
+    running = [name for name in MANAGED_SERVICES if service_running(name)]
+    update_job(services_before=running)
+    for name in MANAGED_SERVICES:
+        script = pathlib.Path("/etc/init.d") / name
+        if script.is_file():
+            log_line(f"暂停服务：{name}")
+            subprocess.run([str(script), "stop"], timeout=30, check=False)
+    time.sleep(2)
+    return running
+
+
+def wait_for_normal_usb(timeout, target_path="", powered_off=None):
+    powered_off = powered_off or {}
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        devices = usb_devices()
+        for device in devices:
+            usb_id = device["usb_id"]
+            if usb_id in DOWNLOAD_USB_IDS:
+                continue
+            if not modem_usb_candidate(device):
+                continue
+            # FM350 may enumerate on the USB 2 bus in Preloader mode and move
+            # to the USB 3 bus in RNDIS mode, so its sysfs path can legitimately
+            # change from e.g. 1-1.1 to 2-1.1 after a successful flash.
+            if target_path and device["path"] == target_path:
+                return device
+            previous = powered_off.get(device["path"])
+            if previous != usb_id:
+                return device
+        time.sleep(1)
+    return None
+
+
+def wait_for_usb_return(timeout, target_path="", powered_off=None):
+    powered_off = powered_off or {}
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for device in usb_devices():
+            if target_path:
+                if device["path"] == target_path:
+                    return device
+                continue
+            if (powered_off.get(device["path"]) != device["usb_id"] and
+                    modem_usb_candidate(device)):
+                return device
+        time.sleep(1)
+    return None
+
+
+def wait_for_usb_departure(timeout, target_path=""):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        devices = usb_devices()
+        if target_path:
+            if not any(item["path"] == target_path for item in devices):
+                return True
+        elif not any(modem_usb_candidate(item) for item in devices):
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def wait_for_usb_reenumeration(timeout, target_path="", generation=""):
+    """Wait until the same modem disappears/reappears or gets a new devnum."""
+    deadline = time.monotonic() + timeout
+    departed = False
+    while time.monotonic() < deadline:
+        devices = [item for item in usb_devices() if modem_usb_candidate(item)]
+        original = next(
+            (item for item in devices if item.get("path") == target_path), None)
+        if original is None:
+            departed = True
+        elif generation and original.get("generation") != generation:
+            return original
+        if departed:
+            normal = next(
+                (item for item in devices if item.get("usb_id") not in DOWNLOAD_USB_IDS),
+                None,
+            )
+            if normal:
+                return normal
+        time.sleep(0.2)
+    return None
+
+
+def restore_services(running):
+    normal_device = None
+    control = rfkill_path(required=False)
+    try:
+        subprocess.run(["/sbin/modprobe", "cdc_acm"], timeout=30, check=False)
+        if control is not None:
+            target = current_usb_device()
+            target_path = target.get("path", "") if target else ""
+            log_line("任务结束，正在重新启动模组")
+            set_power(False, control, announce=False)
+            time.sleep(4)
+            powered_off = {item["path"]: item["usb_id"] for item in usb_devices()}
+            set_power(True, control, announce=False)
+            normal_device = wait_for_normal_usb(180, target_path, powered_off)
+            if normal_device:
+                log_line(f"模组已返回正常 USB 模式：{normal_device['usb_id']}")
+            else:
+                log_line("警告：180 秒内未检测到模组返回正常 USB 模式")
+        else:
+            target = current_usb_device()
+            normal_device = wait_for_normal_usb(
+                15, target.get("path", "") if target else "", {}
+            )
+            if normal_device:
+                log_line(f"模组已返回正常 USB 模式：{normal_device['usb_id']}")
+            else:
+                log_line("未提供自动电源控制；请手动断电重启或重新插拔 FM350，使其返回正常 USB 模式")
+    except Exception as exc:
+        log_line(f"恢复 FM350 USB 模式时出现警告：{exc}")
+    for name in reversed(MANAGED_SERVICES):
+        if name not in running:
+            continue
+        script = pathlib.Path("/etc/init.d") / name
+        if script.is_file():
+            subprocess.run([str(script), "start"], timeout=30, check=False)
+            log_line(f"已恢复服务：{name}")
+    return bool(normal_device)
+
+
+def mtk_common(directory, metadata):
+    content = directory / "content"
+    return [
+        "--preloader", str(content / metadata["preloader_file"]),
+        "--loader", str(content / "download_agent" / "DA_BR.bin"),
+        "--auth", str(content / "download_agent" / "auth_sv5.auth"),
+        "--stock",
+    ]
+
+
+def run_mtk(arguments, operations=None):
+    if not tool_status()["ready"]:
+        raise FlasherError("MTKClient 执行层或依赖未安装完整")
+    command = [sys.executable, str(MTK_SCRIPT), *arguments]
+    log_line("启动经审计的 MTKClient 命令；等待模组进入 Preloader")
+    try:
+        (MTK_ROOT / ".state").unlink()
+    except FileNotFoundError:
+        pass
+
+    control = rfkill_path(required=False)
+    cdc_was_loaded = pathlib.Path("/sys/module/cdc_acm").exists()
+    process = None
+    output_lines = []
+    pending = b""
+    operation_cursor = 0
+    commands_ready = False
+    batch_mode = False
+
+    def record_output(line):
+        nonlocal operation_cursor, commands_ready, batch_mode, output_lines
+        output_lines.append(line)
+        log_line(line)
+        if not operations:
+            return
+        if "NAND geometry:" in line or line.startswith("Main - Handling da commands"):
+            commands_ready = True
+            return
+        if not commands_ready or operation_cursor >= len(operations):
+            return
+        started = re.search(r"BATCH-PARTITION-START\s+(\d+)/(\d+)\s+(.+)$", line)
+        if started:
+            batch_mode = True
+            index = max(1, min(len(operations), int(started.group(1))))
+            operation_cursor = index - 1
+            operation = operations[operation_cursor]
+            overall = 2 + int(96 * operation_cursor / len(operations))
+            update_job(
+                progress=min(98, overall),
+                message=(
+                    f"{operation['phase']} {operation['index']}/{operation['total']}："
+                    f"{operation['name']} 0%"
+                ),
+            )
+            return
+        operation = operations[operation_cursor]
+        match = re.search(
+            r"([0-9]+(?:\.[0-9]+)?)%\s+(?:Read|Upload):\s+"
+            r"\((0x[0-9A-Fa-f]+)/(0x[0-9A-Fa-f]+)\)", line
+        )
+        if match:
+            sent = int(match.group(2), 16)
+            expected = max(1, int(match.group(3), 16))
+            transfer = max(0.0, min(100.0, sent * 100.0 / expected))
+            overall = 2 + int(96 * (operation_cursor + transfer / 100.0) /
+                               len(operations))
+            update_job(
+                progress=min(98, overall),
+                message=(
+                    f"{operation['phase']} {operation['index']}/{operation['total']}："
+                    f"{operation['name']} {transfer:.0f}%"
+                ),
+            )
+        if line.startswith("BATCH-PARTITION-DATA "):
+            completed = min(len(operations), operation_cursor + 1)
+            overall = 2 + int(96 * completed / len(operations))
+            update_job(progress=min(98, overall))
+            operation_cursor = completed
+        elif (not batch_mode and
+                (line.startswith("Wrote ") or line.startswith("Dumped offset ") or
+                 line.startswith("Failed to write ") or
+                 line.startswith("Failed to dump "))):
+            operation_cursor += 1
+    try:
+        # Fully remove the previous normal/DA USB device before starting a new
+        # client.  Otherwise MTKClient sees the stale interface and exits with
+        # "Please disconnect" before the deliberate power-on edge.
+        target = current_usb_device()
+        target_path = target.get("path", "") if target else ""
+        if control is not None:
+            set_power(False, control, announce=False)
+            if not wait_for_usb_departure(10, target_path):
+                raise FlasherError("关闭 WWAN 电源后模组 USB 未断开，未开始写入闪存")
+            time.sleep(1)
+
+        # With the modem now absent, cdc_acm can no longer bind the short-lived
+        # Preloader interface while the signed DA takes ownership of it.
+        if cdc_was_loaded:
+            result = subprocess.run(
+                ["/sbin/rmmod", "cdc_acm"], timeout=30,
+                check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True,
+            )
+            if result.returncode != 0:
+                detail = (result.stdout or "").strip()
+                message = "cdc_acm 被其他 USB ACM 设备占用，已停止，未开始读写闪存"
+                if detail:
+                    message += f"：{detail}"
+                raise FlasherError(message)
+            log_line("已在切换电源前临时卸载 cdc_acm，预留 FM350 Preloader 接口")
+        environment = os.environ.copy()
+        environment["PYTHONUNBUFFERED"] = "1"
+        process = subprocess.Popen(
+            command,
+            cwd=MTK_ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            bufsize=0,
+        )
+        time.sleep(1)
+        if control is not None:
+            set_power(True, control, announce=False)
+            log_line("模组已进入下载会话，开始连续处理全部分区")
+        else:
+            log_line(
+                "未检测到自动 WWAN 电源控制。若模组尚未处于下载模式，"
+                "请现在手动断电再上电或重新插拔 FM350；MTKClient 正在等待连接"
+            )
+        if process.stdout is None:
+            raise FlasherError("无法读取 MTKClient 输出")
+        descriptor = process.stdout.fileno()
+        os.set_blocking(descriptor, False)
+        started = time.monotonic()
+        last_output = started
+        while True:
+            ready, _, _ = select.select([descriptor], [], [], 1.0)
+            if ready:
+                try:
+                    data = os.read(descriptor, 65536)
+                except BlockingIOError:
+                    data = b""
+                if data:
+                    last_output = time.monotonic()
+                    pending += data
+                    pieces = re.split(br"[\r\n]+", pending)
+                    pending = pieces.pop() if pieces else b""
+                    for piece in pieces:
+                        line = piece.decode("utf-8", errors="replace").strip()
+                        if line:
+                            record_output(line)
+            if process.poll() is not None:
+                try:
+                    tail = os.read(descriptor, 65536)
+                except (BlockingIOError, OSError):
+                    tail = b""
+                pending += tail
+                break
+            now = time.monotonic()
+            if now - last_output > 600:
+                process.terminate()
+                raise FlasherError("MTKClient 10 分钟没有新进展，已安全停止")
+            if now - started > 2400:
+                process.terminate()
+                raise FlasherError("单次 MTKClient 操作超过 40 分钟，已安全停止")
+        for piece in re.split(br"[\r\n]+", pending):
+            line = piece.decode("utf-8", errors="replace").strip()
+            if line:
+                record_output(line)
+        return_code = process.wait(timeout=10)
+        if return_code != 0:
+            raise FlasherError(f"MTKClient 退出码 {return_code}")
+        if any("Please disconnect" in line for line in output_lines):
+            raise FlasherError("旧的模组 USB 下载接口未完全断开，MTKClient 未建立下载会话")
+        return output_lines
+    finally:
+        if process is not None and process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+        if cdc_was_loaded:
+            subprocess.run(["/sbin/modprobe", "cdc_acm"], timeout=30, check=False)
+            log_line("已恢复 cdc_acm 驱动")
+
+
+def read_confirmed(lines, length):
+    marker = f"length {hex(length)}"
+    return any(line.startswith("Dumped offset ") and marker in line for line in lines)
+
+
+def backup_worker():
+    ensure_workspace()
+    firmware_id, directory, metadata = active_firmware()
+    verify_package_files(directory, metadata)
+    running = []
+    partial = STATE_ROOT / "fm350-full-backup.partial"
+    usb_id = current_usb()
+    success = False
+    checksum = ""
+    try:
+        update_job(state="running", progress=1, message="暂停模组服务并准备全量回读")
+        running = prepare_services()
+        lines = run_mtk([
+            "ro", "0x0", hex(FULL_BACKUP_BYTES), str(partial),
+            *mtk_common(directory, metadata),
+        ])
+        if not partial.is_file() or partial.stat().st_size != FULL_BACKUP_BYTES:
+            raise FlasherError("全量回读文件大小不正确")
+        if not read_confirmed(lines, FULL_BACKUP_BYTES):
+            log_line("DA 未输出标准回读确认行；继续使用文件大小和 SHA-256 双重校验")
+        update_job(progress=98, message="计算 511 MiB 全量备份 SHA-256")
+        checksum = sha256_file(partial)
+        os.replace(partial, BACKUP_PATH)
+        atomic_json(BACKUP_META, {
+            "name": f"FM350-full-{datetime.now().strftime('%Y%m%d-%H%M%S')}.bin",
+            "created_at": utc_now(),
+            "size": FULL_BACKUP_BYTES,
+            "size_text": human_bytes(FULL_BACKUP_BYTES),
+            "sha256": checksum,
+            "source": "本机连续 NAND 全量回读",
+            "usb_id": usb_id,
+        })
+        success = True
+    except Exception as exc:
+        log_line(f"全量备份失败：{exc}")
+        update_job(state="failed", message=str(exc), finished_at=utc_now())
+    finally:
+        try:
+            partial.unlink()
+        except FileNotFoundError:
+            pass
+        services_before = running or get_job(mark_stale=False).get("services_before", [])
+        normal = restore_services(services_before)
+        if success:
+            message = "全量备份完成并已校验，请立即下载到电脑保存"
+            if not normal:
+                message += "；但模组尚未恢复正常 USB 模式"
+            update_job(
+                state="completed", progress=100, message=message,
+                finished_at=utc_now(), backup_sha256=checksum,
+            )
+
+
+def flash_worker():
+    ensure_workspace()
+    firmware_id, directory, metadata = active_firmware()
+    content = directory / "content"
+    running = []
+    verify_root = STATE_ROOT / f"flash-{uuid.uuid4().hex}"
+    succeeded = False
+    try:
+        update_job(state="running", progress=1, message="重新校验固件与全量备份")
+        verify_package_files(directory, metadata)
+        verify_backup()
+        updates = metadata.get("updates") or []
+        if not updates:
+            raise FlasherError("固件包没有可写入分区")
+        verify_root.mkdir(mode=0o700)
+        running = prepare_services()
+        total = len(updates)
+        log_line(
+            f"按照固件 Scatter.xml 在一次下载会话中连续写入 {total} 个 UPDATE 分区；"
+            "保留全部身份、NV 和校准数据"
+        )
+
+        operations = []
+        partitions = []
+        for index, item in enumerate(updates, 1):
+            name = item["name"]
+            image = content / item["file"]
+            partitions.append({"name": name, "file": str(image)})
+            operations.append({
+                "phase": "写入", "index": index, "total": total,
+                "name": name, "size": item["image_size"],
+            })
+
+        manifest = verify_root / "flash-update.json"
+        paths = [str(manifest), str(content / "Scatter.xml"),
+                 *[entry["file"] for entry in partitions]]
+        if any(re.search(r"\s", path) for path in paths):
+            raise FlasherError("工作区路径不能包含空格")
+        atomic_json(manifest, {
+            "scatter": str(content / "Scatter.xml"),
+            "partitions": partitions,
+            "transfer_root": str(verify_root),
+        })
+        update_job(progress=2, message=f"准备连续写入 1/{total}：{updates[0]['name']}")
+        # FLASH-UPDATE is the stock XML V6 scatter workflow.  Common options
+        # follow the subcommand because mtkclient's subparser otherwise
+        # replaces them with its defaults.
+        lines = run_mtk([
+            "wpxml", str(manifest), *mtk_common(directory, metadata),
+        ], operations=operations)
+
+        if not any(line.startswith("Wrote partition set from ") for line in lines):
+            raise FlasherError(f"{total} 个分区未收到签名 DA 的 FLASH-UPDATE 完成确认")
+        log_line(f"签名 DA 已确认 {total} 个 UPDATE 分区连续写入完成")
+        succeeded = True
+    except Exception as exc:
+        log_line(f"刷写停止：{exc}；已写分区不会被误报为成功")
+        update_job(state="failed", message=str(exc), finished_at=utc_now())
+    finally:
+        if verify_root.exists():
+            shutil.rmtree(verify_root, ignore_errors=True)
+        services_before = running or get_job(mark_stale=False).get("services_before", [])
+        normal = restore_services(services_before)
+        if succeeded:
+            if normal:
+                update_job(
+                    state="completed", progress=100,
+                    message=f"全部 {total} 个固件分区已由签名 DA 连续写入，模组已正常启动",
+                    finished_at=utc_now(),
+                )
+            else:
+                update_job(
+                    state="completed", progress=100,
+                    message=(
+                        f"全部 {total} 个固件分区已由签名 DA 连续写入；"
+                        "模组启动较慢，当前尚未检测到正常 USB，可点击重启模组"
+                    ),
+                    finished_at=utc_now(),
+                )
+
+
+def restart_worker():
+    ensure_workspace()
+    running = []
+    try:
+        update_job(state="running", progress=5, message="正在暂停模组服务")
+        running = prepare_services()
+        control = rfkill_path(required=False)
+        target = current_usb_device()
+        target_path = target.get("path", "") if target else ""
+        generation = target.get("generation", "") if target else ""
+        update_job(progress=20, message="正在自动探测模组 AT 串口")
+        at_port, at_result = send_at_restart(target_path)
+        returned_device = None
+        if at_port:
+            log_line(f"已通过 {at_port} 发送 AT+CFUN=1,1：{at_result}")
+            update_job(progress=45, message="AT 重启命令已发送，等待模组重新枚举")
+            returned_device = wait_for_usb_reenumeration(
+                45, target_path, generation)
+            if not returned_device:
+                log_line("AT 命令已发送，但未检测到 USB 重新枚举")
+        else:
+            log_line(f"未能通过 AT 重启模组：{at_result}")
+
+        if not returned_device:
+            if control is None:
+                raise FlasherError("未检测到 AT 重启完成，且本机没有 WWAN 电源控制")
+            log_line("回退到 WWAN 电源冷重启")
+            subprocess.run(["/sbin/rmmod", "cdc_acm"], timeout=30, check=False)
+            set_power(False, control, announce=False)
+            update_job(progress=55, message="模组已断电，等待冷启动")
+            time.sleep(8)
+            powered_off = {item["path"]: item["usb_id"] for item in usb_devices()}
+            set_power(True, control, announce=False)
+            update_job(progress=70, message="等待模组 USB 重新出现")
+            returned_device = wait_for_usb_return(120, target_path, powered_off)
+        if not returned_device:
+            raise FlasherError("120 秒内未检测到模组 USB 重新出现")
+        log_line(f"模组重启完成，检测到 USB：{returned_device['usb_id']}")
+        update_job(
+            state="completed", progress=100,
+            message=f"模组重启完成，USB ID：{returned_device['usb_id']}",
+            finished_at=utc_now(),
+        )
+    except Exception as exc:
+        log_line(f"模组重启失败：{exc}")
+        update_job(state="failed", progress=99, message=str(exc), finished_at=utc_now())
+    finally:
+        subprocess.run(["/sbin/modprobe", "cdc_acm"], timeout=30, check=False)
+        services_before = running or get_job(mark_stale=False).get("services_before", [])
+        for name in reversed(MANAGED_SERVICES):
+            if name not in services_before:
+                continue
+            script = pathlib.Path("/etc/init.d") / name
+            if script.is_file():
+                subprocess.run([str(script), "start"], timeout=30, check=False)
+                log_line(f"已恢复服务：{name}")
+
+
+def start_job(kind):
+    ensure_idle()
+    ensure_workspace()
+    if kind == "restart":
+        if (not modem_usb_candidate(current_usb_device()) and
+                rfkill_path(required=False) is None):
+            raise FlasherError("未检测到可重启的模组，也没有 WWAN 电源控制")
+    else:
+        if not tool_status()["ready"]:
+            raise FlasherError("刷写执行层依赖不完整，请重新编译并安装完整软件包")
+        if not modem_usb_candidate(current_usb_device()) and rfkill_path(required=False) is None:
+            raise FlasherError("未检测到 FM350，并且当前设备无法自动切换 WWAN 电源")
+        firmware_id, directory, metadata = active_firmware()
+        verify_package_files(directory, metadata)
+        usage = shutil.disk_usage(STATE_ROOT)
+        if kind == "backup":
+            if usage.free < FULL_BACKUP_BYTES + 128 * 1024 * 1024:
+                raise FlasherError("工作区空间不足；全量备份至少需要约 640 MiB 可用空间")
+        elif kind == "flash":
+            verify_backup()
+            if usage.free < 256 * 1024 * 1024:
+                raise FlasherError("工作区空间不足；全量刷写和回读校验至少需要 256 MiB 可用空间")
+        else:
+            raise FlasherError("未知任务类型")
+
+    job_id = uuid.uuid4().hex
+    job = {
+        "id": job_id,
+        "kind": kind,
+        "state": "waiting",
+        "progress": 0,
+        "message": "后台任务即将启动",
+        "started_at": utc_now(),
+        "finished_at": "",
+        "logs": [],
+        "pid": 0,
+        "firmware_id": firmware_id if kind != "restart" else "",
+    }
+    atomic_json(JOB_PATH, job)
+    process = subprocess.Popen(
+        [sys.executable, str(pathlib.Path(__file__).resolve()), "_worker", kind, job_id],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        start_new_session=True,
+    )
+    job["pid"] = process.pid
+    atomic_json(JOB_PATH, job)
+    return job
+
+
+def worker(kind, job_id):
+    ensure_workspace()
+    time.sleep(0.3)
+    job = get_job(mark_stale=False)
+    if job.get("id") != job_id or job.get("kind") != kind:
+        raise FlasherError("后台任务编号不匹配")
+    update_job(pid=os.getpid())
+    if kind == "backup":
+        backup_worker()
+    elif kind == "flash":
+        flash_worker()
+    elif kind == "restart":
+        restart_worker()
+    else:
+        raise FlasherError("未知后台任务")
+
+
+def cleanup():
+    ensure_idle()
+    ensure_workspace()
+    for entry in list(STATE_ROOT.iterdir()):
+        if entry.name == WORKSPACE_MARKER:
+            continue
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+    for upload in (UPLOAD_FIRMWARE, UPLOAD_BACKUP):
+        try:
+            upload.unlink()
+        except FileNotFoundError:
+            pass
+    return {"cleaned": True}
+
+
+def emit_json(value):
+    sys.stdout.write(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+    sys.stdout.write("\n")
+
+
+def main(argv):
+    action = argv[1] if len(argv) > 1 else "status"
+    if action == "status":
+        emit_json(status())
+    elif action == "workspace-check":
+        info = workspace_info(include_mounts=False)
+        state = "可用" if info["ready"] else "未启用"
+        sys.stdout.write(
+            f"持久化工作区{state}: {info['path']}；{info['reason']}；"
+            f"容量 {info['total_text']}，可用 {info['free_text']}\n"
+        )
+    elif action == "set-workspace":
+        if len(argv) != 3:
+            raise FlasherError("请选择一个工作区目录")
+        emit_json(configure_workspace(argv[2]))
+    elif action == "import-firmware":
+        display_name = argv[2] if len(argv) > 2 else "FM350-firmware"
+        emit_json(import_firmware(UPLOAD_FIRMWARE, display_name))
+    elif action == "select-firmware":
+        if len(argv) != 3:
+            raise FlasherError("请选择固件库中的一个有效固件")
+        emit_json(select_firmware(argv[2]))
+    elif action == "import-backup":
+        display_name = argv[2] if len(argv) > 2 else "FM350-full-backup.bin"
+        emit_json(import_backup(UPLOAD_BACKUP, display_name))
+    elif action == "start-backup":
+        emit_json(start_job("backup"))
+    elif action == "start-flash":
+        confirmation = argv[2] if len(argv) > 2 else ""
+        acknowledgement = argv[3] if len(argv) > 3 else ""
+        if confirmation != "FM350-GL" or acknowledgement != "YES":
+            raise FlasherError("确认文字或风险确认无效，未启动刷写")
+        emit_json(start_job("flash"))
+    elif action == "restart-modem":
+        emit_json(start_job("restart"))
+    elif action == "firmware-download":
+        if len(argv) != 3:
+            raise FlasherError("请选择要下载的固件")
+        archive, metadata = verify_firmware_archive(argv[2])
+        del metadata
+        with open(archive, "rb") as stream:
+            shutil.copyfileobj(stream, sys.stdout.buffer, 4 * 1024 * 1024)
+    elif action == "delete-firmware":
+        if len(argv) != 3:
+            raise FlasherError("请选择要删除的固件")
+        emit_json(delete_firmware(argv[2]))
+    elif action == "delete-backup":
+        if len(argv) != 2:
+            raise FlasherError("删除全量备份不接受额外参数")
+        emit_json(delete_backup())
+    elif action == "backup-download":
+        ensure_workspace()
+        metadata = verify_backup()
+        del metadata
+        with open(BACKUP_PATH, "rb") as stream:
+            shutil.copyfileobj(stream, sys.stdout.buffer, 4 * 1024 * 1024)
+    elif action == "cleanup":
+        emit_json(cleanup())
+    elif action == "_worker":
+        if len(argv) != 4:
+            raise FlasherError("后台任务参数不完整")
+        worker(argv[2], argv[3])
+    else:
+        raise FlasherError("用法：fm350-flasher {status|workspace-check|set-workspace|import-firmware|select-firmware|firmware-download|delete-firmware|import-backup|delete-backup|start-backup|start-flash|restart-modem|backup-download|cleanup}")
+
+
+if __name__ == "__main__":
+    try:
+        main(sys.argv)
+    except Exception as error:
+        sys.stderr.write(str(error) + "\n")
+        sys.exit(1)

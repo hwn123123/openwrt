@@ -1,0 +1,217 @@
+--- a/mtkclient/Library/DA/xmlflash/xml_cmd.py
++++ b/mtkclient/Library/DA/xmlflash/xml_cmd.py
+@@ -446,7 +446,11 @@ class XMLCmd(metaclass=LogBase):
+                 f"<source_file>MEM://{hex(mem_offset)}:{hex(mem_length)}</source_file>"
+             ]
+         }
+-        cmd = self.create_cmd("WRITE-FLASH", content)
++        # XML DA V6 exposes WRITE-PARTITION as a distinct command.  Using
++        # WRITE-FLASH here makes stock signed DAs parse this payload against
++        # the raw-flash schema (which requires offset) and reject it before
++        # requesting the image.
++        cmd = self.create_cmd("WRITE-PARTITION", content)
+         return cmd
+ 
+     def cmd_write_flash(self, partition: str = "EMMC-USER", offset: int = 0, mem_offset: int = 0x8000000,
+--- a/mtkclient/Library/DA/xmlflash/xml_lib.py
++++ b/mtkclient/Library/DA/xmlflash/xml_lib.py
+@@ -449,7 +449,10 @@ class DAXML(metaclass=LogBase):
+         return cmd, result
+ 
+     def upload(self, result: DwnFile, data, display=True, raw=False):
+-        if type(result) is DwnFile:
++        # Some stock V6 DA flows return protocol objects through a reloaded
++        # module instance.  Compare the protocol shape instead of requiring
++        # Python class identity.
++        if all(hasattr(result, name) for name in ("source_file", "packet_length")):
+             # checksum = result.checksum
+             # info = result.info
+             source_file = result.source_file
+@@ -835,7 +838,20 @@ class DAXML(metaclass=LogBase):
+                     self.daconfig.storage.nand.spare_size = int(get_field(data, "spare_size"), 16)
+                     self.daconfig.storage.nand.total_size = int(get_field(data, "total_size"), 16)
+                     self.daconfig.storage.nand.cid = get_field(data, "id")
+-                    self.daconfig.storage.nand.page_parity_size = int(get_field(data, "page_parity_size"), 16)
++                    self.info(
++                        "NAND geometry: page=%s block=%s spare=%s total=%s" % (
++                            hex(self.daconfig.storage.nand.page_size),
++                            hex(self.daconfig.storage.nand.block_size),
++                            hex(self.daconfig.storage.nand.spare_size),
++                            hex(self.daconfig.storage.nand.total_size),
++                        )
++                    )
++                    # Some FM350 NAND DA responses omit the optional parity
++                    # field.  A zero parity size is valid for the raw read
++                    # path; do not abort before exposing the remaining NAND
++                    # geometry.
++                    parity_size = get_field(data, "page_parity_size")
++                    self.daconfig.storage.nand.page_parity_size = int(parity_size or "0", 16)
+                     self.daconfig.storage.nand.sub_type = get_field(data, "sub_type")
+                     self.daconfig.storage.set_flash_size()
+                 else:
+@@ -848,8 +864,21 @@ class DAXML(metaclass=LogBase):
+         int RSA_private_encrypt(int flen, unsigned char *from, unsigned char *to, RSA *rsa, int padding);
+                                     0x10,                                                 , 1
+         """
++        # Fibocom FM350-GL (MT6880, hwcode 0x0992) ships a stock XML DA that
++        # explicitly answers ERR!UNSUPPORTED to GET-SYS-PROPERTY(DA.SLA).
++        # mtkclient otherwise waits for an upload response which will never
++        # arrive, long enough for the modem watchdog to reset the USB link.
++        # The target configuration already reports SLA disabled, so avoid
++        # issuing this unsupported query only for this stock-DA path.
++        if self.config.hwcode == 0x992 and self.mtk.config.stock:
++            return False
+         data = self.get_sys_property(key="DA.SLA", length=0x200000)
+-        if data is None:
++        # Some protected FM350 DA builds return False (rather than an
++        # uploaded byte buffer) when the SLA property is unavailable.  The
++        # upstream code attempted to decode that bool and aborted before any
++        # read/write operation.  Treat it as an unavailable/disabled SLA
++        # property; the DA itself still enforces access policy below.
++        if not isinstance(data, (bytes, bytearray)):
+             return False
+         data = data.decode('utf-8')
+         if "item key=" in data:
+@@ -942,6 +971,16 @@ class DAXML(metaclass=LogBase):
+ 
+     def writeflash(self, addr, length, filename, offset=0, parttype=None, wdata=None, display=True):
+         fh = None
++        # FM350's signed stock DA permits raw NAND writes only for a small
++        # subset of areas.  Signed firmware partitions must use the official
++        # WRITE-PARTITION command so the DA can apply its partition security
++        # policy.  The caller passes the validated Scatter name through the
++        # existing --parttype option; get_storage() still resolves the medium
++        # itself to NAND-WHOLE below.
++        partitionname = None
++        if (self.mtk.config.hwcode == 0x992 and isinstance(parttype, str) and
++                parttype not in ("", "user", "NAND-WHOLE")):
++            partitionname = parttype
+         if filename != "":
+             if os.path.exists(filename):
+                 fsize = os.stat(filename).st_size
+@@ -959,27 +998,58 @@ class DAXML(metaclass=LogBase):
+             return False
+         storage, parttype, rlength = partinfo
+ 
+-        self.send_command(self.cmd.cmd_write_flash(partition=parttype, offset=addr, mem_length=length), noack=True)
++        if partitionname:
++            self.info(
++                f"Using authenticated WRITE-PARTITION for {partitionname} "
++                f"with length {hex(length)}"
++            )
++            write_command = self.cmd.cmd_write_partition(
++                partition=partitionname, mem_length=length
++            )
++        else:
++            write_command = self.cmd.cmd_write_flash(
++                partition=parttype, offset=addr, mem_length=length
++            )
++        self.send_command(write_command, noack=True)
+         cmd, fileopresult = self.get_command_result()
+-        if type(fileopresult) is FileSysOp:
+-            if fileopresult.key != "FILE-SIZE":
+-                return False
++        # WRITE-PARTITION first asks whether the host-side source exists.  Some
++        # XML DAs then ask FILE-SIZE while the FM350 DA proceeds directly to
++        # DOWNLOAD-FILE, so accept both valid sequences.
++        if getattr(fileopresult, "key", None) == "EXISTS":
++            self.ack_text("EXISTS")
++            cmd, fileopresult = self.get_command_result()
++        if getattr(fileopresult, "key", None) == "FILE-SIZE":
+             self.ack_value(length)
+-            cmd, result = self.get_command_result()
+-            if type(result) is DwnFile:
+-                if fh:
+-                    data = fh.read(length)
+-                else:
+-                    data = wdata
+-                if len(data) % 512 != 0:
+-                    fill = 512 - (len(data) % 512)
+-                    data += fill*b"\x00"
+-                if not self.upload(result, data, raw=True):
+-                    self.error("Error on writing flash at 0x%08X" % addr)
+-                    return False
+-                if fh:
+-                    fh.close()
+-                return True
++            cmd, fileopresult = self.get_command_result()
++        if all(hasattr(fileopresult, name) for name in ("source_file", "packet_length")):
++            if fh:
++                data = fh.read(length)
++            else:
++                data = wdata
++            if len(data) % 512 != 0:
++                fill = 512 - (len(data) % 512)
++                data += fill*b"\x00"
++            if not self.upload(fileopresult, data, raw=True):
++                self.error("Error on writing flash at 0x%08X" % addr)
++                return False
++            if fh:
++                fh.close()
++            return True
++        if getattr(fileopresult, "key", None) == "FILE-SIZE":
++            self.error(
++                "WRITE-FLASH data request rejected: command=%r result=%r fields=%r "
++                "offset=%s length=%s" % (
++                    cmd, fileopresult, getattr(fileopresult, "__dict__", {}),
++                    hex(addr), hex(length)
++                )
++            )
++        self.error(
++            "WRITE-FLASH setup rejected: command=%r result=%r fields=%r "
++            "offset=%s length=%s" % (
++                cmd, fileopresult, getattr(fileopresult, "__dict__", {}),
++                hex(addr), hex(length)
++            )
++        )
+         if fh:
+             fh.close()
+         return False
+--- a/mtkclient/Library/DA/mtk_da_handler.py
++++ b/mtkclient/Library/DA/mtk_da_handler.py
+@@ -677,26 +677,26 @@ class DaHandler(metaclass=LogBase):
+ 
+     def da_ess(self, sector: int, sectors: int, parttype: str):
+         if parttype == "user" or parttype is None:
+-            wipedata = b"\x00" * 0x200000
+-            error = False
+-            while sectors:
+-                sectorsize = sectors * self.config.pagesize
+-                wsize = min(sectorsize, 0x200000)
+-                if self.mtk.daloader.writeflash(addr=sector * self.config.pagesize,
+-                                                length=wsize,
+-                                                filename="",
+-                                                wdata=wipedata[:wsize],
+-                                                parttype="user"):
+-                    print(
+-                        f"Failed to format sector {str(sector)} with " +
+-                        f"sector count {str(sectors)}.")
+-                    error = True
+-                    break
+-                sectors -= (wsize // self.config.pagesize)
+-                sector += (wsize // self.config.pagesize)
+-            if not error:
++            # XML DA devices backed by raw NAND (including the FM350) need
++            # ERASE-FLASH/NAND-WHOLE here.  Zero-filling via WRITE-FLASH is
++            # not equivalent to SP Flash Tool's Format operation and is
++            # rejected by the FM350 DA for the expdb range.
++            start_sector = sector
++            sector_count = sectors
++            if self.mtk.daloader.formatflash(
++                    addr=sector * self.config.pagesize,
++                    length=sectors * self.config.pagesize,
++                    partitionname=None,
++                    parttype=parttype,
++                    display=True):
+                 print(
+-                    f"Formatted sector {str(sector)} with sector count {str(sectors)}.")
++                    f"Formatted sector {str(start_sector)} with " +
++                    f"sector count {str(sector_count)}.")
++                return True
++            print(
++                f"Failed to format sector {str(start_sector)} with " +
++                f"sector count {str(sector_count)}.")
++            return False
+         else:
+             pos = 0
+             self.mtk.daloader.formatflash(addr=sector * self.config.pagesize,

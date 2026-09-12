@@ -1,0 +1,20 @@
+--- a/src/fm350-mm.c
++++ b/src/fm350-mm.c
+@@ -767,7 +767,7 @@ static int serving_plmn(int fd, char *pl
+ 
+     if(at_cmd(fd, "AT+COPS=3,2", resp, sizeof(resp), 5000)!=1 ||
+        at_cmd(fd, "AT+COPS?", resp, sizeof(resp), 5000)!=1 ||
+-       get_line_after(resp, "+COPS: ", line, sizeof(line))!=0 ||
++       get_line_after(resp, "+COPS:", line, sizeof(line))!=0 ||
+        field_get(line, 2, plmn, plmnsz)!=0)
+     {
+         return -1;
+@@ -1210,7 +1210,7 @@ static int wait_registration(int fd, int
+             state = (eps_state==1 || eps_state==5) ? eps_state : gprs_state;
+ 
+             at_cmd(fd, "AT+COPS?", resp, sizeof(resp), 5000);
+-            if(get_line_after(resp, "+COPS: ", line, sizeof(line))==0)
++            if(get_line_after(resp, "+COPS:", line, sizeof(line))==0)
+             {
+                 field_get(line, 2, oper, sizeof(oper));
+             }

@@ -1,0 +1,324 @@
+--- a/app/pcat_config.py
++++ b/app/pcat_config.py
+@@ -23,6 +23,8 @@
+ 
+ default_user_config = {
+     "sms_hook_enabled": False,
++    # 3GPP message storage used for newly received SMS: SM=SIM, ME=modem.
++    "sms_storage": "SM",
+     'roaming': 1,
+     'lte_bands_allowed': "all",
+     'nr5g_bands_allowed': "all",
+@@ -119,6 +121,20 @@
+     save_user_configs(global_user_config)
+ 
+ 
++def get_sms_storage():
++    """Return the preferred 3GPP SMS storage (SIM by default)."""
++    value = str(get_user_config_key("sms_storage", "SM") or "SM").upper()
++    return value if value in ("SM", "ME") else "SM"
++
++
++def set_sms_storage(value):
++    """Persist the preferred 3GPP SMS storage."""
++    value = str(value or "").upper()
++    if value not in ("SM", "ME"):
++        raise ValueError("SMS storage must be SM or ME")
++    set_user_config_key("sms_storage", value)
++
++
+ def get_user_configs(fallback=default_user_config):
+     """
+     Load the user JSON config from disk.
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -62,5 +62,5 @@
+ import pcat_config
+ import app as app_module
+ from pcat_util import isp_dict, pcat_logger
+-from database import init_db, connect_db, get_rows
++from database import init_db, connect_db, get_rows, get_rows_param
+ from pysms_tool import SMSTool
+@@ -268,14 +268,22 @@
+         when the modem has reset it.
+         """
+         try:
++            preferred_storage = pcat_config.get_sms_storage()
+             ok, responses = self._sms_command(sms_tool, "AT+CNMI?", 3)
+             compact = "".join("".join(responses).split())
+-            if ok and "+CNMI:2,1,0,0,0" in compact:
++            cnmi_ready = ok and "+CNMI:2,1,0,0,0" in compact
++            cpms_ok, cpms_responses = self._sms_command(sms_tool, "AT+CPMS?", 3)
++            cpms_compact = "".join("".join(cpms_responses).split())
++            storage_ready = (
++                cpms_ok and cpms_compact.startswith(
++                    '+CPMS:"' + preferred_storage + '",')
++            )
++            if cnmi_ready and storage_ready:
+                 return True
+ 
+             commands = (
+                 "AT+CMEE=2",
+-                'AT+CPMS="SM","SM","SM"',
++                'AT+CPMS="{0}","{0}","{0}"'.format(preferred_storage),
+                 "AT+CMGF=0",
+                 "AT+CGSMS=1",
+                 "AT+CNMI=2,1,0,0,0",
+@@ -298,6 +306,39 @@
+                 "Failed to initialize modem SMS session: %s", error)
+         return False
+ 
++    def get_sms_storage(self):
++        """Return the configured storage and its user-facing label."""
++        storage = pcat_config.get_sms_storage()
++        return {
++            "storage": storage,
++            "label": "SIM 卡" if storage == "SM" else "模组设备",
++        }
++
++    def set_sms_storage(self, storage):
++        """Set where the modem stores newly received messages."""
++        storage = str(storage or "").upper()
++        if storage not in ("SM", "ME"):
++            return False
++        try:
++            with self.modem_client.serial_lock:
++                serial_obj = self._wait_for_serial_connection(timeout_seconds=3.0)
++                if serial_obj is None:
++                    return False
++                sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL)
++                ok, _ = self._sms_command(
++                    sms_tool,
++                    'AT+CPMS="{0}","{0}","{0}"'.format(storage),
++                    5,
++                )
++                if not ok:
++                    return False
++            pcat_config.set_sms_storage(storage)
++            self.sms_notification_event.set()
++            return True
++        except Exception as error:
++            pcat_logger.logger.error("Failed to set SMS storage: %s", error)
++            return False
++
+     def run(self):
+         next_hook_time = time.monotonic() + INTERVAL_SMS_HOOK
+         next_session_check = 0.0
+@@ -697,8 +738,8 @@
+                 pcat_logger.logger.error(f"Failed to save SMS to database: {e}")
+                 continue  # Don't delete from modem if database save failed
+         
+-        # Delete saved messages from modem/SIM storage
+-        self._delete_messages_from_modem(messages_to_delete)
++        # The SQLite database is only a Web mirror. Keep messages in their
++        # selected SIM/modem storage until the user explicitly deletes them.
+         if inserted_count:
+             self._notify_database_changed()
+         return inserted_count
+@@ -775,11 +816,26 @@
+ 
+     def delete_sms_from_db(self, sms_id):
+         """
+-        Delete a single SMS record by database ID.
++        Delete a single SMS from its real storage and then from the Web mirror.
+         """
+         try:
++            rows = get_rows_param(
++                self.modem_db_path,
++                "SELECT id, storage, direction, raw_json FROM sms WHERE id = ?",
++                (int(sms_id),),
++            )
++            if not rows:
++                return False
++            row = rows[0]
++            if int(row["direction"] or 0) == 0 and row["raw_json"]:
++                raw = json.loads(row["raw_json"])
++                indexes = raw.get("indexes") or [raw.get("index")]
++                indexes = [index for index in indexes if index is not None]
++                storage = str(raw.get("storage") or row["storage"] or "SM").upper()
++                if indexes and not self._delete_messages_from_modem(
++                        [(index, storage) for index in indexes]):
++                    return False
+             sql_command = "DELETE FROM sms WHERE id = ?;"
+-            print("delete_sms_from_db: ", sql_command, "params:", [int(sms_id)])
+             self.exec_sql_param(sql_command, [int(sms_id)])
+             self._notify_database_changed()
+         except Exception as e:
+@@ -934,7 +990,14 @@
+                     if not self._ensure_sms_session(sms_tool):
+                         pcat_logger.logger.warning(
+                             "Polling SMS with an unconfirmed receive session")
+-                    all_messages = sms_tool.get_all_messages(storage_types=["SM", "ME"], delete_after=True)
++                    all_messages = sms_tool.get_all_messages(
++                        storage_types=["SM", "ME"], delete_after=False)
++                    preferred = pcat_config.get_sms_storage()
++                    self._sms_command(
++                        sms_tool,
++                        'AT+CPMS="{0}","{0}","{0}"'.format(preferred),
++                        5,
++                    )
+             except Exception as sms_recv_error:
+                 pcat_logger.logger.error(f"SMS receive operation failed: {sms_recv_error}")
+                 # Don't cleanup serial connection - let modem_client handle reconnection
+@@ -1012,9 +1075,7 @@
+         messages_to_delete: list of tuples (index, storage)
+         """
+         if not messages_to_delete:
+-            return
+-            
+-        print(f"Deleting {len(messages_to_delete)} messages from modem storage via pysms_tool")
++            return True
+         
+         # Group by storage type for efficiency
+         storage_groups = {}
+@@ -1024,88 +1085,55 @@
+             storage_groups[storage].append(index)
+         
+         for storage, indexes in storage_groups.items():
+-            deleted_count = 0
+-            # Get serial connection with minimal lock time
+-            serial_obj = None
+-            with self.modem_client.serial_lock:
+-                serial_obj = self._wait_for_serial_connection(timeout_seconds=3.0)
+-                if serial_obj is None:
+-                    print(f"Cannot delete messages from {storage}: No serial connection available")
+-                    return
+-            
+-            # Delete messages with minimal lock time per operation  
+-            for index in indexes:
+-                try:
+-                    with self.modem_client.serial_lock:
+-                        # Use pysms_tool to delete specific message by index with shared serial port
+-                        sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL, storage=storage)
+-                        success = sms_tool.delete_sms(str(index))
+-                        
+-                        if success:
+-                            deleted_count += 1
+-                            print(f"Deleted SMS index {index} from {storage} storage")
+-                        else:
+-                            print(f"Warning: Failed to delete SMS index {index} from {storage}")
+-                            
+-                except Exception as e:
+-                    print(f"Warning: Error deleting SMS index {index} from {storage}: {e}")
+-                    continue
+-            
+-            print(f"Successfully deleted {deleted_count}/{len(indexes)} messages from {storage} storage via pysms_tool")
++            try:
++                with self.modem_client.serial_lock:
++                    serial_obj = self._wait_for_serial_connection(timeout_seconds=3.0)
++                    if serial_obj is None:
++                        return False
++                    sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL)
++                    selected, _ = self._sms_command(
++                        sms_tool, 'AT+CPMS="{0}"'.format(storage), 5)
++                    if not selected:
++                        return False
++                    for index in indexes:
++                        deleted, _ = self._sms_command(
++                            sms_tool, "AT+CMGD={0}".format(int(index)), 5)
++                        if not deleted:
++                            return False
++            except Exception as error:
++                pcat_logger.logger.error("Failed to delete modem SMS: %s", error)
++                return False
++        return True
+     
+     def clear_all_sms(self):
+         """
+-        Clear all SMS using pysms_tool instead of subprocess.
+-        This clears SMS from database and sends commands to clear modem storage.
++        Clear all SMS from both modem stores, then clear the Web mirror.
+         """
+         print("Clearing all SMS messages via pysms_tool")
+         
+-        # Clear all SMS from database
+         try:
+-            self.exec_sql("DELETE FROM sms")
+-            print("Database: All SMS messages cleared successfully")
+-            self._notify_database_changed()
+-        except Exception as e:
+-            pcat_logger.logger.error(f"Failed to clear SMS from database: {e}")
+-            raise Exception(f"Database clear failed: {e}")
+-        
+-        # Clear all SMS from modem storage areas using pysms_tool
+-        try:
+-            # Get serial connection with minimal lock time
+-            serial_obj = None
+             with self.modem_client.serial_lock:
+                 serial_obj = self._wait_for_serial_connection(timeout_seconds=3.0)
+                 if serial_obj is None:
+                     raise Exception("Failed to get serial connection for clearing SMS")
+-                    
+-            storage_types = ["SM", "ME"]
+-            cleared_count = 0
+-            
+-            for storage in storage_types:
+-                try:
+-                    with self.modem_client.serial_lock:
+-                        # Use pysms_tool to delete all messages from this storage with shared serial port
+-                        sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL, storage=storage)
+-                        success = sms_tool.delete_sms("all")
+-                        
+-                        if success:
+-                            cleared_count += 1
+-                            print(f"Cleared all messages from {storage} storage via pysms_tool")
+-                        else:
+-                            print(f"Warning: Failed to clear {storage} storage via pysms_tool")
+-                            
+-                except Exception as e:
+-                    print(f"Warning: Failed to clear {storage} storage via pysms_tool: {e}")
+-                    continue
+-            
++                sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL)
++                for storage in ("SM", "ME"):
++                    selected, _ = self._sms_command(
++                        sms_tool, 'AT+CPMS="{0}"'.format(storage), 5)
++                    deleted, _ = self._sms_command(sms_tool, "AT+CMGD=1,4", 8)
++                    if not selected or not deleted:
++                        raise Exception("Failed to clear {0} SMS storage".format(storage))
++                preferred = pcat_config.get_sms_storage()
++                self._sms_command(
++                    sms_tool,
++                    'AT+CPMS="{0}","{0}","{0}"'.format(preferred),
++                    5,
++                )
++            self.exec_sql("DELETE FROM sms")
++            self._notify_database_changed()
+         except Exception as e:
+-            pcat_logger.logger.error(f"Failed to clear SMS from modem via pysms_tool: {e}")
+-            # Don't raise exception here as database was already cleared successfully
+-            print(f"Warning: Modem clear operations failed: {e}")
+-
+-
+-        print("Cleared all SMS messages from modem storage via pysms_tool")
+-        
++            pcat_logger.logger.error("Failed to clear all SMS: %s", e)
++            raise
+         return True
+ 
+     # Voice Call Management Functions
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -6747,6 +6747,22 @@
+     return rsp
+ 
+ 
++@api_auth_required
++@flask_app.route("/api/v1/modem/sms/storage.json", methods=['GET', 'POST'])
++def api_sms_storage():
++    """Read or change the modem's preferred incoming SMS storage."""
++    if request.method == 'GET':
++        return jsonify({"status": "ok", **pc_app.sms_client.get_sms_storage()})
++    data = request.get_json(silent=True) or {}
++    storage = str(data.get("storage") or "").upper()
++    if storage not in ("SM", "ME"):
++        return jsonify({"status": "error", "message": "storage must be SM or ME"}), 400
++    if not pc_app.sms_client.set_sms_storage(storage):
++        return jsonify({"status": "error", "message": "模组未确认短信存储设置"}), 503
++    invalidate_sms_cache()
++    return jsonify({"status": "ok", **pc_app.sms_client.get_sms_storage()})
++
++
+ # MCU Update Management APIs
+ @api_auth_required  
+ @flask_app.route("/api/v1/mcu_dev_check.json", methods=['GET'])

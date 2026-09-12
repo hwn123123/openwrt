@@ -4,8 +4,27 @@
 
 AT_CMD="$2"
 
+# 优先使用 QModem 当前启用的模组。USB 设备重新枚举后，QModem 会保留
+# disabled 的旧路径，不能再无条件读取第一个 modem-device。
+MODEM_SECTION=$(
+    uci -q show qmodem 2>/dev/null |
+        sed -n 's/^qmodem\.\([^.=]*\)=modem-device$/\1/p' |
+        while read -r section; do
+            state=$(uci -q get "qmodem.$section.state" 2>/dev/null)
+            port=$(uci -q get "qmodem.$section.at_port" 2>/dev/null)
+            if [ "$state" != "disabled" ] && [ -n "$port" ]; then
+                echo "$section"
+                break
+            fi
+        done
+)
+
 # 从 qmodem 配置获取 AT 端口（通用，支持任意模组）
-AT_PORT=$(uci -q get qmodem.@modem-device[0].at_port 2>/dev/null)
+if [ -n "$MODEM_SECTION" ]; then
+    AT_PORT=$(uci -q get "qmodem.$MODEM_SECTION.at_port" 2>/dev/null)
+else
+    AT_PORT=$(uci -q get qmodem.@modem-device[0].at_port 2>/dev/null)
+fi
 
 # 兜底：从 at-daemon 已打开的端口里取第一个
 if [ -z "$AT_PORT" ]; then

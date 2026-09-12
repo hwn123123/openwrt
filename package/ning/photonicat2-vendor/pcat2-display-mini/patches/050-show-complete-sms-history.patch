@@ -1,0 +1,22 @@
+--- a/config.json
++++ b/config.json
+@@ -28,7 +28,7 @@
+     "ping_type1": "icmp",
+     "config_version": 102,
+     "show_sms": true,
+-    "sms_limit_for_screen": 5,
++    "sms_limit_for_screen": 50,
+     "screen_dimmer_time_on_battery_seconds": 60,
+     "screen_dimmer_time_on_dc_seconds": 86400,
+     "screen_max_brightness": 100,
+--- a/utils.go
++++ b/utils.go
+@@ -719,7 +719,8 @@ func deepMergeJSONOpt(dst, src map[string]interface{}, replaceArrays bool) map[
+ 		// valid, user-selectable value (backlight fully off when idle).
+ 		if key == "screen_max_brightness" ||
+-			key == "screen_dimmer_time_on_battery_seconds" || key == "screen_dimmer_time_on_dc_seconds" {
++			key == "screen_dimmer_time_on_battery_seconds" || key == "screen_dimmer_time_on_dc_seconds" ||
++			key == "sms_limit_for_screen" {
+ 			if numVal, ok := srcVal.(float64); ok && numVal == 0 {
+ 				continue // Don't override with zero value
+ 			}

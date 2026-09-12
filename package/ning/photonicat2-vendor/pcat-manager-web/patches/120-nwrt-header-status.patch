@@ -1,0 +1,58 @@
+--- pcat-manager-web-2.0.0.orig/app/templates/_base.html
++++ pcat-manager-web-2.0.0/app/templates/_base.html
+@@ -37,2 +37,2 @@
+-        <div class="flex flex-grow items-center justify-end text-sm text-gray-500">
+-          <div id="network-status" class="flex flex-grow items-center justify-end text-sm text-gray-500" x-cloak x-show="$store.app.net_icons_loaded">
++        <div class="pcat-header-tools flex flex-grow items-center justify-end text-sm text-gray-500">
++          <div id="network-status" class="pcat-header-status flex flex-grow items-center justify-end text-sm text-gray-500" x-cloak x-show="$store.app.net_icons_loaded">
+@@ -40 +40,2 @@
+-            <div class="relative" style="margin-right:1px" x-show="$store.app.modem_mode"
++            <div class="pcat-net-chip pcat-net-modem relative" x-show="$store.app.modem_mode"
++                 :class="{ 'is-route': $store.app.net_active_egress === 'mobile', 'is-online': $store.app.net_sim_enabled, 'is-offline': !$store.app.net_sim_enabled }"
+@@ -42,2 +43 @@
+-              <span class="font-bold" x-text="$store.app.modem_mode"
+-                    :style="`color:${$store.app.net_sim_enabled ? '#00274D' : '#CCCCCC'};font-size:15px;line-height:1`"></span>
++              <span class="pcat-net-label font-bold" x-text="$store.app.modem_mode"></span>
+@@ -48 +47,0 @@
+-              <div x-show="$store.app.net_active_egress === 'mobile'" style="position:absolute;bottom:-3px;left:2px;right:2px;height:2px;background:linear-gradient(to bottom, #4ADE80, #16A34A);border-radius:1px"></div>
+@@ -51 +50,2 @@
+-            <div class="relative" x-show="$store.app.net_lan_exists"
++            <div class="pcat-net-chip pcat-net-lan relative" x-show="$store.app.net_lan_exists"
++                 :class="{ 'is-route': $store.app.net_active_egress === 'lan', 'is-online': $store.app.net_lan_enabled && $store.app.net_lan_carrier, 'is-offline': !$store.app.net_lan_enabled || !$store.app.net_lan_carrier }"
+@@ -62 +61,0 @@
+-              <div x-show="$store.app.net_active_egress === 'lan'" style="position:absolute;bottom:-3px;left:2px;right:2px;height:2px;background:linear-gradient(to bottom, #4ADE80, #16A34A);border-radius:1px"></div>
+@@ -65 +64,2 @@
+-            <div class="relative" x-show="$store.app.net_wan_exists"
++            <div class="pcat-net-chip pcat-net-wan relative" x-show="$store.app.net_wan_exists"
++                 :class="{ 'is-route': $store.app.net_active_egress === 'wan', 'is-online': $store.app.net_wan_enabled && $store.app.net_wan_carrier, 'is-offline': !$store.app.net_wan_enabled || !$store.app.net_wan_carrier }"
+@@ -76 +75,0 @@
+-              <div x-show="$store.app.net_active_egress === 'wan'" style="position:absolute;bottom:-3px;left:2px;right:2px;height:2px;background:linear-gradient(to bottom, #4ADE80, #16A34A);border-radius:1px"></div>
+@@ -79 +78,2 @@
+-            <div class="relative" x-show="$store.app.net_wifi0_exists"
++            <div class="pcat-net-chip pcat-net-wifi relative" x-show="$store.app.net_wifi0_exists"
++                 :class="{ 'is-online': $store.app.net_wifi0_enabled, 'is-offline': !$store.app.net_wifi0_enabled }"
+@@ -88 +88,2 @@
+-            <div class="relative" x-show="$store.app.net_wifi1_exists"
++            <div class="pcat-net-chip pcat-net-wifi relative" x-show="$store.app.net_wifi1_exists"
++                 :class="{ 'is-online': $store.app.net_wifi1_enabled, 'is-offline': !$store.app.net_wifi1_enabled }"
+@@ -98 +99 @@
+-          <form method="POST" target="_blank" class="inline" onsubmit="this.action = 'http://' + window.location.hostname + ':8080/cgi-bin/luci'">
++          <form method="POST" target="_blank" class="pcat-admin-link inline" onsubmit="this.action = 'http://' + window.location.hostname + ':8080/cgi-bin/luci'">
+@@ -101 +102 @@
+-            <button type="submit" class="ml-1 mr-2 text-base underline hover:no-underline focus:ring-2 focus:ring-blue-600 bg-transparent border-none cursor-pointer" title="{{locales['openwrt_tooltip']}}">
++            <button type="submit" class="pcat-header-control ml-1 mr-2 text-base focus:ring-2 focus:ring-blue-600 bg-transparent border-none cursor-pointer" title="{{locales['openwrt_tooltip']}}">
+@@ -106 +107 @@
+-          <div class="mr-2 flex items-center" x-cloak x-show="$store.app.network_mode === 'all_off'">
++          <div class="pcat-status-pill pcat-airplane-pill is-alert mr-2 flex items-center" x-cloak x-show="$store.app.network_mode === 'all_off'">
+@@ -109 +110 @@
+-          <div class="mr-2 flex items-center" x-cloak x-show="$store.app.network_route_mode === 'mobile' && $store.app.network_mode !== 'all_off'">
++          <div class="pcat-status-pill pcat-carrier-pill is-active mr-2 flex items-center" x-cloak x-show="$store.app.network_route_mode === 'mobile' && $store.app.network_mode !== 'all_off'">
+@@ -114 +115 @@
+-          <div class="mr-2 flex items-center translate-y-[1px]" x-cloak x-show="$store.app.firmware_exist">
++          <div class="pcat-status-pill pcat-battery-pill mr-2 flex items-center" :class="{ 'is-charging': $store.app.on_charging === 1, 'is-low': $store.app.charge_percent < 20 }" x-cloak x-show="$store.app.firmware_exist">
+@@ -128 +129 @@
+-          <div class="relative float-right inline-block">
++          <div class="pcat-account relative float-right inline-block">
+@@ -130 +131 @@
+-              <button @click="user_menu_open = true" class="flex items-center focus:outline-none">
++              <button @click="user_menu_open = true" class="pcat-header-control pcat-account-button flex items-center focus:outline-none">

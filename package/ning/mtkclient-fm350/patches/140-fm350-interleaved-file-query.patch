@@ -1,0 +1,100 @@
+--- a/mtkclient/Library/DA/xmlflash/xml_lib.py
++++ b/mtkclient/Library/DA/xmlflash/xml_lib.py
+@@ -366,19 +366,44 @@
+                     return data
+             return None
+ 
+-    def get_response_without_progress(self):
++    def get_response_without_progress(self, available_files=None):
+         data = self.get_response()
+-        while get_field(data, "command") == "CMD:PROGRESS-REPORT":
+-            message = get_field(data, "message")
+-            if message:
+-                self.info(f"DA progress: {message}")
+-            self.ack()
+-            progress_response = ""
+-            while progress_response != "OK!EOT":
+-                progress_response = self.get_response()
++        while True:
++            command = get_field(data, "command")
++            if command == "CMD:PROGRESS-REPORT":
++                message = get_field(data, "message")
++                if message:
++                    self.info(f"DA progress: {message}")
+                 self.ack()
+-            data = self.get_response()
+-        return data
++                progress_response = ""
++                while progress_response != "OK!EOT":
++                    progress_response = self.get_response()
++                    self.ack()
++                data = self.get_response()
++                continue
++            if command == "CMD:FILE-SYS-OPERATION" and available_files is not None:
++                key = get_field(data, "key")
++                requested = get_field(data, "file_path")
++                filename = available_files.get(self._batch_path_key(requested))
++                if key == "EXISTS":
++                    result = "EXISTS" if filename else "NOT-EXISTS"
++                    self.ack()
++                    self.ack_text(result)
++                    self.info(
++                        f"DA file query: EXISTS {os.path.basename(requested)} -> {result}"
++                    )
++                elif key == "FILE-SIZE" and filename:
++                    length = os.path.getsize(filename)
++                    self.ack()
++                    self.ack_value(length)
++                    self.info(
++                        f"DA file query: FILE-SIZE {os.path.basename(requested)} -> {length}"
++                    )
++                else:
++                    return data
++                data = self.get_response()
++                continue
++            return data
+ 
+     def get_command_result(self):
+         # Stock XML V6 DAs can interleave progress reports with command and
+@@ -532,12 +557,12 @@
+     def _batch_path_key(filename):
+         return os.path.normcase(os.path.normpath(str(filename).replace("\\", "/")))
+ 
+-    def _upload_batch_file(self, request, filename, display=True):
++    def _upload_batch_file(self, request, filename, available_files, display=True):
+         length = os.path.getsize(filename)
+         packet_length = request.packet_length
+         pg = progress(total=length, prefix="Upload:", guiprogress=self.mtk.config.guiprogress)
+         self.ack_value(length)
+-        response = self.get_response_without_progress()
++        response = self.get_response_without_progress(available_files)
+         if response != "OK":
+             self.error(f"DA refused file {filename}: {response!r}")
+             return None, response
+@@ -546,7 +571,7 @@
+         with open(filename, "rb") as source:
+             while position < length:
+                 self.ack_value(0)
+-                response = self.get_response_without_progress()
++                response = self.get_response_without_progress(available_files)
+                 if "OK" not in response:
+                     self.error(
+                         f"DA refused packet for {filename} at {hex(position)}: "
+@@ -558,7 +583,7 @@
+                     self.error(f"Unexpected end of file while sending {filename}")
+                     return None, "unexpected end of file"
+                 self.xsend(data=chunk)
+-                response = self.get_response_without_progress()
++                response = self.get_response_without_progress(available_files)
+                 if "OK" not in response:
+                     self.error(
+                         f"DA rejected {filename} at {hex(position)}: {response!r}"
+@@ -660,7 +685,7 @@
+                         f"BATCH-PARTITION-START {index}/{len(command_partitions)} {name}"
+                     )
+                 command, result = self._upload_batch_file(
+-                    result, filename, display=display and not is_scatter
++                    result, filename, files, display=display and not is_scatter
+                 )
+                 if command is None:
+                     return False

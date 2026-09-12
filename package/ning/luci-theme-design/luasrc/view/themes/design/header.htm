@@ -71,6 +71,9 @@
 	<meta name="msapplication-TileColor" content="#09c">
 	<link rel="stylesheet" href="<%=media%>/css/style.css?v=<%= ver.luciversion %>">
 	<link rel="stylesheet" href="<%=media%>/css/compat-openwrt23.css?v=<%= ver.luciversion %>">
+	<% if path == "admin-status-overview" then %>
+	<link rel="stylesheet" href="<%=media%>/css/overview.css?v=<%= ver.luciversion %>-2026090801">
+	<% end %>
 	<script src="<%=media%>/js/jquery.min.js?v=3.5.1"></script>
 	<script src="<%=media%>/js/compat.js?v=<%= ver.luciversion %>"></script>
 	<link rel="shortcut icon" href="<%=media%>/favicon.ico">
@@ -87,7 +90,7 @@
 	</style>
 	<% end -%>
 </head>
-	<body class="lang_<%=luci.i18n.context.lang%> <% if luci.dispatcher.context.authsession then %>logged-in<% end %> <% if not (path == "") then %>node-<%= path %><% else %>node-main-login<% end %>" data-page="<%= pcdata(path) %>">
+	<body class="theme-design lang_<%=luci.i18n.context.lang%> <% if luci.dispatcher.context.authsession then %>logged-in<% end %> <% if not (path == "") then %>node-<%= path %><% else %>node-main-login<% end %>" data-page="<%= pcdata(path) %>">
 <header>
 	<div class="fill">
 		<div class="container">

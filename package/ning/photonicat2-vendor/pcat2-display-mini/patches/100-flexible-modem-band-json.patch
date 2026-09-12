@@ -1,0 +1,65 @@
+--- a/processData.go
++++ b/processData.go
+@@ -239,7 +239,32 @@ func (mt *ModemTemperature) UnmarshalJS
+ 	*mt = parsed
+ 	return nil
+ }
+ 
++// ModemStringList accepts both the legacy comma-separated string returned by
++// older pcat-manager builds and the JSON array returned by current builds.
++// Keeping a single normalized string prevents an API shape change from
++// stopping the display's entire modem-data update.
++type ModemStringList string
++
++func (value *ModemStringList) UnmarshalJSON(data []byte) error {
++	var text string
++	if err := secureUnmarshal(data, &text); err == nil {
++		*value = ModemStringList(text)
++		return nil
++	}
++
++	var values []interface{}
++	if err := secureUnmarshal(data, &values); err != nil {
++		return err
++	}
++	parts := make([]string, 0, len(values))
++	for _, item := range values {
++		parts = append(parts, fmt.Sprint(item))
++	}
++	*value = ModemStringList(strings.Join(parts, ","))
++	return nil
++}
++
+ type ModemBasicInfo struct {
+ 	CellCarrierInfo     string         `json:"cell_carrier_info"`
+ 	FirmwareVersion     string         `json:"firmware_version"`
+@@ -259,10 +284,10 @@ type ModemBasicInfo struct {
+ 	ModemUSBSpeed       string         `json:"modem_usb_speed"`
+ 	ModemUSBNetMode     string         `json:"modem_usbnet_mode"`
+ 	ModemValid          bool           `json:"modem_valid"`
+-	PolicyLTEBands      string         `json:"policy_lte_bands"`
+-	PolicyNR5GBands     string         `json:"policy_nr5g_bands"`
+-	SelectedLTEBands    string         `json:"selected_lte_bands"`
+-	SelectedNR5GBands   string         `json:"selected_nr5g_bands"`
++	PolicyLTEBands      ModemStringList `json:"policy_lte_bands"`
++	PolicyNR5GBands     ModemStringList `json:"policy_nr5g_bands"`
++	SelectedLTEBands    ModemStringList `json:"selected_lte_bands"`
++	SelectedNR5GBands   ModemStringList `json:"selected_nr5g_bands"`
+ 	SimNumber           string         `json:"sim_number"`
+ 	SimState            string         `json:"sim_state"`
+ 	SMSCheckInterval    int            `json:"sms_check_interval"`
+@@ -596,10 +621,10 @@ func getInfoFromPcatWeb() {
+ 				globalData.Store("ModemUSBSpeed", mb.ModemUSBSpeed)
+ 				globalData.Store("ModemUSBNetMode", mb.ModemUSBNetMode)
+ 				globalData.Store("ModemValid", mb.ModemValid)
+-				globalData.Store("PolicyLTEBands", mb.PolicyLTEBands)
+-				globalData.Store("PolicyNR5GBands", mb.PolicyNR5GBands)
+-				globalData.Store("SelectedLTEBands", mb.SelectedLTEBands)
+-				globalData.Store("SelectedNR5GBands", mb.SelectedNR5GBands)
++				globalData.Store("PolicyLTEBands", string(mb.PolicyLTEBands))
++				globalData.Store("PolicyNR5GBands", string(mb.PolicyNR5GBands))
++				globalData.Store("SelectedLTEBands", string(mb.SelectedLTEBands))
++				globalData.Store("SelectedNR5GBands", string(mb.SelectedNR5GBands))
+ 				globalData.Store("SMSCheckInterval", mb.SMSCheckInterval)
+ 				globalData.Store("SMSForward", mb.SMSForward)
+ 				globalData.Store("SMSForwardTo", mb.SMSForwardTo)

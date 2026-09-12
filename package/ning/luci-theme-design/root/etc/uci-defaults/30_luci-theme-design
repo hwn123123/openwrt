@@ -1,12 +1,12 @@
 #!/bin/sh
 
-if [ "$PKG_UPGRADE" != 1 ]; then
-	uci get luci.themes.Design >/dev/null 2>&1 || \
-	uci batch <<-EOF
-		set luci.themes.Design=/luci-static/design
-		set luci.main.mediaurlbase=/luci-static/design
-		commit luci
-	EOF
-fi
+# luci-base installs Bootstrap as its built-in fallback. This package is
+# explicitly selected as the firmware theme, so always register Design and
+# make it the active theme when the image runs its first-boot defaults.
+uci -q batch <<-EOF
+	set luci.themes.Design='/luci-static/design'
+	set luci.main.mediaurlbase='/luci-static/design'
+	commit luci
+EOF
 
 exit 0

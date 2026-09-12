@@ -1,0 +1,211 @@
+Index: pcat-manager-web-2.0.0/app/pcat_manager_web.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/pcat_manager_web.py
++++ pcat-manager-web-2.0.0/app/pcat_manager_web.py
+@@ -1718,6 +1718,38 @@ def dashboard_json():
+     rsp.headers['Content-Type'] = 'application/json'
+     return rsp
+ 
++@flask_app.route("/api/v1/telemetry/history.json", methods=['GET'])
++@api_auth_required
++def telemetry_history_json():
++    """Proxy the loopback-only persistent telemetry store to logged-in users."""
++    range_name = request.args.get("range", "3h")
++    if range_name not in ("3h", "24h", "7d"):
++        return jsonify({"status": "error", "message": "Unsupported range"}), 400
++
++    query = urllib.parse.urlencode({"range": range_name})
++    url = "http://127.0.0.1:8092/v1/telemetry?" + query
++    try:
++        internal_request = urllib.request.Request(url, headers={
++            "User-Agent": "pcat-manager-web/telemetry-proxy",
++            "Cache-Control": "no-cache",
++        })
++        with urllib.request.urlopen(internal_request, timeout=6.0) as response:
++            payload = response.read(2 * 1024 * 1024)
++            if response.status != 200:
++                raise urllib.error.HTTPError(
++                    url, response.status, "telemetry error",
++                    response.headers, None
++                )
++        rsp = make_response(payload)
++        rsp.headers["Content-Type"] = "application/json; charset=utf-8"
++        rsp.headers["Cache-Control"] = "no-store"
++        return rsp
++    except (urllib.error.HTTPError, urllib.error.URLError,
++            OSError, TimeoutError) as error:
++        pcat_logger.logger.warning(
++            "Telemetry sidecar unavailable: %s", type(error).__name__)
++        return jsonify({"status": "error", "message": "Telemetry unavailable"}), 503
++
+ @api_auth_required
+ @flask_app.route("/api/v1/gps.json", methods=['GET'])
+ def gps_json():
+@@ -5948,6 +5980,30 @@ def api_model_basic():
+     response_json["selected_lte_bands"] = pc_app.modem_client.basic.get("setting_lte_bands", [])
+     response_json["selected_nr5g_bands"] = pc_app.modem_client.basic.get("setting_nr5g_bands", [])
+ 
++    # Structured fields parsed from the FM350 commands CESQ, GTCCINFO,
++    # GTCAINFO and GTACT.  Keep the legacy strings above for compatibility.
++    response_json["sim_iccid"] = pc_app.modem_client.basic.get("sim_ccid", "")
++    response_json["sim_imsi"] = pc_app.modem_client.basic.get("sim_cimi", "")
++    response_json["serving"] = {
++        "rat": pc_app.modem_client.basic.get("serving_rat", ""),
++        "duplex": pc_app.modem_client.basic.get("serving_duplex", ""),
++        "band": pc_app.modem_client.basic.get("cell_band", ""),
++        "cell_id": pc_app.modem_client.basic.get("serving_cellid", ""),
++        "tac": pc_app.modem_client.basic.get("serving_tac", ""),
++        "pci": pc_app.modem_client.basic.get("serving_pci", ""),
++        "arfcn": pc_app.modem_client.basic.get("serving_arfcn", ""),
++        "bandwidth": pc_app.modem_client.basic.get("serving_bandwidth", ""),
++        "rsrp_dbm": pc_app.modem_client.basic.get("serving_rsrp_dbm"),
++        "rsrq_db": pc_app.modem_client.basic.get("serving_rsrq_db"),
++        "sinr_db": pc_app.modem_client.basic.get("serving_sinr_db"),
++    }
++    response_json["carrier_aggregation"] = pc_app.modem_client.basic.get(
++        "carrier_components", []
++    )
++    response_json["rat_preference_order"] = pc_app.modem_client.basic.get(
++        "gtact_preferred_acts", []
++    )
++
+     rsp = make_response(response_json)
+     rsp.headers['Content-Type'] = 'application/json'
+     return rsp  
+Index: pcat-manager-web-2.0.0/app/pc_modem_client.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/pc_modem_client.py
++++ pcat-manager-web-2.0.0/app/pc_modem_client.py
+@@ -1617,11 +1617,32 @@ class PcModemClient (threading.Thread):
+ 
+                 duplex = "TDD" if band in [38,39,40,41,42,43,46,48,77,78,79] else "FDD"
+ 
++                try:
++                    bw_code = int(bw)
++                except (TypeError, ValueError):
++                    bw_code = None
++                if rat_num == 9:
++                    bw_map = {
++                        25: 5, 50: 10, 75: 15, 100: 20, 125: 25,
++                        150: 30, 200: 40, 250: 50, 300: 60, 400: 80,
++                        450: 90, 500: 100, 1000: 200, 2000: 400,
++                    }
++                else:
++                    bw_map = {6: 1.4, 15: 3, 25: 5, 50: 10, 75: 15, 100: 20}
++                bw_mhz = bw_map.get(bw_code)
++
+                 self.basic["serving_cellid"] = cellid
+                 self.basic["serving_rat"] = rat
+                 self.basic["serving_pci"] = pci
+                 self.basic["serving_tac"] = tac
+                 self.basic["serving_band"] = band
++                self.basic["serving_arfcn"] = arfcn
++                self.basic["serving_duplex"] = duplex
++                self.basic["serving_bandwidth_code"] = bw_code
++                self.basic["serving_bandwidth"] = (
++                    f"{bw_mhz:g} MHz" if bw_mhz is not None else
++                    (f"代码 {bw}" if bw else "")
++                )
+                 self.basic["cell_band"] = band_str
+                 self.basic["modem_serving_info"] = f"{rat} {duplex} {band_str}, Cell ID = {cellid}, TAC = {tac}, PCI = {pci}"
+ 
+@@ -1630,15 +1651,22 @@ class PcModemClient (threading.Thread):
+                     rsrp_val = int(rsrp_raw) if rsrp_raw and rsrp_raw != "255" else None
+                     rsrq_val = int(rsrq_raw) if rsrq_raw and rsrq_raw != "255" else None
+ 
+                     if rat_num == 9:  # NR
+-                        sinr_dbm = f"{-23 + sinr_val * 0.5:.1f} dB" if sinr_val is not None else "-"
+-                        rsrp_dbm = f"{-156 + rsrp_val} dBm" if rsrp_val is not None else "-"
+-                        rsrq_dbm = f"{-43 + rsrq_val * 0.5:.1f} dB" if rsrq_val is not None else "-"
++                        sinr_number = -23 + sinr_val * 0.5 if sinr_val is not None else None
++                        rsrp_number = -156 + rsrp_val if rsrp_val is not None else None
++                        rsrq_number = -43 + rsrq_val * 0.5 if rsrq_val is not None else None
+                     else:  # LTE
+-                        sinr_dbm = f"{sinr_val * 0.5 - 50:.1f} dB" if sinr_val is not None and sinr_val != 255 else "-"
+-                        rsrp_dbm = f"{-140 + rsrp_val} dBm" if rsrp_val is not None else "-"
+-                        rsrq_dbm = f"{-19.5 + rsrq_val * 0.5:.1f} dB" if rsrq_val is not None else "-"
++                        sinr_number = sinr_val * 0.5 - 50 if sinr_val is not None and sinr_val != 255 else None
++                        rsrp_number = -140 + rsrp_val if rsrp_val is not None else None
++                        rsrq_number = -19.5 + rsrq_val * 0.5 if rsrq_val is not None else None
++
++                    self.basic["serving_sinr_db"] = sinr_number
++                    self.basic["serving_rsrp_dbm"] = rsrp_number
++                    self.basic["serving_rsrq_db"] = rsrq_number
++                    sinr_dbm = f"{sinr_number:.1f} dB" if sinr_number is not None else "-"
++                    rsrp_dbm = f"{rsrp_number:.0f} dBm" if rsrp_number is not None else "-"
++                    rsrq_dbm = f"{rsrq_number:.1f} dB" if rsrq_number is not None else "-"
+ 
+                     self.basic["modem_serving_quality"] = f"{sinr_dbm}, {rsrq_dbm}, {rsrp_dbm}"
+                 except (ValueError, TypeError):
+                     pass
+@@ -1660,7 +1688,26 @@ class PcModemClient (threading.Thread):
+         decoded = response.decode("utf-8", errors="ignore")
+         lines = decoded.split("\r\n")
+ 
++        bandwidth_map = {
++            6: 1.4, 15: 3, 25: 5, 50: 10, 75: 15, 100: 20,
++            125: 25, 150: 30, 200: 40, 250: 50, 300: 60,
++            400: 80, 450: 90, 500: 100, 1000: 200, 2000: 400,
++        }
++        modulation_map = {
++            "0": "BPSK", "1": "QPSK", "2": "16QAM",
++            "3": "64QAM", "4": "256QAM", "5": "1024QAM",
++            "6": "未知",
++        }
++
++        def bandwidth_label(raw):
++            try:
++                mhz = bandwidth_map.get(int(raw))
++                return f"{mhz:g} MHz" if mhz is not None else f"代码 {raw}"
++            except (TypeError, ValueError):
++                return ""
++
+         components = []
++        structured_components = []
+         for line in lines:
+             line = line.strip()
+             if not line or line == "OK" or line.startswith("+GTCAINFO:") or line.startswith("AT+GTCAINFO"):
+@@ -1679,6 +1726,16 @@ class PcModemClient (threading.Thread):
+                         band_str = f"B{band_raw}"
+ 
+                     components.append(f"PCC: {band_str} (PCI={pci}, ARFCN={arfcn}, BW={dl_bw})")
++                    structured_components.append({
++                        "role": "PCC", "state": "主载波", "band": band_str,
++                        "pci": pci, "arfcn": arfcn,
++                        "dl_bandwidth": bandwidth_label(dl_bw),
++                        "ul_bandwidth": "",
++                        "dl_mimo": parts[4] if len(parts) > 4 else "",
++                        "ul_mimo": parts[5] if len(parts) > 5 else "",
++                        "dl_modulation": modulation_map.get(parts[6], parts[6]) if len(parts) > 6 else "",
++                        "ul_modulation": modulation_map.get(parts[7], parts[7]) if len(parts) > 7 else "",
++                    })
+                 elif line.startswith("SCC"):
+                     label = line.split(":")[0]
+                     parts = line.split(":")[1].strip().split(",")
+@@ -1695,11 +1752,26 @@ class PcModemClient (threading.Thread):
+ 
+                     state_str = "Active" if scell_state == 2 else "Inactive"
+                     components.append(f"{label}: {band_str} ({state_str})")
++                    structured_components.append({
++                        "role": label,
++                        "state": "已激活" if scell_state == 2 else "已配置",
++                        "uplink_enabled": parts[1] == "1",
++                        "band": band_str,
++                        "pci": parts[3] if len(parts) > 3 else "",
++                        "arfcn": parts[4] if len(parts) > 4 else "",
++                        "dl_bandwidth": bandwidth_label(parts[5]) if len(parts) > 5 else "",
++                        "ul_bandwidth": bandwidth_label(parts[6]) if len(parts) > 6 else "",
++                        "dl_mimo": parts[7] if len(parts) > 7 else "",
++                        "ul_mimo": parts[8] if len(parts) > 8 else "",
++                        "dl_modulation": modulation_map.get(parts[9], parts[9]) if len(parts) > 9 else "",
++                        "ul_modulation": modulation_map.get(parts[10], parts[10]) if len(parts) > 10 else "",
++                    })
+             except Exception as e:
+                 print(f"Error parsing GTCAINFO line '{line}': {e}")
+                 continue
+ 
+         if components:
+             self.basic["cell_carrier_info"] = " | ".join(components)
++            self.basic["carrier_components"] = structured_components
+             # Extract PCC band as cell_band for dashboard display
+             for line in lines:

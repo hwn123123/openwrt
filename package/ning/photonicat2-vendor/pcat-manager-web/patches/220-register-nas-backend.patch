@@ -1,0 +1,17 @@
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -20,3 +20,5 @@
+ from pcat_timer_manager import PcatTimerManager
+ from pcat_sound_events import SoundEventManager
++import pcat_nas
++import pcat_manager_web as web_app
+ import app
+@@ -24,2 +26,8 @@
+ if __name__ == "__main__":
++    # The official 2.2.x NAS backend is distributed as Python 3.13 bytecode.
++    # nwrt runs Python 3.14, so register the source-compatible implementation
++    # before the Flask serving thread accepts its first request.
++    pcat_nas.register_nas(web_app.flask_app, web_app.api_auth_required,
++                          web_app.base_locales, web_app.socketio)
++
+     current_working_path = pathlib.Path(__file__).parent.resolve()

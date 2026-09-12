@@ -1,0 +1,81 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -1335,5 +1335,11 @@ def get_dashboard_data():
+         # Generate fresh data with optimized collection
+         timing_start = time.time()
++        # modem_client.basic intentionally keeps its last successful sample.
++        # Export a separate live-presence bit so no page mistakes that cache
++        # for current data while the module is powered off or disconnected.
++        with pc_app.modem_client.mutex:
++            modem_valid = bool(pc_app.modem_client.modem_valid)
++        modem_present = modem_valid and bool(pc_app.is_wwan_powered())
+         # Use direct signal strength from modem client instead of socket client for better accuracy
+         # Priority: CSQ first (for 2G/3G/4G), fallback to QRSRP for 5G with 2x multiplier
+         signal_strength_pct = pc_app.modem_client.basic.get("cell_signal_percent_csq", 0)
+@@ -1390,6 +1396,8 @@ def get_dashboard_data():
+             "up_speed": pc_app.main_app.net_upload_speed,
+             "uptime": pc_app.get_uptime(base_locales()),
+             "sim_interface_enabled": pc_app.is_wwan_interface_enabled(),
++            "modem_valid": modem_valid,
++            "modem_present": modem_present,
+             "wwan_powered": pc_app.is_wwan_powered(),
+             "wan_interface_enabled": pc_app.is_wan_interface_enabled(),         
+             "wan_carrier": pc_app.does_wan_have_carrier(),
+@@ -1702,6 +1710,32 @@ def get_dashboard_data():
+             elif cell_isp_long_name:
+                 dashboard["isp_name"] = cell_isp_long_name
+         timing_breakdown['enhanced_operator'] = (time.time() - timing_start) * 1000
++
++        # Every modem-specific value above originates from a last-known cache.
++        # Keep that cache internally for recovery, but never expose it as a
++        # current reading while the module is absent.  This also fixes native
++        # status-bar consumers which do not run the vendor JavaScript.
++        if not modem_present:
++            for key in (
++                    "modem_model", "modem_temperature",
++                    "modem_signal_strength", "carrier", "modem_mode",
++                    "isp_name", "sim_state", "sim_ccid", "sim_cimi",
++                    "sim_number", "imei_number", "cell_tech",
++                    "cell_signal_percent_qrsrp",
++                    "cell_signal_percent_qrsrq",
++                    "cell_signal_percent_csq",
++                    "cell_signal_percent_sinr", "cell_mccmnc",
++                    "cell_band", "cell_id", "cell_tac",
++                    "cell_isp_long_name", "cell_isp_short_name",
++                    "cell_isp_native_name", "cell_isp_act",
++                    "enhanced_isp_full", "enhanced_isp_full_cn",
++                    "enhanced_isp_full_en", "enhanced_isp_country",
++                    "enhanced_isp_mcc", "enhanced_isp_mnc"):
++                dashboard[key] = ""
++            dashboard.update({
++                "enhanced_isp_available": False,
++                "enhanced_isp_bilingual": False,
++            })
+                 
+         # Calculate and log performance metrics
+         total_time = (time.time() - start_time) * 1000
+@@ -1767,6 +1809,24 @@ def modem_runtime_json():
+ def modem_runtime_json():
+     """Read the detected modem's own runtime only while a UI requests it."""
+     runtime = _dashboard_modem_sampler.read()
++    with pc_app.modem_client.mutex:
++        modem_valid = bool(pc_app.modem_client.modem_valid)
++    modem_present = modem_valid and bool(pc_app.is_wwan_powered())
++    runtime["modem_present"] = modem_present
++    if not modem_present:
++        runtime.update({
++            "available": False,
++            "cpu_usage": None,
++            "memory_usage": None,
++            "memory_used_bytes": None,
++            "memory_total_bytes": None,
++            "temperature": None,
++            "thermal_sensors": {},
++            "model": "",
++        })
++        response = jsonify(runtime)
++        response.headers["Cache-Control"] = "no-store"
++        return response
+     basic = pc_app.modem_client.basic
+     temperature = runtime.get("temperature")
+     if temperature in (None, ""):

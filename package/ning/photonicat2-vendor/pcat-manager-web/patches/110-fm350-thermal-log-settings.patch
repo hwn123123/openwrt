@@ -1,0 +1,359 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -193,7 +193,7 @@
+                 self.cmd_queue_append("AT+CSQ") # Basic signal strength
+                 self.cmd_queue_append("AT+GTCCINFO?") # Current cell information (serving cell)
+                 self.cmd_queue_append("AT+GTCAINFO?") # Carrier aggregation info
+-                self.cmd_queue_append('AT+GTSENRDTEMP=1') # Temperature
++                self.cmd_queue_append('AT+GTSENRDTEMP=0') # All 22 FM350 thermal sensors
+             else:
+                 # Qualcomm/EM05 modem queries
+                 self.cmd_queue_append("AT+QNWINFO") # Network info
+@@ -617,23 +617,25 @@
+ 
+     def handle_gtsenrdtemp(self, response: bytes):
+         """
+-        Parse AT+GTSENRDTEMP response for FM350-GL temperature measurements.
+-
+-        Example response for AT+GTSENRDTEMP=1:
+-            AT+GTSENRDTEMP=1
+-            +GTSENRDTEMP: 1,50300
+-            OK
+-
+-        Format: +GTSENRDTEMP: <sensor_id>,<temperature_in_thousandths>
+-
+-        Sensor ID 1 returns the main temperature in thousandths of degrees Celsius
+-        (e.g., 50300 = 50.3°C)
+-        """
++        Parse all values returned by AT+GTSENRDTEMP=0. The FM350 V2.2
++        specification assigns sensor IDs 1..22 and reports temperatures in
++        thousandths of a degree Celsius.
++        """
++        sensor_names = {
++            1: "soc_max", 2: "cpu_little0", 3: "cpu_little1",
++            4: "cpu_little2", 5: "cpu_little3", 6: "gpu0", 7: "gpu1",
++            8: "dramc", 9: "mmsys", 10: "md_5g", 11: "md_4g",
++            12: "md_3g", 13: "soc_dram_ntc", 14: "ltepa_ntc",
++            15: "nrpa_ntc", 16: "rf_ntc", 17: "md_rf", 18: "conn_gps",
++            19: "pmic", 20: "pmic_vcore", 21: "pmic_vproc",
++            22: "pmic_vgpu",
++        }
+         if b"+GTSENRDTEMP:" not in response:
+             print("Warning: Unexpected GTSENRDTEMP format:", response)
+-            self.cmd_mark_failure("AT+GTSENRDTEMP=1")
++            self.cmd_mark_failure("AT+GTSENRDTEMP=0")
+             return
+ 
++        temperatures = {}
+         lines = response.split(b"\r\n")
+         for line in lines:
+             if line.startswith(b"+GTSENRDTEMP:"):
+@@ -643,30 +645,24 @@
+                     sensor_id = int(parts[0].strip())
+                     temperature_thousandths = int(parts[1].strip())
+ 
+-                    # Convert from thousandths to degrees Celsius
+-                    temperature = temperature_thousandths / 1000.0
+-
+-                    # Round to 1 decimal place for display
+-                    display_temp = round(temperature, 1)
+-
+-                    print(f"Parsed GTSENRDTEMP sensor {sensor_id}: {temperature_thousandths}/1000 = {display_temp}°C")
+-
+-                    # Store the temperature as simple number for FM350
+-                    self.basic["modem_temperature"] = display_temp
+-                    # Also store in qtemp_sensors dict format for API compatibility with Qualcomm modems
+-                    # Use int() to match Qualcomm's integer format expected by Go consumer
+-                    self.basic["qtemp_sensors"] = {"modem-ambient-usr": int(temperature)}
+-                    # Store decimal temperature separately for web UI precision
+-                    self.basic["modem_temperature_decimal"] = display_temp
+-
+-                    self.cmd_mark_success("AT+GTSENRDTEMP=1")
+-                    return  # Only process first temperature line
+-
++                    display_temp = round(temperature_thousandths / 1000.0, 1)
++                    sensor_name = sensor_names.get(sensor_id, f"sensor_{sensor_id}")
++                    temperatures[sensor_name] = display_temp
+                 except Exception as e:
+                     print(f"Failed to parse GTSENRDTEMP line {line!r}: {e}")
+ 
+-        self.cmd_mark_failure("AT+GTSENRDTEMP=1")
+-        print("Warning: No GTSENRDTEMP data parsed.")
++        if temperatures:
++            primary = temperatures.get("soc_max", next(iter(temperatures.values())))
++            self.basic["fm350_temperature_sensors"] = temperatures
++            self.basic["modem_temperature"] = primary
++            # Preserve the legacy field consumed by the display service.
++            self.basic["qtemp_sensors"] = {"modem-ambient-usr": int(primary)}
++            self.basic["modem_temperature_decimal"] = primary
++            self.cmd_mark_success("AT+GTSENRDTEMP=0")
++            print(f"Parsed {len(temperatures)} FM350 thermal sensors")
++        else:
++            self.cmd_mark_failure("AT+GTSENRDTEMP=0")
++            print("Warning: No GTSENRDTEMP data parsed.")
+ 
+     def set_tech_pref(self, tech_pref: str, force_update: bool = False):
+         """
+@@ -846,7 +842,7 @@
+             fm350_lte_bands = [100 + b for b in lte_band_list]
+ 
+             # Get current tech_pref to preserve RAT setting
+-            current_tech = self.basic.get("tech_pref", "AUTO")
++            current_tech = self.basic.get("modem_tech_pref", "AUTO")
+             gtact_rat = {"AUTO": "20", "LTE": "2", "NR5G": "14"}.get(current_tech, "20")
+ 
+             # Get PreferredAct and UMTS bands from last GTACT query
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -17,6 +17,7 @@
+ from pcat_util.openwrt import ubus_call as _openwrt_ubus_call, uci_get as _openwrt_uci_get, uci_set as _openwrt_uci_set, uci_commit as _openwrt_uci_commit, debug_status as _openwrt_debug_status
+ import urllib.error
+ import subprocess
++import socket
+ import threading
+ # import pyprctl # patch:set real thread name
+ import pathlib
+@@ -5944,6 +5945,8 @@
+     # Both FM350 and Qualcomm now store in qtemp_sensors as {"modem-ambient-usr": value, ...}
+     response_json["modem_temperature"] = pc_app.modem_client.basic.get("qtemp_sensors", "")
+     response_json["modem_temperature_decimal"] = pc_app.modem_client.basic.get("modem_temperature_decimal", "")
++    response_json["thermal_sensors"] = pc_app.modem_client.basic.get(
++        "fm350_temperature_sensors", {})
+     response_json["modem_isp_details"] = pc_app.modem_client.basic.get("isp_details", "")
+     response_json["modem_network_info"] = pc_app.modem_client.basic.get("network_info", "")
+     response_json["modem_cell_id"] = pc_app.modem_client.basic.get("serving_cellid", "")
+@@ -6017,7 +6020,7 @@
+ @flask_app.route("/api/v1/modem/dial-log.json", methods=['GET'])
+ @api_auth_required
+ def api_modem_dial_log():
+-    """Return read-only FM350 dial status and relevant in-memory log lines."""
++    """Return live WWAN state and the real dialer's in-memory output ring."""
+     try:
+         limit = max(20, min(int(request.args.get("limit", 240)), 500))
+     except (TypeError, ValueError):
+@@ -6035,7 +6038,7 @@
+     interface = {
+         "up": False, "pending": False, "available": False,
+         "device": "", "ipv4": "", "gateway": "", "dns": [],
+-        "uptime": 0,
++        "uptime": 0, "rx_bytes": 0, "tx_bytes": 0,
+     }
+     try:
+         result = subprocess.run(
+@@ -6057,31 +6060,87 @@
+                 "dns": status.get("dns-server") or [],
+                 "uptime": int(status.get("uptime") or 0),
+             })
++            device = interface["device"]
++            if device and re.fullmatch(r"[A-Za-z0-9_.:-]+", device):
++                stats_path = pathlib.Path("/sys/class/net") / device / "statistics"
++                for name in ("rx_bytes", "tx_bytes"):
++                    try:
++                        interface[name] = int(
++                            (stats_path / name).read_text().strip())
++                    except (OSError, ValueError):
++                        interface[name] = 0
+     except (OSError, ValueError, subprocess.SubprocessError):
+         pass
+ 
+-    lines = []
++    log_meta = {}
++    raw_lines = []
++    include_log = request.args.get("include_log", "1") != "0"
+     try:
+-        result = subprocess.run(
+-            ["logread", "-l", "1600"], capture_output=True, text=True,
+-            timeout=4, check=False)
+-        keywords = (
+-            "fm350-mm", "quectel", "wwan", "rmnet", "registration",
+-            "registered", "pdp", "sim state", "network interface")
+-        for line in result.stdout.splitlines():
+-            lowered = line.lower()
+-            # The Web process polls the modem with AT commands. Those records
+-            # belong to the data acquisition layer, not to the dial log.
+-            if "python3[" in lowered:
+-                continue
+-            # SMS content belongs on the SMS page, never in the dial log.
+-            if any(word in lowered for word in ("pysms", "cmgl", "cmgs", "sms content")):
+-                continue
+-            if any(word in lowered for word in keywords):
+-                lines.append(line)
+-        lines = lines[-limit:]
+-    except (OSError, subprocess.SubprocessError):
+-        lines = []
++        if not include_log:
++            raise FileNotFoundError
++        command = json.dumps({
++            "command": "modem-log-get", "offset": -1,
++            "max-size": 262144,
++        }).encode("utf-8") + b"\0"
++        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
++            client.settimeout(3.0)
++            client.connect("/tmp/pcat-manager.sock")
++            client.sendall(command)
++            received = b""
++            response = None
++            while len(received) < 2 * 1024 * 1024:
++                chunk = client.recv(262144)
++                if not chunk:
++                    break
++                received += chunk
++                while b"\0" in received:
++                    frame, received = received.split(b"\0", 1)
++                    try:
++                        candidate = json.loads(frame.decode("utf-8"))
++                    except (UnicodeDecodeError, ValueError):
++                        continue
++                    if candidate.get("command") == "modem-log-get":
++                        response = candidate
++                        break
++                if response is not None:
++                    break
++        if response and response.get("code") == 0:
++            raw_lines = str(response.get("log") or "").splitlines()
++            log_meta = {
++                "source": "pcat-manager-memory",
++                "exec": response.get("exec") or "",
++                "usb_id": response.get("usb-id") or "",
++                "offset": response.get("offset") or 0,
++                "next_offset": response.get("next-offset") or 0,
++                "total_offset": response.get("total-offset") or 0,
++                "tail_offset": response.get("tail-offset") or 0,
++            }
++    except (OSError, socket.timeout, ValueError):
++        raw_lines = []
++
++    # SIGNALINFO is high-frequency telemetry and belongs on the network page.
++    # Keep its latest value in structured form, while the readable timeline
++    # contains the actual dial attempts, PDP events, state changes and errors.
++    latest_signal = {}
++    timeline = []
++    for line in raw_lines:
++        if line.startswith("CMD=SIGNALINFO"):
++            fields = {}
++            for item in line.split(","):
++                if "=" in item:
++                    key, value_text = item.split("=", 1)
++                    fields[key.lower()] = value_text
++            latest_signal = fields
++        elif line.strip():
++            timeline.append(line)
++    error_words = (
++        " error", "failed", "failure", "timeout", "no carrier",
++        "cannot", "disconnected", "dead", "giving up", "[!]",
++    )
++    errors = [
++        line for line in timeline
++        if any(word in line.lower() for word in error_words)
++    ]
+ 
+     return jsonify({
+         "status": "ok",
+@@ -6089,8 +6148,12 @@
+         "manager_pid": process_pid("pcat-manager"),
+         "dialer_pid": process_pid("fm350-mm"),
+         "interface": interface,
+-        "lines": lines,
+-        "count": len(lines),
++        "latest_signal": latest_signal,
++        "log": log_meta,
++        "lines": timeline[-limit:],
++        "errors": errors[-80:],
++        "count": len(timeline),
++        "raw_count": len(raw_lines),
+     })
+ 
+ @api_auth_required
+@@ -6123,29 +6186,72 @@
+     "desired_nr5g_bands": "1:2:3:5:7:8:12:13:14:18:20:25:26:28:29:30:38:40:41:48:66:70:71:75:76:77:78:79"
+     }
+     """
+-    # if the modem client is already busy, skip issuing a new command
+-    if not pc_app.modem_client.querying:
+-        data = request.get_json() or {}
+-
+-        # kick off the async config call on your modem client
+-        pc_app.modem_client.start_set_modem_config(
+-            tech_pref   = data.get("modem_tech_pref"),
+-            roam_pref   = data.get("modem_roam_pref"),
+-            lte_bands   = data.get("desired_lte_bands"),
+-            nr5g_bands  = data.get("desired_nr5g_bands"),
+-            usb_speed   = data.get("modem_usb_speed"),
+-        )
++    data = request.get_json(silent=True) or {}
++    if pc_app.modem_client.querying:
++        return jsonify({
++            "status": "busy",
++            "message": "模组正在执行其他查询，请稍后重试",
++        }), 409
++
++    def normalize_bands(raw):
++        if isinstance(raw, list):
++            raw = ":".join(str(item) for item in raw)
++        values = []
++        for item in str(raw or "").split(":"):
++            if item.isdigit():
++                number = int(item)
++                if number not in values:
++                    values.append(number)
++        return ":".join(str(number) for number in sorted(values))
++
++    current = pc_app.modem_client.basic
++    tech_pref = str(data.get(
++        "modem_tech_pref", current.get("modem_tech_pref", "AUTO")))
++    if tech_pref not in ("AUTO", "LTE", "NR5G"):
++        return jsonify({"status": "error", "message": "无效的网络制式"}), 400
++
++    lte_bands = normalize_bands(data.get(
++        "desired_lte_bands", current.get("setting_lte_bands", "")))
++    nr5g_bands = normalize_bands(data.get(
++        "desired_nr5g_bands", current.get("setting_nr5g_bands", "")))
++    if not lte_bands or not nr5g_bands:
++        return jsonify({
++            "status": "error", "message": "LTE 与 5G 均须至少保留一个频段",
++        }), 400
++
++    def policy_set(name):
++        normalized = normalize_bands(current.get(name, ""))
++        return set(normalized.split(":")) if normalized else set()
++
++    requested_lte = set(lte_bands.split(":"))
++    requested_nr = set(nr5g_bands.split(":"))
++    policy_lte = policy_set("policy_lte_bands") | policy_set("setting_lte_bands")
++    policy_nr = policy_set("policy_nr5g_bands") | policy_set("setting_nr5g_bands")
++    if (policy_lte and not requested_lte.issubset(policy_lte)) or (
++            policy_nr and not requested_nr.issubset(policy_nr)):
++        return jsonify({
++            "status": "error", "message": "请求中包含模组不支持的频段",
++        }), 400
++
++    pc_app.modem_client.start_set_modem_config(
++        tech_pref=tech_pref,
++        roam_pref=data.get(
++            "modem_roam_pref", current.get("roam_pref", "any")),
++        lte_bands=lte_bands,
++        nr5g_bands=nr5g_bands,
++        usb_speed=data.get(
++            "modem_usb_speed", current.get("modem_usb_speed", "")),
++    )
+     try:
+-        pcat_config.set_cpin(data.get("modem_cpin"))
+-            
++        pcat_config.set_cpin(data.get("modem_cpin", pcat_config.get_cpin()))
+     except Exception as e:
+-        print(f"Failed to set config: {e}")
++        pcat_logger.logger.warning("Failed to save modem PIN: %s", e)
+ 
+-    # always reply with status ok
+-    response_json = {"status": "ok"}
+-    rsp = make_response(response_json)
+-    rsp.headers['Content-Type'] = 'application/json'
+-    return rsp
++    return jsonify({
++        "status": "ok", "queued": True, "modem_tech_pref": tech_pref,
++        "desired_lte_bands": lte_bands,
++        "desired_nr5g_bands": nr5g_bands,
++    })
+ 
+ @api_auth_required
+ @flask_app.route("/api/v1/modem/sim_number.json", methods=['POST'])

@@ -1,0 +1,34 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -6331,6 +6331,31 @@ def api_modem_advanced_update():
+             "status": "error", "message": "请求中包含模组不支持的频段",
+         }), 400
+ 
++    # fm350-mm owns the data connection and reasserts AT+GTACT at every
++    # dial.  Persist the user's selection in the small file that the dialer
++    # watches before queueing AT commands on the Web/status port; otherwise a
++    # later redial silently restores AUTO and the UI appears to ignore a 4G or
++    # 5G lock.  Use write+fsync+rename so a power loss cannot leave a partial
++    # preference file behind.
++    preference_path = pathlib.Path("/etc/pcat-modem-pref.json")
++    temporary_path = pathlib.Path(str(preference_path) + ".tmp")
++    try:
++        with temporary_path.open("w") as handle:
++            json.dump({"modem_tech_pref": tech_pref}, handle)
++            handle.write("\n")
++            handle.flush()
++            os.fsync(handle.fileno())
++        os.chmod(temporary_path, 0o644)
++        os.replace(temporary_path, preference_path)
++    except OSError as exc:
++        try:
++            temporary_path.unlink()
++        except OSError:
++            pass
++        return jsonify({
++            "status": "error", "message": "保存网络制式失败: " + str(exc),
++        }), 500
++
+     pc_app.modem_client.start_set_modem_config(
+         tech_pref=tech_pref,
+         roam_pref=data.get(

@@ -1,0 +1,51 @@
+--- a/processData.go
++++ b/processData.go
+@@ -2322,8 +2322,48 @@ func getPublicIPv4() (string, error) {
+ 	return fetchPublicIP(sources, cfg.PublicIPLookup.UserAgent, false)
+ }
+ 
++// hasUsableIPv6OnActiveEgress reports whether an IPv6 request would leave on
++// the same interface that currently owns the usable IPv4 default route.  The
++// device-control page can switch between Ethernet, Smart-WAN and the modem;
++// checking the kernel route rather than the saved UI mode keeps the display in
++// step with the route that actually won.  A link-local or ULA source is not a
++// public IPv6 path and must not trigger an external lookup.
++func hasUsableIPv6OnActiveEgress() bool {
++	activeDev := getDefaultRouteDev()
++	if activeDev == "" {
++		return false
++	}
++
++	out, err := secureExecCommand("ip", "-6", "route", "get", "2606:4700:4700::1111")
++	if err != nil {
++		return false
++	}
++	fields := strings.Fields(string(out))
++	routeDev, source := "", ""
++	for i, field := range fields {
++		if field == "dev" && i+1 < len(fields) {
++			routeDev = fields[i+1]
++		}
++		if field == "src" && i+1 < len(fields) {
++			source = fields[i+1]
++		}
++	}
++	if routeDev != activeDev || source == "" {
++		return false
++	}
++	ip := net.ParseIP(source)
++	return ip != nil && ip.To4() == nil && ip.IsGlobalUnicast() &&
++		!ip.IsPrivate() && !ip.IsLinkLocalUnicast()
++}
++
+ // getIPv6Public resolves the external IPv6 address from the configured sources.
+ func getIPv6Public() (string, error) {
++	// IPv4-only cellular plans are normal.  Avoid hitting the IPv6 endpoint
++	// (and filling logd with ENETUNREACH) until the currently selected real
++	// egress has both a default IPv6 route and a public source address.
++	if !hasUsableIPv6OnActiveEgress() {
++		return "", fmt.Errorf("no public IPv6 route on active egress")
++	}
+ 	sources := cfg.PublicIPLookup.IPv6
+ 	if len(sources) == 0 {
+ 		sources = defaultPublicIPv6Sources

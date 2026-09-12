@@ -1,0 +1,17 @@
+--- a/utils.go
++++ b/utils.go
+@@ -797,6 +797,14 @@ func mergeConfigs() error {
+ 		return fmt.Errorf("failed to unmarshal user config: %v", err)
+ 	}
+ 
++	// A Config struct serialises an omitted bool as false. Do not let that
++	// synthetic zero value override the shipped default unless the user config
++	// actually contains show_sms. This keeps SMS pages enabled after a clean
++	// install while still respecting an explicit user choice to disable them.
++	if !hasShowSmsInUserConfig() {
++		delete(userMap, "show_sms")
++	}
++
+ 	// Deep merge user config into default config
+ 	mergedMap := deepMergeJSON(dftMap, userMap)
+ 

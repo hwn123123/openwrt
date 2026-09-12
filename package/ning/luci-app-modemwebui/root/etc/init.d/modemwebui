@@ -61,6 +61,10 @@ start_service_instance() {
 
     LAN_ADDR=$(uci -q get network.lan.ipaddr 2>/dev/null)
     LAN_ADDR=${LAN_ADDR:-192.168.1.1}
+    # OpenWrt may store the LAN address in CIDR form (for example
+    # 192.168.66.1/24).  The browser needs the host address only, and an
+    # unescaped slash also makes the sed expression below fail.
+    LAN_ADDR=${LAN_ADDR%%/*}
 
     # 还原并替换 IP
     cp -f "${CONFIG_FILE}.bak" "$CONFIG_FILE" 2>/dev/null

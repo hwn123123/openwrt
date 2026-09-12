@@ -1,0 +1,55 @@
+--- a/utils.go
++++ b/utils.go
+@@ -306,9 +306,7 @@ func setBacklight(brightness int) {
+ 			if lastLogical == 0 {
+ 				// still supposed to be off, so write 0 now
+ 				if err := os.WriteFile(utilCovBacklightPath, []byte("0"), 0644); err != nil {
+ 					log.Printf("backlight final-off error: %v", err)
+-				} else {
+-					log.Println("→ physical backlight OFF")
+ 				}
+ 			}
+ 		})
+@@ -557,14 +555,12 @@ func fadeBacklight(initValue, wantValue
+ 	for i := 1; i <= steps; i++ {
+ 		select {
+ 		case <-cancelChan:
+ 			// Someone closed fadeCancel → abort immediately
+-			log.Println("fadeBacklight: cancel requested")
+ 			return
+ 		case <-ticker.C:
+ 			frac := float64(i) / float64(steps)
+ 			b := initValue + int(math.Round(frac*float64(diff)))
+ 			setBacklight(b)
+-			log.Printf("fadeBacklight: step %d/%d → brightness=%d", i, steps, b)
+ 		}
+ 	}
+ 	// final guarantee
+@@ -589,7 +585,6 @@ func idleDimmer() {
+ 		newState := utilCovIdleStateFor(idle)
+ 
+ 		if prevState != newState {
+-			log.Printf("STATE CHANGED: %s -> %s", stateName(prevState), stateName(newState))
+ 			wasAsleep := prevState == STATE_IDLE
+ 			idleState = newState
+ 			prevState = newState
+--- a/processData.go
++++ b/processData.go
+@@ -1251,7 +1251,6 @@ func collectPublicIP() {
+ 
+ 	fetchedV4 := false
+ 	if publicIP, err := getPublicIPv4(); err != nil {
+-		fmt.Printf("Could not get public IP: %v\n", err)
+ 		globalData.Store("PUBLIC_IP", "N/A")
+ 		globalData.Store("PublicIP", "N/A")
+ 	} else {
+--- a/pingResolve.go
++++ b/pingResolve.go
+@@ -152,7 +152,6 @@ func pingEscapeFakeIP(host, addr string
+ 		log.Printf("ping: %s resolves into the fake-ip pool (%s) and no DoH resolver answered; row will show a failure", host, addr)
+ 		return host
+ 	}
+-	log.Printf("ping: %s resolved to fake-ip %s, probing %s instead", host, addr, real)
+ 	return real
+ }
+ 

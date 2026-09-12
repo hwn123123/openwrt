@@ -1,0 +1,117 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -94,6 +94,10 @@ class PcModemClient (threading.Thread):
+             print(f"Error during serial cleanup: {e}")
+             self.serial_obj = None
+ 
++        self.modem_uart_connected = False
++        with self.mutex:
++            self.modem_valid = False
++
+     def cmd_should_skip(self, cmd):
+         """Check if a command should be skipped due to too many failures."""
+         with self.cmd_failure_lock:
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -54,5 +54,6 @@ from pysms_tool import SMSTool
+ 
+ INTERVAL_SMS_HOOK = 30
++INTERVAL_SMS_POLL = 10
+ # Keep raw AT traffic quiet by default and honor the existing UI setting.
+ SMS_DEBUG_BOOL = pcat_config.get_show_debug_logs()
+ 
+@@ -196,10 +197,71 @@ CREATE INDEX IF NOT EXISTS idx_sms_hook_
+             pcat_logger.logger.error(f"Error ensuring hook history table: {e}")
+ 
+ 
++    def _sms_command(self, sms_tool, command, timeout=5):
++        """Run one SMS-session command while serial_lock is held."""
++        responses = sms_tool._send_command_with_sync(command, timeout)
++        for line in responses:
++            if line == "ERROR" or line.startswith(("+CMS ERROR:", "+CME ERROR:")):
++                pcat_logger.logger.warning(
++                    "SMS session command %s failed: %s", command, line)
++                return False, responses
++        return "OK" in responses, responses
++
++    def _ensure_sms_session(self, sms_tool):
++        """Restore volatile 3GPP SMS settings after FM350 radio/USB resets.
++
++        FM350 does not persist CNMI, CPMS, CMGF or CGSMS.  The dialer may
++        legitimately cycle CFUN while recovering the data connection, so check
++        CNMI before every hardware poll and only rewrite the complete session
++        when the modem has reset it.
++        """
++        try:
++            ok, responses = self._sms_command(sms_tool, "AT+CNMI?", 3)
++            compact = "".join("".join(responses).split())
++            if ok and "+CNMI:2,1,0,0,0" in compact:
++                return True
++
++            commands = (
++                "AT+CMEE=2",
++                'AT+CPMS="SM","SM","SM"',
++                "AT+CMGF=0",
++                "AT+CGSMS=1",
++                "AT+CNMI=2,1,0,0,0",
++            )
++            cnmi_ready = False
++            for command in commands:
++                command_ok, _ = self._sms_command(sms_tool, command, 5)
++                if command.startswith("AT+CNMI="):
++                    cnmi_ready = command_ok
++
++            if cnmi_ready:
++                pcat_logger.logger.info(
++                    "SMS receive session initialized on %s",
++                    self.modem_client.modem_tty_path)
++                return True
++
++            pcat_logger.logger.warning("Failed to enable modem SMS reception")
++        except Exception as error:
++            pcat_logger.logger.warning(
++                "Failed to initialize modem SMS session: %s", error)
++        return False
++
+     def run(self):
++        next_hook_time = time.monotonic() + INTERVAL_SMS_HOOK
+         while True:
+-            time.sleep(INTERVAL_SMS_HOOK)
+-            self.process_hook_shell()
++            try:
++                # Hardware polling belongs to the backend thread.  Web and LCD
++                # clients now consume the database instead of being required to
++                # trigger modem access themselves.
++                self.get_sms()
++            except Exception as error:
++                pcat_logger.logger.warning("Background SMS poll failed: %s", error)
++
++            now = time.monotonic()
++            if now >= next_hook_time:
++                self.process_hook_shell()
++                next_hook_time = now + INTERVAL_SMS_HOOK
++            time.sleep(min(5, INTERVAL_SMS_POLL))
+ 
+     def process_hook_shell(self, dry_run=False):
+         """
+@@ -728,7 +790,10 @@ class PcSmsClient (threading.Thread):
+             send_success = False
+             try:
+                 # Temporarily acquire lock just for the actual send operation
+                 with self.modem_client.serial_lock:
++                    if not self._ensure_sms_session(sms_tool):
++                        pcat_logger.logger.warning(
++                            "Sending SMS with an unconfirmed receive session")
+                     send_success = sms_tool.send_sms(send_to_number, sms_text)
+                     print(f"SMSTool.send_sms returned: {send_success}")
+             except Exception as sms_send_error:
+@@ -807,7 +872,10 @@ class PcSmsClient (threading.Thread):
+             all_messages = []
+             try:
+                 with self.modem_client.serial_lock:
++                    if not self._ensure_sms_session(sms_tool):
++                        pcat_logger.logger.warning(
++                            "Polling SMS with an unconfirmed receive session")
+                     all_messages = sms_tool.get_all_messages(storage_types=["SM", "ME"], delete_after=True)
+             except Exception as sms_recv_error:
+                 pcat_logger.logger.error(f"SMS receive operation failed: {sms_recv_error}")

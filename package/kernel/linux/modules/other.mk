@@ -391,6 +391,22 @@ endef
 $(eval $(call KernelPackage,rfkill))
 
 
+define KernelPackage/rfkill-gpio
+  SUBMENU:=$(OTHER_MENU)
+  TITLE:=GPIO RF switch support
+  DEPENDS:=+kmod-rfkill
+  KCONFIG:=CONFIG_RFKILL_GPIO
+  FILES:=$(LINUX_DIR)/net/rfkill/rfkill-gpio.ko
+  AUTOLOAD:=$(call AutoProbe,rfkill-gpio)
+endef
+
+define KernelPackage/rfkill-gpio/description
+ GPIO-controlled RF switch support for WiFi and Bluetooth devices.
+endef
+
+$(eval $(call KernelPackage,rfkill-gpio))
+
+
 define KernelPackage/softdog
   SUBMENU:=$(OTHER_MENU)
   TITLE:=Software watchdog driver

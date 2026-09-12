@@ -1,0 +1,11 @@
+--- a/app/templates/_base.html
++++ b/app/templates/_base.html
+@@ -7,7 +7,7 @@
+     <link rel="icon" type="image/png" sizes="32x32" href="{{locales['favicon_32']}}" />
+     <link rel="icon" type="image/png" sizes="16x16" href="{{locales['favicon_16']}}" />
+     <link rel="shortcut icon" href="{{locales['favicon_ico']}}" />
+-    <title>{{locales["oem_name"]}} - {{locales["config_title"]}}</title>
++    <title>{{locales["oem_name"]}} - {% block page_title %}{{locales["config_title"]}}{% endblock %}</title>
+     {% block html_head0 %}{% endblock %}
+     <style type="text/css">
+       [x-cloak] {

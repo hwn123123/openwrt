@@ -1,0 +1,81 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -260,7 +260,9 @@
+ 
+             # Query IMEI if not yet available (separate from model cache)
+             if not self.basic.get("imei_num"):
+-                self.cmd_queue_append("AT+CGSN") # IMEI
++                self.cmd_queue_append(
++                    "AT+EGMREXT=0,7" if self.is_fm350() else "AT+CGSN"
++                ) # IMEI
+ 
+ 
+             if self.is_fm350():
+@@ -563,6 +565,10 @@
+                     self.handle_csq(recv_data)
+                 elif recv_data.startswith(b'AT+CESQ\r\r\n') or recv_data.startswith(b'AT+CESQ\r\n'): #Extended signal quality (FM350)
+                     self.handle_cesq(recv_data)
++                elif recv_data.startswith(b'AT+EGMREXT=0,7'):
++                    self.handle_egmrext_imei(recv_data)
++                elif recv_data.startswith(b'AT+EGMREXT=1,7,'):
++                    self.handle_egmrext_set_imei(recv_data)
+                 elif recv_data.startswith(b'AT+CGSN\r\r\n') or recv_data.startswith(b'AT+CGSN\r\n'): #IMEI
+                     self.handle_cgsn(recv_data)
+                 elif recv_data.startswith(b'AT+CNUM\r\r\n') or recv_data.startswith(b'AT+CNUM\r\n'): #SIM number
+@@ -2663,6 +2669,10 @@
+             with _model_cache['lock']:
+                 _model_cache['model'] = model
+                 _model_cache['queried'] = True
+ 
++            if "FM350" in model.upper() and not self.basic.get("imei_num"):
++                self.cmd_mark_success("AT+EGMREXT=0,7")
++                self.cmd_queue_append("AT+EGMREXT=0,7")
++
+             self.cmd_mark_success("ATI")
+             print(f"ATI: model={model}, firmware_version={firmware_version}")
+@@ -2690,6 +2696,45 @@
+         else:
+             self.cmd_mark_failure("AT+CNUM")
+ 
++    def handle_egmrext_set_imei(self, response):
++        """Track completion of the FM350 MediaTek IMEI write command."""
++        text = response.decode("utf-8", errors="ignore")
++        if re.search(r"(?:^|\r?\n)OK(?:\r?\n|$)", text) and not re.search(
++                r"(?:CME\s+)?ERROR", text, re.IGNORECASE):
++            self.basic["imei_write_status"] = "written"
++            self.basic["imei_write_message"] = "写入命令成功，正在回读校验"
++        else:
++            self.basic["imei_write_status"] = "failed"
++            self.basic["imei_write_message"] = "模组拒绝了 IMEI 写入命令"
++        self.basic["imei_write_updated"] = int(time.time())
++
++    def handle_egmrext_imei(self, response):
++        """Parse the FM350 MediaTek ``AT+EGMREXT=0,7`` response."""
++        text = response.decode("utf-8", errors="ignore")
++        match = re.search(r'\+EGMREXT:\s*"(\d{15})"', text)
++        target = str(self.basic.get("imei_write_target", ""))
++        if match:
++            imei = match.group(1)
++            self.basic["imei_num"] = imei
++            self.cmd_mark_success("AT+EGMREXT=0,7")
++            if target:
++                if imei == target:
++                    self.basic["imei_write_status"] = "verified"
++                    self.basic["imei_write_message"] = (
++                        "已写入并回读一致，重启模组或设备后完全生效")
++                else:
++                    self.basic["imei_write_status"] = "mismatch"
++                    self.basic["imei_write_message"] = "回读值与提交值不一致"
++                self.basic["imei_write_updated"] = int(time.time())
++            return
++
++        self.cmd_mark_failure("AT+EGMREXT=0,7")
++        if target and self.basic.get("imei_write_status") in (
++                "pending", "written"):
++            self.basic["imei_write_status"] = "verification_failed"
++            self.basic["imei_write_message"] = "写入后仍未读取到 IMEI"
++            self.basic["imei_write_updated"] = int(time.time())
++
+     def handle_cgsn(self, response):
+         """
+         Parse AT+CGSN response for IMEI number.

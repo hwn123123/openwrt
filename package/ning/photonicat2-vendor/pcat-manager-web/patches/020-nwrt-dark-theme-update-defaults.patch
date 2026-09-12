@@ -1,0 +1,421 @@
+Index: pcat-manager-web-2.0.0/app/pcat_config.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/pcat_config.py	2026-09-06 06:45:23.019480446 +0000
++++ pcat-manager-web-2.0.0/app/pcat_config.py	2026-09-06 06:45:23.139117160 +0000
+@@ -1,5 +1,6 @@
+ # -*- coding: utf-8 -*-
+ #@Author    : qichunren
++# NWRT runtime and user-interface compatibility customizations.
+ 
+ import configparser, os
+ import json
+@@ -28,7 +29,9 @@
+     'roaming_pref': "all",
+     'show_debug_logs': False,
+     'network_mode': 'auto',
+-    'fan_mode': 'smart_quiet'
++    'fan_mode': 'smart_quiet',
++    # Remote vendor firmware/MCU/package checks are opt-in on NWRT.
++    'vendor_updates_enabled': False
+     }
+ 
+ 
+@@ -103,6 +106,10 @@
+     """
+     return global_user_config.get(key, fallback)
+ 
++def vendor_updates_enabled():
++    """Return whether remote vendor update checks and flashing are enabled."""
++    return bool(get_user_config_key("vendor_updates_enabled", False))
++
+ def set_user_config_key(key, value):
+     """
+     Safely set `key` in global_user_config.
+@@ -599,4 +606,4 @@
+ 
+ #####################################################################################
+ 
+-global_user_config = get_user_configs()
+\ No newline at end of file
++global_user_config = get_user_configs()
+Index: pcat-manager-web-2.0.0/app/app.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/app.py	2026-09-06 06:45:23.057480421 +0000
++++ pcat-manager-web-2.0.0/app/app.py	2026-09-06 06:45:23.139280452 +0000
+@@ -949,9 +949,20 @@
+ # 本地包 (pcat 开头的和 quectel-cm) 版本信息
+ def pcat_package_version_info():
+   try:
+-    cmdout = subprocess.check_output("opkg list-installed | grep \"pcat-\|quectel-cm\"", shell=True)
+-  except subprocess.CalledProcessError:
+-    print("Warning: opkg command not found!")
++    # NWRT uses apk; retain opkg as a fallback for older vendor images.
++    if shutil.which("apk"):
++      cmdout = subprocess.check_output(["apk", "list", "--installed"], text=True)
++      package_lines = [line for line in cmdout.splitlines()
++                       if line.startswith(("pcat-", "quectel-cm-"))]
++      packages = []
++      for line in package_lines:
++        package_id = line.split(None, 1)[0]
++        match = re.match(r"^(pcat(?:-[a-z0-9]+)+|quectel-cm)-(?=\d)(.+)$", package_id)
++        if match:
++          packages.append({"name": match.group(1), "version": match.group(2)})
++      return packages
++    cmdout = subprocess.check_output("opkg list-installed | grep -E \"pcat-|quectel-cm\"", shell=True)
++  except (OSError, subprocess.CalledProcessError):
+     return []
+ 
+   cmdout_a = cmdout.split(b'\n')
+@@ -965,6 +976,8 @@
+ 
+ # eg: b'pcat-manager_1.0.2-0_aarch64_cortex-a53.ipk\npcat-manager-web_1.0.2-0_aarch64_cortex-a53.ipk\n'
+ def remote_pcat_package_version_info():
++  if not pcat_config.vendor_updates_enabled():
++    return []
+   try:
+     remote_version_info = requests.get(pcat_config.package_version_url).content
+   except:
+Index: pcat-manager-web-2.0.0/app/pcat_manager_web.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/pcat_manager_web.py	2026-09-06 06:45:23.058029504 +0000
++++ pcat-manager-web-2.0.0/app/pcat_manager_web.py	2026-09-06 06:45:23.139480368 +0000
+@@ -1717,6 +1717,17 @@
+     rsp.headers['Content-Type'] = 'application/json'
+     return rsp
+ 
++@api_auth_required
++@flask_app.route("/api/v1/gps.json", methods=['GET'])
++def gps_json():
++    """Return an explicit unavailable state when no GNSS daemon exists."""
++    return jsonify({
++        "status": "ok", "available": False, "enabled": False, "fix": False,
++        "latitude": None, "longitude": None, "altitude": None,
++        "speed": None, "heading": None, "satellites": 0,
++        "message": "GPS is not available on this device"
++    })
++
+ @flask_app.route("/perf")
+ @api_auth_required
+ @pin_required
+@@ -1771,6 +1782,11 @@
+     Check if dev server is reachable and get latest firmware info.
+     Returns dev server status and firmware information.
+     """
++    if not pcat_config.vendor_updates_enabled():
++        return jsonify({"status": "disabled", "disabled": True,
++                        "reachable": False, "update_available": False,
++                        "message": "Vendor updates are disabled by default"})
++
+     import re
+     from urllib.parse import urljoin
+     from email.utils import parsedate_to_datetime
+@@ -1940,6 +1956,13 @@
+     Check for firmware updates by comparing local version with remote version.
+     Returns update availability and download information.
+     """
++    if not pcat_config.vendor_updates_enabled():
++        board_info = getattr(pc_app.main_app, "board_info", {}) or {}
++        return jsonify({"status": "disabled", "disabled": True,
++                        "update_available": False,
++                        "local_version": board_info.get("openwrt_version", ""),
++                        "message": "Vendor firmware updates are disabled by default"})
++
+     def extract_revision_number(version_string):
+         """Extract rXXXX revision number from version string"""
+         match = re.search(r'r(\d+)', version_string)
+@@ -3146,6 +3169,13 @@
+ @socketio.event
+ def request_firmware_upgrade(message):
+     """Socket handler for automatic firmware upgrade"""
++    if not pcat_config.vendor_updates_enabled():
++        emit('firmware_upgrade_status', {
++            'active': False, 'stage': 'disabled', 'progress': 0,
++            'message': 'Vendor firmware updates are disabled by default',
++            'error': 'Updates disabled'})
++        return
++
+     firmware_url = message.get("firmware_url")
+     keep_config = message.get("keep_config", True)
+     keep_config_option = message.get("keep_config_option", "-c")  # Default to -c
+@@ -3176,6 +3206,12 @@
+ @socketio.event
+ def request_firmware_checkpoint(message):
+     """Socket handler for firmware checkpoint mode - download only"""
++    if not pcat_config.vendor_updates_enabled():
++        emit('firmware_checkpoint_status', {
++            'stage': 'disabled',
++            'message': 'Vendor firmware updates are disabled by default'})
++        return
++
+     firmware_url = message.get("firmware_url")
+     keep_config = message.get("keep_config", True)
+     keep_config_option = message.get("keep_config_option", "-c")
+@@ -3199,6 +3235,13 @@
+ @socketio.event
+ def request_firmware_install_from_checkpoint(message):
+     """Socket handler to install firmware from checkpoint"""
++    if not pcat_config.vendor_updates_enabled():
++        emit('firmware_upgrade_status', {
++            'active': False, 'stage': 'disabled', 'progress': 0,
++            'message': 'Vendor firmware updates are disabled by default',
++            'error': 'Updates disabled'})
++        return
++
+     file_path = message.get("file_path")
+     sha256 = message.get("sha256")
+     keep_config = message.get("keep_config", True)
+@@ -4606,7 +4649,12 @@
+              }
+     locales.update(base_locales())
+ 
+-    return render_template(nt.update_file_name, locales = locales, show_debug_logs = pcat_config.get_show_debug_logs())
++    return render_template(
++        nt.update_file_name,
++        locales=locales,
++        show_debug_logs=pcat_config.get_show_debug_logs(),
++        vendor_updates_enabled=pcat_config.vendor_updates_enabled(),
++    )
+ 
+ @flask_app.route("/about")
+ def about_action():
+@@ -4672,6 +4720,10 @@
+         rsp.headers['Content-Type'] = 'application/json'
+         return rsp
+ 
++    if not pcat_config.vendor_updates_enabled():
++        return jsonify({"versions": [], "status": "disabled", "disabled": True,
++                        "message": "Vendor package updates are disabled by default"})
++
+     info = pc_app.remote_pcat_package_version_info()
+     if len(info) == 0:
+         json_text = jsonify({"versions": info, "status":"failed" })
+@@ -6303,6 +6355,11 @@
+     Check development server for MCU firmware updates.
+     Returns dev server status and MCU firmware information.
+     """
++    if not pcat_config.vendor_updates_enabled():
++        return jsonify({"status": "disabled", "disabled": True,
++                        "reachable": False, "update_available": False,
++                        "message": "Vendor MCU updates are disabled by default"})
++
+     try:
+         # Get current local MCU version
+         local_version = pc_app.socket_client.stm32_firmware_version or "Unknown"
+@@ -6398,6 +6455,11 @@
+     Check production server for MCU firmware updates.
+     Returns production server status and MCU firmware information.
+     """
++    if not pcat_config.vendor_updates_enabled():
++        return jsonify({"status": "disabled", "disabled": True,
++                        "reachable": False, "update_available": False,
++                        "message": "Vendor MCU updates are disabled by default"})
++
+     try:
+         # Get current local MCU version
+         local_version = pc_app.socket_client.stm32_firmware_version or "Unknown"
+@@ -6519,6 +6581,10 @@
+ @flask_app.route("/api/v1/mcu_update.json", methods=['POST'])
+ def mcu_update_start():
+     """Start MCU firmware update process"""
++    if not pcat_config.vendor_updates_enabled():
++        return jsonify({"status": "disabled", "disabled": True,
++                        "message": "Vendor MCU updates are disabled by default"}), 403
++
+     global mcu_update_status
+     
+     try:
+Index: pcat-manager-web-2.0.0/app/templates/_base.html
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/templates/_base.html	2026-09-06 06:45:23.019480446 +0000
++++ pcat-manager-web-2.0.0/app/templates/_base.html	2026-09-06 06:45:23.139863910 +0000
+@@ -16,6 +16,16 @@
+     </style>
+     <script defer src="/static/alpine-3.10.2.js?v={{ cache_bust_version }}"></script>
+     <link rel="stylesheet" href="/static/app.css?v={{ cache_bust_version }}" />
++    <link rel="stylesheet" href="/static/vendor-dark.css?v={{ cache_bust_version }}&ui=pcat-r51" />
++    <script defer src="/static/vendor-telemetry.js?v={{ cache_bust_version }}&ui=pcat-r51"></script>
++    {% if request.path.rstrip('/') == '/modem' %}
++    <script defer src="/static/vendor-modem.js?v={{ cache_bust_version }}&ui=pcat-r51"></script>
++    {% elif request.path.rstrip('/') in ['/device_control', '/general_settings', '/settings', '/timer', '/sound_events'] %}
++    <script defer src="/static/vendor-settings.js?v={{ cache_bust_version }}&ui=pcat-r44"></script>
++    {% if request.path.rstrip('/') == '/sound_events' %}
++    <script defer src="/static/vendor-sound-events.js?v={{ cache_bust_version }}&ui=pcat-r44"></script>
++    {% endif %}
++    {% endif %}
+     {% block html_head %}{% endblock %}
+   </head>
+ 
+Index: pcat-manager-web-2.0.0/app/templates/update.html
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/templates/update.html	2026-09-06 06:45:23.019480446 +0000
++++ pcat-manager-web-2.0.0/app/templates/update.html	2026-09-06 06:45:23.140031243 +0000
+@@ -18,9 +18,16 @@
+ 
+   {% include '_ipk_manager.html' %}
+ 
++  {% if vendor_updates_enabled %}
+   {% include '_firmware_update.html' %}
+ 
+   {% include '_mcu_update.html' %}
++  {% else %}
++  <div class="mb-3 rounded border p-4 text-sm">
++    厂商固件、MCU 和远程软件包自动更新已关闭；需要更新时可在配置中启用，或使用 8080 端口的 LuCI 手动刷写。
++    <span class="block mt-1 text-gray-500">Vendor firmware, MCU and remote package updates are disabled by default.</span>
++  </div>
++  {% endif %}
+ 
+   {% include '_upgrade_confirmation_modal.html' %}
+ 
+@@ -1293,4 +1300,4 @@
+     }));
+   });
+ </script>
+-{% endblock %}
+\ No newline at end of file
++{% endblock %}
+Index: pcat-manager-web-2.0.0/app/database.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/database.py	2026-06-11 10:18:56.000000000 +0000
++++ pcat-manager-web-2.0.0/app/database.py	2026-09-06 06:45:46.027465531 +0000
+@@ -22,10 +22,9 @@
+       con = sqlite3.connect(db_path)
+     else:
+       pcat_logger.logger.warning("sqlite3.OperationalError, failed to create " + db_path)
+-  finally:
+-    if con is None:
+-      pcat_logger.logger.warning("Failed to connect to db {}".format(db_path))
+-      return False
++  if con is None:
++    pcat_logger.logger.warning("Failed to connect to db {}".format(db_path))
++    return False
+ 
+   if file_exists:
+     pcat_logger.logger.info("Db {} exist, not need create new one.".format(db_path))
+@@ -59,9 +58,8 @@
+     else:
+       pcat_logger.logger.warning("sqlite3.OperationalError, failed to create " + db_path)
+     con = None
+-  finally:
+-    if con is None:
+-      return False
++  if con is None:
++    return False
+     
+   if len(commands) > 0:
+     for sqlite_command in commands:
+@@ -83,9 +81,8 @@
+     else:
+       pcat_logger.logger.warning("sqlite3.OperationalError, failed to create " + db_path)
+     con = None
+-  finally:
+-    if con is None:
+-      return False
++  if con is None:
++    return False
+     
+   if len(commands_with_params) > 0:
+     for command_data in commands_with_params:
+@@ -114,9 +111,8 @@
+       con.row_factory = sqlite3.Row
+     else:
+       print("sqlite3.OperationalError, failed to create " + db_path)
+-  finally:
+-    if con is None:
+-      return []
++  if con is None:
++    return []
+     
+   rows = []
+   for row in con.cursor().execute(select_cmd):
+@@ -139,12 +135,11 @@
+       con.row_factory = sqlite3.Row
+     else:
+       print("sqlite3.OperationalError, failed to create " + db_path)
+-  finally:
+-    if con is None:
+-      return []
++  if con is None:
++    return []
+     
+   rows = []
+   for row in con.cursor().execute(select_cmd, params):
+     rows.append(row)
+   con.close()
+-  return rows
+\ No newline at end of file
++  return rows
+Index: pcat-manager-web-2.0.0/app/templates/login.html
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/templates/login.html	2026-06-11 10:18:56.000000000 +0000
++++ pcat-manager-web-2.0.0/app/templates/login.html	2026-09-06 06:45:46.026465532 +0000
+@@ -24,6 +24,7 @@
+     </script>
+     <script defer src="/static/alpine-3.10.2.js"></script>
+     <link rel="stylesheet" href="/static/app.css" />
++    <link rel="stylesheet" href="/static/vendor-dark.css" />
+     <style>[x-cloak]{display:none!important;}</style>
+   </head>
+   <body class="bg-gray-200">
+Index: pcat-manager-web-2.0.0/app/templates/pin_entry.html
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/templates/pin_entry.html	2026-06-11 10:18:56.000000000 +0000
++++ pcat-manager-web-2.0.0/app/templates/pin_entry.html	2026-09-06 06:45:46.026465532 +0000
+@@ -14,6 +14,7 @@
+     <title>PIN Required | {{locales["oem_name"]}} - 配置</title>
+     <script defer src="/static/alpine-3.10.2.js"></script>
+     <link rel="stylesheet" href="/static/app.css" />
++    <link rel="stylesheet" href="/static/vendor-dark.css" />
+     <style>[x-cloak]{display:none!important;}</style>
+     <!-- SHA-256 fallback for non-HTTPS environments -->
+     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+@@ -274,4 +275,4 @@
+       });
+     </script>
+   </body>
+-</html>
+\ No newline at end of file
++</html>
+Index: pcat-manager-web-2.0.0/app/templates/tos.html
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/templates/tos.html	2026-06-11 10:18:56.000000000 +0000
++++ pcat-manager-web-2.0.0/app/templates/tos.html	2026-09-06 06:45:46.027465531 +0000
+@@ -11,6 +11,7 @@
+     ul { margin: 0.8em 0 0.8em 1.2em; }
+     .section { margin-top: 1.5em; }
+   </style>
++  <link rel="stylesheet" href="/static/vendor-dark.css" />
+ </head>
+ <body>
+   <!-- Chinese Version -->
+Index: pcat-manager-web-2.0.0/app/pc_sms_client.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/pc_sms_client.py
++++ pcat-manager-web-2.0.0/app/pc_sms_client.py
+@@ -1210,19 +1210,20 @@ class PcSMSClient(threading.Thread):
+         """Check for incoming call status and RING notifications."""
+         try:
+-            # Get serial connection
+-            serial_obj = None
++            # Keep the modem lock for the whole AT transaction. PcModemClient
++            # exposes the pyserial object as serial_obj; it has no get_serial()
++            # method in this vendor revision.
+             with self.modem_client.serial_lock:
+-                serial_obj = self.modem_client.get_serial()
+-                if not serial_obj:
++                serial_obj = self.modem_client.serial_obj
++                if (serial_obj is None or
++                        (hasattr(serial_obj, 'is_open') and not serial_obj.is_open)):
+                     return {
+                         "active": False,
+                         "number": None,
+                         "ring_count": 0,
+                         "duration": 0
+                     }
+-            
+-            # Check call status using pysms_tool to see if there's an incoming call
+-            with self.modem_client.serial_lock:
++
++                # Check call status using pysms_tool to see if there's an incoming call
+                 sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL)
+                 # Use AT+CLCC to check for active calls
+                 response = sms_tool._send_command("AT+CLCC")

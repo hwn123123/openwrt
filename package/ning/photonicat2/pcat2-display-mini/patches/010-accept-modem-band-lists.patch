@@ -1,0 +1,64 @@
+--- pcat2-display-mini-1.0.0.orig/processData.go
++++ pcat2-display-mini-1.0.0/processData.go
+@@ -4,6 +4,7 @@
+ 	"bufio"
+ 	"bytes"
+ 	"crypto/tls"
++	"encoding/json"
+ 	"fmt"
+ 	"io"
+ 	"log"
+@@ -209,6 +210,23 @@
+ 	WiFiInterfaces      []WiFiInterface `json:"wifi_interfaces"`
+ }
+ 
++type StringOrStringList string
++
++func (s *StringOrStringList) UnmarshalJSON(data []byte) error {
++	var single string
++	if err := json.Unmarshal(data, &single); err == nil {
++		*s = StringOrStringList(single)
++		return nil
++	}
++
++	var list []string
++	if err := json.Unmarshal(data, &list); err != nil {
++		return err
++	}
++	*s = StringOrStringList(strings.Join(list, ", "))
++	return nil
++}
++
+ type ModemBasicInfo struct {
+ 	CellCarrierInfo     string         `json:"cell_carrier_info"`
+ 	FirmwareVersion     string         `json:"firmware_version"`
+@@ -228,10 +246,10 @@
+ 	ModemUSBSpeed       string         `json:"modem_usb_speed"`
+ 	ModemUSBNetMode     string         `json:"modem_usbnet_mode"`
+ 	ModemValid          bool           `json:"modem_valid"`
+-	PolicyLTEBands      string         `json:"policy_lte_bands"`
+-	PolicyNR5GBands     string         `json:"policy_nr5g_bands"`
+-	SelectedLTEBands    string         `json:"selected_lte_bands"`
+-	SelectedNR5GBands   string         `json:"selected_nr5g_bands"`
++	PolicyLTEBands      StringOrStringList `json:"policy_lte_bands"`
++	PolicyNR5GBands     StringOrStringList `json:"policy_nr5g_bands"`
++	SelectedLTEBands    StringOrStringList `json:"selected_lte_bands"`
++	SelectedNR5GBands   StringOrStringList `json:"selected_nr5g_bands"`
+ 	SimNumber           string         `json:"sim_number"`
+ 	SimState            string         `json:"sim_state"`
+ 	SMSCheckInterval    int            `json:"sms_check_interval"`
+@@ -565,10 +583,10 @@
+ 				globalData.Store("ModemUSBSpeed", mb.ModemUSBSpeed)
+ 				globalData.Store("ModemUSBNetMode", mb.ModemUSBNetMode)
+ 				globalData.Store("ModemValid", mb.ModemValid)
+-				globalData.Store("PolicyLTEBands", mb.PolicyLTEBands)
+-				globalData.Store("PolicyNR5GBands", mb.PolicyNR5GBands)
+-				globalData.Store("SelectedLTEBands", mb.SelectedLTEBands)
+-				globalData.Store("SelectedNR5GBands", mb.SelectedNR5GBands)
++				globalData.Store("PolicyLTEBands", string(mb.PolicyLTEBands))
++				globalData.Store("PolicyNR5GBands", string(mb.PolicyNR5GBands))
++				globalData.Store("SelectedLTEBands", string(mb.SelectedLTEBands))
++				globalData.Store("SelectedNR5GBands", string(mb.SelectedNR5GBands))
+ 				globalData.Store("SMSCheckInterval", mb.SMSCheckInterval)
+ 				globalData.Store("SMSForward", mb.SMSForward)
+ 				globalData.Store("SMSForwardTo", mb.SMSForwardTo)

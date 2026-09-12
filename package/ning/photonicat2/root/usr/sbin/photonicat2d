@@ -1,0 +1,363 @@
+#!/bin/sh
+
+. /lib/functions.sh
+
+CTL=/usr/libexec/photonicat2ctl
+HISTORY=/tmp/photonicat2-battery-history.jsonl
+IDLE_SINCE=/tmp/photonicat2-idle-since
+BIG_CORES_CACHE=/tmp/photonicat2-big-cores
+EVENT_DIR=/tmp/photonicat2-events
+EVENT_QUEUE=$EVENT_DIR/queue
+last_history=0
+low_armed=0
+low_count=0
+
+cfg() {
+	local value
+	config_get value main "$1" "$2"
+	printf '%s' "$value"
+}
+
+bool_cfg() {
+	local value
+	config_get_bool value main "$1" "$2"
+	printf '%s' "$value"
+}
+
+in_time_range() {
+	local now start end
+	now="$(date +%H:%M)"
+	start="$1"
+	end="$2"
+	[ "$start" = "$end" ] && return 0
+	if [ "$start" \< "$end" ]; then
+		[ "$now" = "$start" ] || { [ "$now" \> "$start" ] && [ "$now" \< "$end" ]; }
+	else
+		[ "$now" = "$start" ] || [ "$now" \> "$start" ] || [ "$now" \< "$end" ]
+	fi
+}
+
+mode_state() {
+	local mode start end
+	mode="$(cfg "$1" on)"
+	start="$(cfg "$2" 00:00)"
+	end="$(cfg "$3" 23:59)"
+	case "$mode" in
+		on) printf 1 ;;
+		off) printf 0 ;;
+		timed) in_time_range "$start" "$end" && printf 1 || printf 0 ;;
+		*) printf 1 ;;
+	esac
+}
+
+apply_io() {
+	local led beep
+	led="$(mode_state led_mode led_start led_end)"
+	beep="$(mode_state beeper_mode beeper_start beeper_end)"
+	"$CTL" io-set "$led" "$beep" >/dev/null 2>&1 || true
+}
+
+cpu_big_cores() {
+	local path freq max min
+	max=0
+	min=999999999
+	for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/cpuinfo_max_freq; do
+		[ -r "$path" ] || continue
+		read -r freq < "$path"
+		case "$freq" in *[!0-9]*|'') continue ;; esac
+		[ "$freq" -gt "$max" ] && max="$freq"
+		[ "$freq" -lt "$min" ] && min="$freq"
+	done
+	[ "$max" -gt 0 ] && [ "$max" -ne "$min" ] || return 1
+	for path in /sys/devices/system/cpu/cpu[0-9]*; do
+		[ -r "$path/cpufreq/cpuinfo_max_freq" ] || continue
+		read -r freq < "$path/cpufreq/cpuinfo_max_freq"
+		[ "$freq" = "$max" ] && printf '%s\n' "$path"
+	done
+}
+
+apply_cpu() {
+	local save path cores cached
+	save="$(bool_cfg cpu_powersave 0)"
+	if [ "$save" -eq 0 ] && [ -s "$BIG_CORES_CACHE" ]; then
+		while read -r path; do
+			[ -w "$path/online" ] && printf 1 > "$path/online"
+		done < "$BIG_CORES_CACHE"
+		rm -f "$BIG_CORES_CACHE"
+	fi
+	cores="$(cpu_big_cores)"
+	if [ -n "$cores" ]; then
+		for path in $cores; do
+			if [ "$save" -eq 1 ]; then
+				[ -w "$path/online" ] || continue
+				printf '%s\n' "$path" >> "$BIG_CORES_CACHE"
+				printf 0 > "$path/online"
+			fi
+		done
+	else
+		for path in /sys/devices/system/cpu/cpu[0-9]*/cpufreq/scaling_governor; do
+			[ -w "$path" ] || continue
+			[ "$save" -eq 1 ] && printf powersave > "$path" || printf schedutil > "$path"
+		done
+	fi
+}
+
+set_fan() {
+	local path type
+	for path in /sys/class/thermal/cooling_device*; do
+		[ -r "$path/type" ] && [ -w "$path/cur_state" ] || continue
+		read -r type < "$path/type"
+		[ "$type" = "pcat-pm-fan" ] && printf '%s' "$1" > "$path/cur_state"
+	done
+}
+
+wifi_clients() {
+	local object total count
+	total=0
+	for object in $(ubus list 'hostapd.*' 2>/dev/null); do
+		count="$(ubus call "$object" get_clients 2>/dev/null | jq -r '.clients | length // 0' 2>/dev/null)"
+		case "$count" in *[!0-9]*|'') count=0 ;; esac
+		total=$((total + count))
+	done
+	printf '%s' "$total"
+}
+
+queue_event() {
+	case "$1" in
+		boot|shutdown|charging|low_battery|cellular|lan|wan|wifi_start|wifi_client) ;;
+		*) return ;;
+	esac
+	mkdir -p "$EVENT_DIR"
+	touch "$EVENT_QUEUE"
+	grep -qx "$1" "$EVENT_QUEUE" 2>/dev/null || printf '%s\n' "$1" >> "$EVENT_QUEUE"
+}
+
+process_event_queue() {
+	local event tmp
+	[ -s "$EVENT_QUEUE" ] || return
+	read -r event < "$EVENT_QUEUE"
+	tmp="$EVENT_QUEUE.tmp"
+	sed '1d' "$EVENT_QUEUE" > "$tmp" && mv "$tmp" "$EVENT_QUEUE"
+	"$CTL" beep-event "$event" >/dev/null 2>&1 || true
+}
+
+event_transition_up() {
+	local name="$1" current="$2" file previous
+	file="$EVENT_DIR/state_$name"
+	previous=0
+	[ -r "$file" ] && read -r previous < "$file"
+	[ "$previous" = 0 ] && [ "$current" = 1 ] && queue_event "$name"
+	printf '%s' "$current" > "$file"
+}
+
+event_client_count() {
+	local current="$1" file previous
+	file="$EVENT_DIR/state_wifi_clients"
+	previous=0
+	[ -r "$file" ] && read -r previous < "$file"
+	case "$previous" in *[!0-9]*|'') previous=0 ;; esac
+	case "$current" in *[!0-9]*|'') current=0 ;; esac
+	[ "$current" -gt "$previous" ] && queue_event wifi_client
+	printf '%s' "$current" > "$file"
+}
+
+lan_link_state() {
+	local bridge port carrier found=0
+	bridge="$(uci -q get network.lan.device 2>/dev/null || printf br-lan)"
+	for port in /sys/class/net/"$bridge"/brif/*; do
+		[ -e "$port" ] || continue
+		port="${port##*/}"
+		case "$port" in wlan*|phy*|radio*) continue ;; esac
+		[ -r "/sys/class/net/$port/carrier" ] || continue
+		found=1
+		read -r carrier < "/sys/class/net/$port/carrier"
+		[ "$carrier" = 1 ] && { printf 1; return; }
+	done
+	if [ "$found" -eq 0 ] && [ -r "/sys/class/net/$bridge/carrier" ]; then
+		read -r carrier < "/sys/class/net/$bridge/carrier"
+		[ "$carrier" = 1 ] && { printf 1; return; }
+	fi
+	printf 0
+}
+
+wan_link_state() {
+	ubus call network.interface.wan status 2>/dev/null | jq -e '.up == true' >/dev/null 2>&1 && printf 1 || printf 0
+}
+
+cellular_link_state() {
+	local section dev carrier
+	for section in $(uci -q show qmodem 2>/dev/null | sed -n 's/^qmodem\.\([^.=]*\)=modem-device$/\1/p'); do
+		dev="$(uci -q get "qmodem.$section.network" 2>/dev/null)"
+		[ -n "$dev" ] || continue
+		[ -r "/sys/class/net/$dev/carrier" ] || continue
+		read -r carrier < "/sys/class/net/$dev/carrier"
+		[ "$carrier" = 1 ] || continue
+		ip -4 route show default dev "$dev" 2>/dev/null | grep -q '^default ' && { printf 1; return; }
+	done
+	printf 0
+}
+
+init_event_runtime() {
+	local boot_id previous now
+	mkdir -p "$EVENT_DIR"
+	boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+	previous="$(cat "$EVENT_DIR/boot_id" 2>/dev/null)"
+	if [ -n "$boot_id" ] && [ "$boot_id" != "$previous" ]; then
+		rm -f "$EVENT_DIR"/state_* "$EVENT_QUEUE" "$EVENT_DIR/boot_due"
+		printf '%s' "$boot_id" > "$EVENT_DIR/boot_id"
+		now="$(date +%s)"
+		printf '%s' $((now + 25)) > "$EVENT_DIR/boot_due"
+	fi
+}
+
+monitor_boot_event() {
+	local due now
+	[ -r "$EVENT_DIR/boot_due" ] || return
+	read -r due < "$EVENT_DIR/boot_due"
+	case "$due" in *[!0-9]*|'') rm -f "$EVENT_DIR/boot_due"; return ;; esac
+	now="$(date +%s)"
+	if [ "$now" -ge "$due" ]; then
+		queue_event boot
+		rm -f "$EVENT_DIR/boot_due"
+	fi
+}
+
+monitor_connectivity_events() {
+	local wifi_ready clients lan wan cellular
+	ubus list 'hostapd.*' 2>/dev/null | grep -q . && wifi_ready=1 || wifi_ready=0
+	clients="$(wifi_clients)"
+	lan="$(lan_link_state)"
+	wan="$(wan_link_state)"
+	cellular="$(cellular_link_state)"
+	event_transition_up wifi_start "$wifi_ready"
+	event_client_count "$clients"
+	event_transition_up lan "$lan"
+	event_transition_up wan "$wan"
+	event_transition_up cellular "$cellular"
+}
+
+monitor_power_events() {
+	local charging="$1" soc="$2" threshold low=0
+	case "$charging" in 0|1) event_transition_up charging "$charging" ;; esac
+	threshold="$(cfg low_battery_threshold 10)"
+	case "$threshold" in *[!0-9]*|'') threshold=10 ;; esac
+	case "$soc" in *[!0-9]*|'') ;;
+		*) [ "$charging" = 0 ] && [ "$soc" -le "$threshold" ] && low=1 ;;
+	esac
+	event_transition_up low_battery "$low"
+}
+
+record_history() {
+	local now interval keep status line tmp
+	[ "$(bool_cfg history_enable 1)" -eq 1 ] || return
+	now="$(date +%s)"
+	interval="$(cfg history_interval 60)"
+	keep="$(cfg history_keep 1440)"
+	case "$interval" in *[!0-9]*|'') interval=60 ;; esac
+	case "$keep" in *[!0-9]*|'') keep=1440 ;; esac
+	[ "$interval" -lt 30 ] && interval=30
+	[ $((now - last_history)) -ge "$interval" ] || return
+	last_history="$now"
+	status="$($CTL status 2>/dev/null)" || return
+	line="$(printf '%s' "$status" | jq -c '{time:(now|floor),percent:.battery.percent,voltage:.battery.voltage,current:.battery.current,power:.battery.power,temperature:.temperature.board,charging:.battery.charging}' 2>/dev/null)"
+	[ -n "$line" ] || return
+	printf '%s\n' "$line" >> "$HISTORY"
+	if [ "$(wc -l < "$HISTORY")" -gt "$keep" ]; then
+		tmp="${HISTORY}.tmp"
+		tail -n "$keep" "$HISTORY" > "$tmp" && mv "$tmp" "$HISTORY"
+	fi
+}
+
+apply_fan_and_policies() {
+	local pmu temp charging mode max start speed soc threshold clients minutes since now
+	pmu="$(/usr/libexec/photonicat2-socket '{"command":"pmu-status"}' 2>/dev/null)"
+	temp="$(printf '%s' "$pmu" | jq -r '."board-temperature" // empty | floor' 2>/dev/null)"
+	charging="$(printf '%s' "$pmu" | jq -r 'if ."on-battery" == 0 then 1 else 0 end' 2>/dev/null)"
+	soc="$(printf '%s' "$pmu" | jq -r '."charge-percentage" // empty | if . > 100 then ./100 else . end | floor' 2>/dev/null)"
+
+	case "$temp" in *[!0-9.-]*|'')
+		for start in /sys/class/thermal/thermal_zone*/temp; do
+			[ -r "$start" ] || continue
+			read -r temp < "$start"
+			case "$temp" in *[!0-9]*|'') continue ;; esac
+			temp=$((temp / 1000))
+			break
+		done
+	;; esac
+	case "$charging" in 0|1) ;; *) charging=0 ;; esac
+	monitor_power_events "$charging" "$soc"
+
+	mode="$(cfg fan_mode smart_quiet)"
+	max="$(cfg fan_max 5)"
+	case "$max" in *[!0-9]*|'') max=5 ;; esac
+	[ "$max" -gt 9 ] && max=9
+	[ "$max" -lt 0 ] && max=0
+	speed=0
+	if [ "$mode" = manual ]; then
+		speed="$max"
+	elif [ -n "$temp" ]; then
+		[ "$mode" = smart_cool ] && { [ "$charging" -eq 1 ] && start=43 || start=48; } || { [ "$charging" -eq 1 ] && start=45 || start=52; }
+		[ "$temp" -ge "$start" ] 2>/dev/null && speed=$((temp - start + 1))
+		[ "$temp" -gt 60 ] 2>/dev/null && speed=8
+		[ "$speed" -gt "$max" ] && [ "$temp" -le 60 ] && speed="$max"
+		[ "$speed" -gt 9 ] && speed=9
+	fi
+	set_fan "$speed"
+
+	threshold="$(cfg low_battery_threshold 10)"
+	case "$threshold" in *[!0-9]*|'') threshold=10 ;; esac
+	if [ -n "$soc" ] && [ "$soc" -gt $((threshold + 2)) ]; then
+		low_armed=1
+		low_count=0
+	elif [ "$(bool_cfg low_battery_enable 0)" -eq 1 ] && [ "$low_armed" -eq 1 ] && [ "$charging" -eq 0 ] && [ -n "$soc" ] && [ "$soc" -le "$threshold" ]; then
+		low_count=$((low_count + 1))
+		[ "$low_count" -ge 4 ] && { logger -t photonicat2 "low battery shutdown at ${soc}%"; /sbin/poweroff; }
+	else
+		low_count=0
+	fi
+
+	if [ "$(bool_cfg idle_shutdown_enable 0)" -eq 1 ] && { [ "$(bool_cfg idle_battery_only 1)" -eq 0 ] || [ "$charging" -eq 0 ]; }; then
+		clients="$(wifi_clients)"
+		if [ "$clients" -eq 0 ]; then
+			now="$(date +%s)"
+			if [ ! -s "$IDLE_SINCE" ]; then
+				printf '%s' "$now" > "$IDLE_SINCE"
+			else
+				read -r since < "$IDLE_SINCE"
+				minutes="$(cfg idle_shutdown_minutes 30)"
+				case "$minutes" in *[!0-9]*|'') minutes=30 ;; esac
+				[ $((now - since)) -ge $((minutes * 60)) ] && { logger -t photonicat2 "idle shutdown after ${minutes} minutes"; /sbin/poweroff; }
+			fi
+		else
+			rm -f "$IDLE_SINCE"
+		fi
+	else
+		rm -f "$IDLE_SINCE"
+	fi
+}
+
+trap 'rm -f "$IDLE_SINCE"; exit 0' TERM INT
+config_load photonicat2
+apply_cpu
+apply_io
+init_event_runtime
+
+loop=0
+while :; do
+	config_load photonicat2
+	monitor_boot_event
+	monitor_connectivity_events
+	process_event_queue
+	if [ $((loop % 3)) -eq 0 ]; then
+		apply_fan_and_policies
+		record_history
+	fi
+	loop=$((loop + 1))
+	if [ "$loop" -ge 12 ]; then
+		apply_cpu
+		apply_io
+		loop=0
+	fi
+	sleep 5 &
+	wait $!
+done

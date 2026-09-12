@@ -1,0 +1,430 @@
+--- a/src/fm350-mm.c
++++ b/src/fm350-mm.c
+@@ -29,6 +29,7 @@
+ #include <stdint.h>
+ #include <time.h>
+ #include <sys/select.h>
++#include <sys/file.h>
+ #include <sys/stat.h>
+ #include <sys/types.h>
+ #include <sys/wait.h>
+@@ -38,6 +39,7 @@
+ #define FM350_OPENWRT_IFACE "wwan_fm350"
+ 
+ #define USB_SYSFS_ROOT "/sys/bus/usb/devices"
++#define AT_LOCK_PATH "/tmp/pcat-fm350-at.lock"
+ 
+ #define AT_RESP_MAX 8192
+ #define MAX_SERIAL_PORTS 8
+@@ -69,6 +71,7 @@
+ 
+ static int g_os_is_openwrt = 0;
+ static char g_current_ip[64] = "";
++static int g_at_lock_fd = -1;
+ static modem_pref_t g_modem_pref = PREF_AUTO;
+ 
+ static int64_t now_ms(void)
+@@ -222,23 +225,62 @@
+ /* Serial port handling                                                   */
+ /* ---------------------------------------------------------------------- */
+ 
++static int at_lock(void)
++{
++    if(g_at_lock_fd < 0)
++    {
++        g_at_lock_fd = open(AT_LOCK_PATH, O_RDWR | O_CREAT, 0600);
++        if(g_at_lock_fd < 0)
++        {
++            fprintf(stderr, "Failed to open AT lock %s: %s\n",
++                AT_LOCK_PATH, strerror(errno));
++            return -1;
++        }
++    }
++
++    while(flock(g_at_lock_fd, LOCK_EX)!=0)
++    {
++        if(errno!=EINTR)
++        {
++            fprintf(stderr, "Failed to acquire AT lock: %s\n",
++                strerror(errno));
++            return -1;
++        }
++    }
++
++    return 0;
++}
++
++static void at_unlock(void)
++{
++    if(g_at_lock_fd >= 0)
++    {
++        flock(g_at_lock_fd, LOCK_UN);
++    }
++}
++
+ static int serial_open(const char *path)
+ {
+     int fd;
+     struct termios tio;
+ 
++    if(at_lock()!=0)
++    {
++        return -1;
++    }
++
+     fd = open(path, O_RDWR | O_NOCTTY | O_NONBLOCK);
+     if(fd < 0)
+     {
+         fprintf(stderr, "Failed to open %s: %s\n", path, strerror(errno));
+-
++        at_unlock();
+         return -1;
+     }
+ 
+     if(tcgetattr(fd, &tio)!=0)
+     {
+         close(fd);
+-
++        at_unlock();
+         return -1;
+     }
+ 
+@@ -252,11 +294,12 @@
+     if(tcsetattr(fd, TCSANOW, &tio)!=0)
+     {
+         close(fd);
+-
++        at_unlock();
+         return -1;
+     }
+ 
+     tcflush(fd, TCIOFLUSH);
++    at_unlock();
+ 
+     return fd;
+ }
+@@ -350,17 +393,22 @@
+     int r;
+     ssize_t rsize;
+     int final;
++    int result = -1;
+ 
+     resp[0] = '\0';
+ 
++    if(at_lock()!=0)
++    {
++        return -1;
++    }
++
+     serial_drain(fd);
+ 
+     snprintf(sendbuf, sizeof(sendbuf), "%s\r\n", cmd);
+     if(serial_write_all(fd, sendbuf, strlen(sendbuf))!=0)
+     {
+         fprintf(stderr, "Serial write failed: %s\n", strerror(errno));
+-
+-        return -1;
++        goto out;
+     }
+ 
+     deadline = now_ms() + timeout_ms;
+@@ -380,7 +428,7 @@
+                 continue;
+             }
+ 
+-            return -1;
++            goto out;
+         }
+         if(r==0)
+         {
+@@ -395,7 +443,7 @@
+                 continue;
+             }
+ 
+-            return -1;
++            goto out;
+         }
+         if(rsize==0)
+         {
+@@ -412,11 +460,14 @@
+         final = at_response_final(resp);
+         if(final >= 0)
+         {
+-            return final;
++            result = final;
++            goto out;
+         }
+     }
+ 
+-    return -1;
++out:
++    at_unlock();
++    return result;
+ }
+ 
+ /* ---------------------------------------------------------------------- */
+@@ -857,6 +908,55 @@
+     return strcmp((const char *)a, (const char *)b);
+ }
+ 
++/* The stock FM350 USB composition exposes its primary application AT port on
++ * USB interface 06 (normally /dev/ttyUSB3). Prefer the interface number over
++ * the tty ordinal because ttyUSB numbers can move after re-enumeration. */
++static int port_interface_number(const char *port)
++{
++    const char *name = strrchr(port, '/');
++    char path[256];
++    unsigned int number;
++    FILE *fp;
++
++    name = (name!=NULL) ? name + 1 : port;
++    snprintf(path, sizeof(path),
++        "/sys/class/tty/%s/device/../bInterfaceNumber", name);
++    fp = fopen(path, "r");
++    if(fp==NULL)
++    {
++        return -1;
++    }
++    if(fscanf(fp, "%x", &number)!=1)
++    {
++        fclose(fp);
++        return -1;
++    }
++    fclose(fp);
++
++    return (int)number;
++}
++
++static void prefer_primary_at_port(char ports[][64], int port_count)
++{
++    int i;
++    char preferred[64];
++
++    for(i=0;i<port_count;i++)
++    {
++        if(port_interface_number(ports[i])==0x06)
++        {
++            if(i==0)
++            {
++                return;
++            }
++            snprintf(preferred, sizeof(preferred), "%s", ports[i]);
++            memmove(&ports[1], &ports[0], (size_t)i * sizeof(ports[0]));
++            snprintf(ports[0], sizeof(ports[0]), "%s", preferred);
++            return;
++        }
++    }
++}
++
+ /* Find the network interface and ttyUSB serial ports below the modem's
+  * sysfs directory. Returns the number of serial ports found. */
+ static int find_iface_and_ports(const char *usbroot, char *iface,
+@@ -931,6 +1031,7 @@
+     closedir(dir);
+ 
+     qsort(ports, port_count, 64, port_name_cmp);
++    prefer_primary_at_port(ports, port_count);
+ 
+     return port_count;
+ }
+@@ -993,6 +1094,8 @@
+ {
+     char resp[AT_RESP_MAX];
+     char cmd[64];
++    char line[512];
++    int current = -1;
+     int want;
+ 
+     at_cmd(fd, "AT+CMEE=2", resp, sizeof(resp), 3000);
+@@ -1001,18 +1104,34 @@
+     want = pref_gtact(g_modem_pref);
+     fprintf(stderr, "User RAT preference: %s (AT+GTACT=%d)\n",
+         pref_name(g_modem_pref), want);
+-    snprintf(cmd, sizeof(cmd), "AT+GTACT=%d", want);
+-    if(at_cmd(fd, cmd, resp, sizeof(resp), 5000)!=1)
++
++    if(at_cmd(fd, "AT+GTACT?", resp, sizeof(resp), 5000)==1 &&
++       get_line_after(resp, "+GTACT: ", line, sizeof(line))==0)
+     {
+-        flatten_whitespace(resp);
+-        fprintf(stderr, "AT+GTACT=%d (%s) failed: %s\n",
+-            want, pref_name(g_modem_pref), resp);
+-        return -1;
++        current = (int)field_get_int(line, 0, -1);
+     }
+ 
+-    at_cmd(fd, "AT+CFUN=0", resp, sizeof(resp), 15000);
+-    at_cmd(fd, "AT+CFUN=1", resp, sizeof(resp), 15000);
+-    sleep(3);
++    if(current!=want)
++    {
++        snprintf(cmd, sizeof(cmd), "AT+GTACT=%d", want);
++        if(at_cmd(fd, cmd, resp, sizeof(resp), 5000)!=1)
++        {
++            flatten_whitespace(resp);
++            fprintf(stderr, "AT+GTACT=%d (%s) failed: %s\n",
++                want, pref_name(g_modem_pref), resp);
++            return -1;
++        }
++
++        fprintf(stderr, "RAT changed from %d to %d; cycling radio once.\n",
++            current, want);
++        at_cmd(fd, "AT+CFUN=0", resp, sizeof(resp), 15000);
++        at_cmd(fd, "AT+CFUN=1", resp, sizeof(resp), 15000);
++        sleep(3);
++    }
++    else
++    {
++        fprintf(stderr, "RAT already matches; keeping current registration.\n");
++    }
+ 
+     at_cmd(fd, "AT+GTFCCLOCKMODE?", resp, sizeof(resp), 5000);
+     if(strstr(resp, "+GTFCCLOCKMODE: 2")!=NULL ||
+@@ -1155,68 +1274,35 @@
+     return -1;
+ }
+ 
+-/* Try every PDP-activation path the modem offers, in order:
+- *   1. an explicit context using a manual or SIM-selected APN, then
+- *   2. the operator-assigned initial context 0 as a compatibility fallback.
+- * Returns the active context index (0 or pdp_index) on success, or -1 if
+- * nothing activated. */
++/* FM350 RNDIS is wired to PDP context 0. QModem used context 3 historically,
++ * but its current FM350 profile explicitly corrected that to context 0 because
++ * the old context could connect and then remain unstable. Configure the
++ * selected APN on context 0 before activating it; leaving context 0 untouched
++ * while configuring context 1 does not establish the RNDIS data pipe. */
+ static int try_activate_all(int fd, int pdp_index, const char *apn)
+ {
+-    char resp[AT_RESP_MAX];
+     int attempt;
+-    int initial_attempts = (apn!=NULL && apn[0]!='\0') ? 2 : 6;
+-    const char *pdp_types[] = {"IPV4V6", "IP"};
+-    size_t i;
+ 
+-    /* A known manual/automatic APN follows the vendor's documented path:
+-     * define context 1 and activate it directly. This avoids spending about
+-     * 30 seconds retrying context 0 before using the APN we already know. */
+-    if(apn!=NULL && apn[0]!='\0')
++    (void)pdp_index;
++    for(attempt=0;attempt<2;attempt++)
+     {
+-        char cmd[64];
+-
+-        snprintf(cmd, sizeof(cmd), "AT+CGACT=0,%d", pdp_index);
+-        at_cmd(fd, cmd, resp, sizeof(resp), 10000);
+-
+-        for(i=0;i<sizeof(pdp_types)/sizeof(pdp_types[0]);i++)
++        if(try_cgdcont(fd, 0, apn, "IP")==0)
+         {
+-            if(try_cgdcont(fd, pdp_index, apn, pdp_types[i])==0)
+-            {
+-                fprintf(stderr, "PDP context %d activated with APN %s, "
+-                    "type %s\n", pdp_index, apn, pdp_types[i]);
+-                return pdp_index;
+-            }
++            fprintf(stderr, "PDP context 0 activated with APN %s, type IP "
++                "(attempt %d)\n", apn, attempt + 1);
++            return 0;
+         }
+-        fprintf(stderr, "Explicit APN activation failed; trying the modem's "
+-            "initial context.\n");
++        sleep(3);
+     }
+ 
+-    /* Some roaming networks reject the first AT+CGACT=1,0 right after
+-     * CFUN=1 (returning CME 5873) and only accept a retry a few seconds
+-     * later. AT+CGACT=1,0 is what opens the data pipe to the net
+-     * interface, so it must succeed. */
+-    for(attempt=0;attempt<initial_attempts;attempt++)
++    if(try_cgdcont(fd, 0, apn, "IPV4V6")==0)
+     {
+-        if(at_cmd(fd, "AT+CGACT=1,0", resp, sizeof(resp), 30000)==1)
+-        {
+-            fprintf(stderr, "PDP context 0 (initial, operator-assigned "
+-                "APN) activated (attempt %d)\n", attempt + 1);
+-
+-            return 0;
+-        }
+-
+-        flatten_whitespace(resp);
+-        fprintf(stderr, "Initial PDP context (0) activation attempt %d "
+-            "failed: %s\n", attempt + 1, resp);
+-
+-        at_cmd(fd, "AT+CGACT=0,0", resp, sizeof(resp), 10000);
+-        sleep(5);
++        fprintf(stderr, "PDP context 0 activated with APN %s, type IPV4V6\n",
++            apn);
++        return 0;
+     }
+ 
+-    fprintf(stderr,
+-        "Initial PDP context (0) activation failed after retries.\n");
+-
+-    fprintf(stderr, "All PDP activation attempts failed.\n");
++    fprintf(stderr, "PDP context 0 activation failed for APN %s.\n", apn);
+ 
+     return -1;
+ }
+@@ -1625,6 +1711,12 @@
+     size_t used = 0;
+     ssize_t r;
+     const char *p;
++    int lost = 0;
++
++    if(at_lock()!=0)
++    {
++        return 0;
++    }
+ 
+     while(used < sizeof(buf) - 1 &&
+         (r = read(fd, buf + used, sizeof(buf) - 1 - used)) > 0)
+@@ -1635,6 +1727,7 @@
+ 
+     if(used==0)
+     {
++        at_unlock();
+         return 0;
+     }
+ 
+@@ -1651,12 +1744,13 @@
+         {
+             fprintf(stderr, "+CGEV deactivation event: %.*s\n",
+                 (int)linelen, p);
+-
+-            return 1;
++            lost = 1;
++            break;
+         }
+     }
+ 
+-    return 0;
++    at_unlock();
++    return lost;
+ }
+ 
+ /* Only an explicit inactive state for our own PDP context confirms a loss.
+@@ -1777,11 +1871,8 @@
+             continue;
+         }
+ 
+-        serial_write_all(fd, "\r\n", 2);
+-        usleep(300000);
+-        serial_drain(fd);
+-
+-        if(at_cmd(fd, "AT", resp, sizeof(resp), 2000)==1)
++        if(at_cmd(fd, "AT+CGMM", resp, sizeof(resp), 3000)==1 &&
++           strstr(resp, "FM350")!=NULL)
+         {
+             break;
+         }
+@@ -1815,7 +1906,7 @@
+         return 4;
+     }
+ 
+-    active_pdp = at_dial(fd, 1, selected_apn);
++    active_pdp = at_dial(fd, 0, selected_apn);
+     if(active_pdp < 0)
+     {
+         close(fd);
+

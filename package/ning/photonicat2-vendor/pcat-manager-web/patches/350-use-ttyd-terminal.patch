@@ -1,0 +1,132 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -8,7 +8,7 @@
+ # - Reasonable session lifetimes (30 days default, 180 days remember)
+ 
+ from flask import Flask, jsonify, render_template, request, redirect, session, make_response, url_for
+-from flask_socketio import SocketIO, emit, join_room, leave_room
++from flask_socketio import SocketIO, emit
+ from datetime import datetime, date, timedelta
+ import secrets
+ import time
+@@ -38,7 +38,6 @@
+ import pcat_dashboard
+ import app as pc_app
+ from cmd_tool import CmdTool
+-from pc_terminal import terminal_manager
+ 
+ install_thread = None
+ thread_lock = threading.Lock()
+@@ -8470,111 +8469,3 @@
+     locales.update(base_locales())
+     return render_template(nt.terminal_file_name, locales=locales)
+ 
+-
+-# Terminal: use Socket.IO rooms for broadcasting PTY output.
+-# Room name = "terminal:" + session_id
+-_terminal_readers = {}       # session_id -> True (reader running)
+-_terminal_lock = threading.Lock()
+-
+-def _terminal_room(session_id):
+-    return "terminal:" + session_id
+-
+-def _terminal_reader_thread(app_context, session_id):
+-    """Background thread that reads PTY output and broadcasts to the room."""
+-    room = _terminal_room(session_id)
+-    pcat_logger.logger.info(f"Terminal reader ENTER for {session_id}")
+-    with app_context:
+-        sess = terminal_manager.get(session_id)
+-        if not sess:
+-            with _terminal_lock:
+-                _terminal_readers.pop(session_id, None)
+-            return
+-        try:
+-            while sess._alive:
+-                try:
+-                    data = sess.read(timeout=0.1)
+-                except Exception:
+-                    break
+-                if data is None:
+-                    break
+-                if data:
+-                    sess.append_scrollback(data)
+-                    socketio.emit('terminal_output',
+-                                  {'data': data.decode('utf-8', errors='replace')},
+-                                  to=room)
+-        except Exception as e:
+-            pcat_logger.logger.error(f"Terminal reader error for {session_id}: {e}")
+-        finally:
+-            with _terminal_lock:
+-                _terminal_readers.pop(session_id, None)
+-            socketio.emit('terminal_exit', {'session_id': session_id}, to=room)
+-            pcat_logger.logger.info(f"Terminal reader EXIT for {session_id}")
+-
+-
+-@socketio.event
+-def terminal_open(message):
+-    """Client requests to open/attach a terminal session."""
+-    if not pcat_config.skip_auth and 'username' not in session:
+-        emit('terminal_exit', {'error': 'Not authenticated'})
+-        return
+-
+-    session_id = message.get('session_id', 'default')
+-    cols = message.get('cols', 80)
+-    rows = message.get('rows', 24)
+-    room = _terminal_room(session_id)
+-    pcat_logger.logger.info(f"Terminal open: session_id={session_id}, sid={request.sid}, cols={cols}, rows={rows}")
+-
+-    # Join the room so this socket receives PTY output
+-    join_room(room)
+-
+-    is_new = terminal_manager.get(session_id) is None
+-    sess = terminal_manager.get_or_create(session_id, cols, rows)
+-    sess.resize(cols, rows)
+-
+-    if not is_new:
+-        # Replay saved output so client sees previous session content
+-        scrollback = sess.get_scrollback()
+-        if scrollback:
+-            emit('terminal_output', {'data': scrollback.decode('utf-8', errors='replace')})
+-
+-    # Start reader thread if not already running
+-    with _terminal_lock:
+-        if session_id not in _terminal_readers:
+-            _terminal_readers[session_id] = True
+-            socketio.start_background_task(
+-                _terminal_reader_thread,
+-                flask_app.app_context(),
+-                session_id
+-            )
+-            pcat_logger.logger.info(f"Terminal reader started for {session_id}")
+-
+-
+-@socketio.event
+-def terminal_input(message):
+-    """Client sends input to the terminal."""
+-    session_id = message.get('session_id', 'default')
+-    data = message.get('data', '')
+-    sess = terminal_manager.get(session_id)
+-    if sess:
+-        sess.write(data)
+-
+-
+-@socketio.event
+-def terminal_resize(message):
+-    """Client resizes the terminal."""
+-    session_id = message.get('session_id', 'default')
+-    cols = message.get('cols', 80)
+-    rows = message.get('rows', 24)
+-    sess = terminal_manager.get(session_id)
+-    if sess:
+-        sess.resize(cols, rows)
+-
+-
+-@socketio.event
+-def terminal_kill(message):
+-    """Client requests to kill a terminal session (for reconnect with fresh shell)."""
+-    session_id = message.get('session_id', 'default')
+-    pcat_logger.logger.info(f"Terminal kill request: session_id={session_id}")
+-    terminal_manager.kill(session_id)
+-    with _terminal_lock:
+-        _terminal_readers.pop(session_id, None)
+

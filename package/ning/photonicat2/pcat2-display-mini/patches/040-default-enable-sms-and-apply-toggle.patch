@@ -1,0 +1,32 @@
+--- a/utils.go
++++ b/utils.go
+@@ -797,6 +797,14 @@ func mergeConfigs() error {
+ 		return fmt.Errorf("failed to unmarshal user config: %v", err)
+ 	}
+ 
++	// Config uses a bool, whose zero value is false.  Do not let an older or
++	// freshly-created user config which simply lacks show_sms override the
++	// package default (enabled for Photonicat 2).  An explicit false remains a
++	// valid user choice.
++	if !hasShowSmsInUserConfig() {
++		delete(userMap, "show_sms")
++	}
++
+ 	// Deep merge user config into default config
+ 	mergedMap := deepMergeJSON(dftMap, userMap)
+ 
+--- a/httpServer.go
++++ b/httpServer.go
+@@ -722,6 +722,13 @@ func setShowSMS(c *fiber.Ctx) error {
+ 	saveUserConfigToFile()
+ 	configMutex.Unlock()
+ 
++	// Apply the changed value immediately.  Without this, the file is saved
++	// but the running page list is not rebuilt until another full config save
++	// or a service restart.
++	if err := mergeConfigs(); err != nil {
++		return c.Status(500).JSON(fiber.Map{"status": "error", "message": err.Error()})
++	}
++
+ 	return c.JSON(fiber.Map{"status": "ok", "showSMS": raw})
+ }

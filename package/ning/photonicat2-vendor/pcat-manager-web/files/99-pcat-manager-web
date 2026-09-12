@@ -1,0 +1,81 @@
+#!/bin/sh
+
+# The vendor UI owns HTTP port 80. Keep native OpenWrt LuCI available on the
+# same address at 8080 (and move its HTTPS listener to 8443).
+uci -q delete uhttpd.main.listen_http
+uci add_list uhttpd.main.listen_http='0.0.0.0:8080'
+uci add_list uhttpd.main.listen_http='[::]:8080'
+uci -q delete uhttpd.main.listen_https
+uci add_list uhttpd.main.listen_https='0.0.0.0:8443'
+uci add_list uhttpd.main.listen_https='[::]:8443'
+uci set uhttpd.main.redirect_https='0'
+uci commit uhttpd
+
+# WWAN interface names and the preferred dual-radio power layout below are
+# specific to Photonicat 2.  Do not manufacture those devices when this Web UI
+# is included in an image for another board.
+compatible="$(tr '\000' '\n' </proc/device-tree/compatible 2>/dev/null)"
+case "$compatible" in
+	*ariaboard,photonicat-2*|*ariaboard,photonicat2*) ;;
+	*) exit 0 ;;
+esac
+
+ensure_wwan() {
+	local name="$1"
+	local proto="$2"
+	local device="$3"
+	local metric="$4"
+
+	uci -q get "network.${name}" >/dev/null || \
+		uci set "network.${name}=interface"
+	uci set "network.${name}.proto=${proto}"
+	uci set "network.${name}.auto=0"
+	uci set "network.${name}.device=${device}"
+	uci set "network.${name}.metric=${metric}"
+	uci set "network.${name}.disabled=0"
+}
+
+ensure_wwan wwan_5g dhcp usb0 30
+ensure_wwan wwan_5g_v6 dhcpv6 usb0 31
+uci set network.wwan_5g_v6.sourcefilter='0'
+ensure_wwan wwan_lte dhcp wwan0 32
+ensure_wwan wwan_lte_v6 dhcpv6 wwan0 33
+uci set network.wwan_lte_v6.sourcefilter='0'
+
+# fm350-mm replaces the placeholder with the modem-provided static address as
+# soon as registration succeeds. Creating it here makes the vendor UI toggle
+# and status endpoints work before the first successful dial.
+uci -q get network.wwan_fm350 >/dev/null || \
+	uci set network.wwan_fm350='interface'
+uci set network.wwan_fm350.proto='static'
+uci set network.wwan_fm350.auto='0'
+uci set network.wwan_fm350.device='eth2'
+uci set network.wwan_fm350.metric='34'
+uci set network.wwan_fm350.disabled='0'
+uci commit network
+
+# Apply the Photonicat 2 dual-radio defaults once.  Detect the physical bus
+# instead of assuming radio0/radio1 ordering: NWRT uses MT7927 on radio0 and
+# the onboard AIC8800 on radio1, while older vendor images may enumerate them
+# differently.
+if [ ! -e /etc/pcat-wifi-layout-v1 ]; then
+	for radio in radio0 radio1; do
+		phy="$(uci -q get "wireless.${radio}.phy")"
+		path="$(uci -q get "wireless.${radio}.path")"
+		[ -n "$phy" ] && phy_path="$(readlink -f "/sys/class/ieee80211/${phy}/device" 2>/dev/null)" || phy_path=""
+		case "${path} ${phy_path}" in
+			*pcie*|*/pci*)
+				uci set "wireless.${radio}.disabled=0"
+				uci -q delete "wireless.default_${radio}.disabled"
+				;;
+			*usb*)
+				uci set "wireless.${radio}.disabled=1"
+				uci set "wireless.default_${radio}.disabled=1"
+				;;
+		esac
+	done
+	uci commit wireless
+	touch /etc/pcat-wifi-layout-v1
+fi
+
+exit 0

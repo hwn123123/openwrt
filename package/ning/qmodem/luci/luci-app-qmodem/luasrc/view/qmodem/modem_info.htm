@@ -1,0 +1,1118 @@
+<%+header%>
+
+<style type="text/css">
+.qmd-dashboard {
+	--qmd-accent: var(--primary-color-medium, var(--primary-color, #36a9ff));
+	--qmd-good: #18cf8b;
+	--qmd-warn: #ffad3d;
+	--qmd-bad: #f25f70;
+	--qmd-purple: #9b7cff;
+	--qmd-panel: var(--background-color-high, rgba(127,127,127,.07));
+	--qmd-line: var(--border-color-low, rgba(127,127,127,.2));
+	max-width: 1480px;
+	margin: 0 auto;
+	padding-bottom: 1rem;
+}
+.qmd-dashboard * { box-sizing: border-box; }
+.qmd-toolbar,.qmd-card {
+	border: 1px solid var(--qmd-line);
+	border-radius: 13px;
+	background: var(--qmd-panel);
+	box-shadow: 0 6px 24px rgba(0,0,0,.06);
+}
+.qmd-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 1rem;
+	margin-bottom: 1rem;
+	padding: .85rem 1rem;
+}
+.qmd-toolbar-main { display: flex; align-items: center; gap: .8rem; min-width: 0; }
+.qmd-toolbar-title h2 { margin: 0; font-size: 1.35rem; }
+.qmd-toolbar-title p { margin: .15rem 0 0; opacity: .58; font-size: .76rem; }
+.qmd-selector {
+	min-width: 160px;
+	max-width: 280px;
+	height: 36px;
+	margin: 0;
+	border-radius: 9px;
+}
+.qmd-statuses { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .45rem; }
+.qmd-chip {
+	display: inline-flex;
+	align-items: center;
+	gap: .42rem;
+	min-height: 28px;
+	padding: .2rem .65rem;
+	border: 1px solid var(--qmd-line);
+	border-radius: 999px;
+	font-size: .75rem;
+	white-space: nowrap;
+}
+.qmd-chip > i,.qmd-live > i {
+	width: 7px;
+	height: 7px;
+	flex: 0 0 auto;
+	border-radius: 50%;
+	background: currentColor;
+}
+.qmd-chip.is-ok { color: var(--qmd-good); }
+.qmd-chip.is-off { color: var(--qmd-bad); }
+.qmd-chip.is-neutral { opacity: .62; }
+.qmd-chip.is-ok > i,.qmd-live > i { animation: qmd-pulse 1.8s ease-out infinite; }
+@keyframes qmd-pulse {
+	0% { box-shadow: 0 0 0 0 currentColor; }
+	70% { box-shadow: 0 0 0 7px transparent; }
+	100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+.qmd-alert {
+	display: none;
+	margin: 0 0 1rem;
+	padding: .8rem 1rem;
+	border: 1px solid color-mix(in srgb, var(--qmd-warn) 50%, transparent);
+	border-left: 4px solid var(--qmd-warn);
+	border-radius: 10px;
+	background: color-mix(in srgb, var(--qmd-warn) 8%, transparent);
+}
+.qmd-alert.is-visible { display: block; }
+
+.qmd-hero {
+	display: grid;
+	grid-template-columns: minmax(250px, .72fr) minmax(0, 2fr);
+	gap: 1rem;
+	padding: 1.1rem;
+	overflow: hidden;
+	background:
+		radial-gradient(circle at 5% 30%, color-mix(in srgb, var(--qmd-accent) 13%, transparent), transparent 31%),
+		var(--qmd-panel);
+}
+.qmd-signal-panel { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 285px; }
+.qmd-signal-dial { --qmd-signal-color: var(--qmd-good); position: relative; width: 230px; height: 230px; }
+.qmd-signal-dial svg { width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.qmd-ring-track,.qmd-ring-fill { fill: none; stroke-width: 11; }
+.qmd-ring-track { stroke: var(--qmd-line); }
+.qmd-ring-fill {
+	stroke: var(--qmd-signal-color);
+	stroke-linecap: round;
+	stroke-dasharray: 452.39;
+	stroke-dashoffset: 452.39;
+	filter: drop-shadow(0 0 7px var(--qmd-signal-color));
+	transition: stroke-dashoffset .9s cubic-bezier(.2,.8,.2,1), stroke .4s ease;
+}
+.qmd-signal-center {
+	position: absolute;
+	inset: 0;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	text-align: center;
+}
+.qmd-signal-value { font-size: 3rem; font-weight: 300; letter-spacing: -.07em; font-variant-numeric: tabular-nums; }
+.qmd-signal-unit { margin-left: .3rem; opacity: .68; font-size: .9rem; }
+.qmd-signal-type { margin-top: .35rem; opacity: .62; font-size: .78rem; }
+.qmd-signal-grade { margin-top: .32rem; color: var(--qmd-signal-color); font-weight: 700; }
+.qmd-signal-scale { display: flex; justify-content: space-between; width: 180px; margin-top: -12px; opacity: .45; font-size: .68rem; }
+
+.qmd-hero-content { min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.qmd-identity { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: .8rem; }
+.qmd-identity h3 { margin: 0; font-size: 1.25rem; }
+.qmd-identity p { margin: .2rem 0 0; opacity: .58; font-size: .76rem; overflow-wrap: anywhere; }
+.qmd-live { display: inline-flex; align-items: center; gap: .4rem; color: var(--qmd-good); font-size: .73rem; }
+.qmd-quick-grid { display: grid; grid-template-columns: repeat(4, minmax(105px, 1fr)); gap: .7rem; }
+.qmd-quick {
+	position: relative;
+	overflow: hidden;
+	min-width: 0;
+	padding: .8rem;
+	border: 1px solid var(--qmd-line);
+	border-radius: 10px;
+	background: color-mix(in srgb, currentColor 2.5%, transparent);
+}
+.qmd-quick > span { display: block; opacity: .58; font-size: .7rem; }
+.qmd-quick > strong { display: block; margin-top: .35rem; overflow: hidden; text-overflow: ellipsis; font-size: 1.15rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.qmd-quick > strong small { margin-left: .16rem; opacity: .52; font-size: .64em; }
+.qmd-mini-level { height: 4px; margin-top: .55rem; overflow: hidden; border-radius: 999px; background: var(--qmd-line); }
+.qmd-mini-level i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--qmd-accent); transition: width .8s ease, background .3s ease; }
+.qmd-carriers { display: flex; align-items: stretch; flex-wrap: wrap; gap: .55rem; margin-top: .75rem; }
+.qmd-carrier {
+	min-width: 125px;
+	padding: .52rem .7rem;
+	border: 1px solid var(--qmd-line);
+	border-radius: 9px;
+	background: color-mix(in srgb, var(--qmd-accent) 5%, transparent);
+}
+.qmd-carrier > span { display: block; opacity: .55; font-size: .64rem; }
+.qmd-carrier > strong { display: block; margin-top: .2rem; font-size: .9rem; }
+.qmd-carrier > small { display: block; margin-top: .12rem; opacity: .52; font-size: .66rem; }
+
+.qmd-section-title { display: flex; align-items: center; gap: .7rem; margin: 1.65rem 0 .75rem; }
+.qmd-section-title > i {
+	display: grid;
+	place-items: center;
+	width: 35px;
+	height: 35px;
+	flex: 0 0 auto;
+	border-radius: 10px;
+	color: var(--qmd-accent);
+	background: color-mix(in srgb, var(--qmd-accent) 13%, transparent);
+	font-style: normal;
+	font-size: 1.1rem;
+}
+.qmd-section-title h3 { margin: 0; font-size: 1.04rem; }
+.qmd-section-title p { margin: .12rem 0 0; opacity: .55; font-size: .75rem; }
+
+.qmd-chart-grid { display: grid; grid-template-columns: repeat(3, minmax(270px, 1fr)); gap: 1rem; }
+.qmd-chart-card { min-width: 0; padding: .9rem; }
+.qmd-chart-head { display: flex; justify-content: space-between; align-items: flex-start; gap: .7rem; }
+.qmd-chart-head h3 { margin: 0 0 .14rem; font-size: .96rem; }
+.qmd-chart-head p { margin: 0; opacity: .52; font-size: .68rem; }
+.qmd-chart-legend { display: flex; flex-wrap: wrap; gap: .4rem .85rem; min-height: 22px; margin: .75rem 0 .25rem; font-size: .69rem; }
+.qmd-chart-legend span { display: inline-flex; align-items: center; gap: .3rem; opacity: .68; }
+.qmd-chart-legend i { width: 13px; height: 3px; border-radius: 3px; }
+.qmd-chart-legend strong { font-variant-numeric: tabular-nums; }
+.qmd-chart { display: block; width: 100%; height: 165px; overflow: visible; }
+.qmd-chart-grid-lines line { stroke: var(--qmd-line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.qmd-chart-area { opacity: .09; }
+.qmd-chart-line { fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px currentColor); }
+.qmd-chart-dot { filter: drop-shadow(0 0 5px currentColor); }
+.qmd-chart-scale { display: flex; justify-content: space-between; margin-top: -.15rem; opacity: .42; font-size: .62rem; }
+
+.qmd-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.qmd-detail-card { min-width: 0; padding: 1rem; }
+.qmd-detail-card > h3 { margin: 0 0 .85rem; color: var(--qmd-accent); font-size: 1rem; }
+.qmd-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: .65rem; }
+.qmd-metric { min-width: 0; padding: .45rem .65rem; border-left: 3px solid var(--qmd-accent); background: color-mix(in srgb, currentColor 2%, transparent); }
+.qmd-metric > span { display: block; opacity: .56; font-size: .7rem; }
+.qmd-metric > strong { display: block; margin-top: .27rem; overflow-wrap: anywhere; font-size: .96rem; font-variant-numeric: tabular-nums; }
+.qmd-metric > strong small { margin-left: .18rem; opacity: .55; font-size: .68em; }
+.qmd-progress { grid-column: span 2; padding: .55rem .65rem; border: 1px solid var(--qmd-line); border-radius: 9px; }
+.qmd-progress-head { display: flex; justify-content: space-between; gap: .7rem; font-size: .72rem; }
+.qmd-progress-head span { opacity: .62; }
+.qmd-progress-head strong { font-variant-numeric: tabular-nums; }
+.qmd-progress-track { height: 7px; margin-top: .5rem; overflow: hidden; border-radius: 999px; background: var(--qmd-line); }
+.qmd-progress-track i { display: block; width: 0; height: 100%; border-radius: inherit; background: var(--qmd-good); box-shadow: 0 0 8px currentColor; transition: width .8s cubic-bezier(.2,.8,.2,1), background .3s ease; }
+
+.qmd-cell-analysis-card { grid-column: 1 / -1; }
+.qmd-cell-heading { display: flex; align-items: center; justify-content: space-between; gap: .8rem; margin-bottom: 1rem; }
+.qmd-cell-heading h3 { margin: 0; }
+.qmd-cell-heading p { margin: .15rem 0 0; opacity: .52; font-size: .7rem; }
+.qmd-radio-tower { --qmd-cell-speed: 1.3s; position: relative; width: 52px; height: 52px; flex: 0 0 auto; }
+.qmd-radio-tower > i {
+	position: absolute; left: 50%; top: 50%; z-index: 2; width: 9px; height: 9px; margin: -4.5px;
+	border-radius: 50%; background: var(--qmd-bad); box-shadow: 0 0 8px var(--qmd-bad); transition: background .3s ease, box-shadow .3s ease;
+}
+.qmd-radio-tower > span {
+	position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; margin: -9px;
+	border: 1.5px solid var(--qmd-accent); border-radius: 50%; opacity: 0;
+}
+.qmd-radio-tower > span:nth-of-type(2) { animation-delay: calc(var(--qmd-cell-speed) * -.33); }
+.qmd-radio-tower > span:nth-of-type(3) { animation-delay: calc(var(--qmd-cell-speed) * -.66); }
+.qmd-radio-tower.is-online > i { background: var(--qmd-good); box-shadow: 0 0 9px var(--qmd-good); }
+.qmd-radio-tower.is-online > span { animation: qmd-radio-wave var(--qmd-cell-speed) ease-out infinite; }
+@keyframes qmd-radio-wave { from { transform: scale(.45); opacity: .85; } to { transform: scale(2.75); opacity: 0; } }
+.qmd-cell-body { display: grid; grid-template-columns: minmax(245px, .72fr) minmax(0, 1.55fr); gap: 1rem; align-items: stretch; }
+.qmd-cell-column { min-width: 0; padding: .85rem; border: 1px solid var(--qmd-line); border-radius: 10px; background: color-mix(in srgb, currentColor 1.5%, transparent); }
+.qmd-cell-column > h4 { margin: 0 0 .75rem; opacity: .72; font-size: .76rem; font-weight: 600; }
+.qmd-cell-quality { display: grid; gap: .55rem; }
+.qmd-cell-row-head { display: flex; align-items: center; justify-content: space-between; gap: .7rem; font-size: .7rem; }
+.qmd-cell-row-head span { opacity: .62; }
+.qmd-cell-row-head strong { font-variant-numeric: tabular-nums; }
+.qmd-cell-row-track { height: 6px; margin-top: .3rem; overflow: hidden; border-radius: 999px; background: var(--qmd-line); }
+.qmd-cell-row-track i { display: block; width: 0; height: 100%; border-radius: inherit; transition: width .8s ease, background .3s ease; }
+.qmd-cell-identities { display: grid; grid-template-columns: repeat(3, minmax(95px, 1fr)); gap: .55rem; }
+.qmd-cell-identity { min-width: 0; padding: .5rem .6rem; border: 1px solid var(--qmd-line); border-radius: 8px; background: color-mix(in srgb, currentColor 2%, transparent); }
+.qmd-cell-identity span { display: block; opacity: .54; font-size: .64rem; }
+.qmd-cell-identity strong { display: block; margin-top: .22rem; overflow-wrap: anywhere; font-size: .82rem; }
+
+.qmd-traffic-head { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-bottom: .8rem; }
+.qmd-traffic-head h3 { margin: 0; }
+.qmd-network-bars { --qmd-net-speed: 1.2s; display: flex; align-items: flex-end; gap: 3px; height: 25px; opacity: .22; }
+.qmd-network-bars i { width: 4px; height: 35%; border-radius: 3px; background: var(--qmd-good); transform-origin: bottom; }
+.qmd-network-bars i:nth-child(2),.qmd-network-bars i:nth-child(4) { height: 70%; }
+.qmd-network-bars i:nth-child(3) { height: 100%; }
+.qmd-network-bars.is-active { opacity: 1; }
+.qmd-network-bars.is-active i { animation: qmd-network var(--qmd-net-speed) ease-in-out infinite alternate; }
+.qmd-network-bars.is-active i:nth-child(2) { animation-delay: -.2s; }
+.qmd-network-bars.is-active i:nth-child(3) { animation-delay: -.4s; }
+.qmd-network-bars.is-active i:nth-child(4) { animation-delay: -.6s; }
+.qmd-network-bars.is-active i:nth-child(5) { animation-delay: -.8s; }
+@keyframes qmd-network { from { transform: scaleY(.2); opacity: .4; } to { transform: scaleY(1); opacity: 1; } }
+
+.qmd-value-changed { animation: qmd-value .65s ease-out; }
+@keyframes qmd-value {
+	0% { color: var(--qmd-accent); text-shadow: 0 0 12px var(--qmd-accent); transform: translateY(-2px); }
+	100% { color: inherit; text-shadow: none; transform: none; }
+}
+.qmd-loading .qmd-live { opacity: .35; }
+.qmd-loading .qmd-live > i { animation-duration: .45s; }
+@media (max-width: 1120px) {
+	.qmd-chart-grid { grid-template-columns: 1fr 1fr; }
+	.qmd-chart-grid > :last-child { grid-column: 1 / -1; }
+	.qmd-quick-grid { grid-template-columns: repeat(2, minmax(110px, 1fr)); }
+}
+@media (max-width: 760px) {
+	.qmd-toolbar { display: block; }
+	.qmd-toolbar-main { align-items: flex-start; flex-direction: column; }
+	.qmd-selector { width: 100%; max-width: none; }
+	.qmd-statuses { justify-content: flex-start; margin-top: .7rem; }
+	.qmd-hero,.qmd-chart-grid,.qmd-detail-grid { grid-template-columns: 1fr; }
+	.qmd-chart-grid > :last-child { grid-column: auto; }
+	.qmd-signal-panel { min-height: 245px; }
+	.qmd-signal-dial { width: 205px; height: 205px; }
+	.qmd-chart { height: 145px; }
+	.qmd-progress { grid-column: auto; }
+	.qmd-cell-body { grid-template-columns: 1fr; }
+	.qmd-cell-identities { grid-template-columns: repeat(2, minmax(90px, 1fr)); }
+}
+@media (max-width: 420px) {
+	.qmd-cell-identities { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.qmd-chip > i,.qmd-live > i,.qmd-network-bars i,.qmd-radio-tower > span,.qmd-value-changed { animation: none !important; }
+	.qmd-ring-fill,.qmd-mini-level i,.qmd-progress-track i { transition: none !important; }
+}
+</style>
+
+<div class="cbi-map qmd-dashboard" id="qmd-dashboard">
+	<div class="qmd-toolbar">
+		<div class="qmd-toolbar-main">
+			<div class="qmd-toolbar-title">
+				<h2>QModem 模组实时概览</h2>
+				<p>沿用 QModem 原始信息接口，按模组能力动态展示</p>
+			</div>
+			<select class="cbi-input-select qmd-selector" id="qmd-selector" aria-label="模组名称"></select>
+		</div>
+		<div class="qmd-statuses">
+			<span class="qmd-chip is-off" id="qmd-modem-state"><i></i><span>模组离线</span></span>
+			<span class="qmd-chip is-off" id="qmd-sim-state"><i></i><span>SIM 未就绪</span></span>
+			<span class="qmd-chip is-neutral">更新 <strong data-live="updated">—</strong></span>
+		</div>
+	</div>
+
+	<div class="qmd-alert" id="qmd-alert"></div>
+
+	<section class="qmd-card qmd-hero">
+		<div class="qmd-signal-panel">
+			<div class="qmd-signal-dial" id="qmd-signal-dial">
+				<svg viewBox="0 0 180 180" aria-hidden="true">
+					<circle class="qmd-ring-track" cx="90" cy="90" r="72"></circle>
+					<circle class="qmd-ring-fill" id="qmd-signal-ring" cx="90" cy="90" r="72"></circle>
+				</svg>
+				<div class="qmd-signal-center">
+					<div><span class="qmd-signal-value" data-live="signal">—</span><span class="qmd-signal-unit" data-live="signal_unit">dBm</span></div>
+					<span class="qmd-signal-type" data-live="signal_type">基站信号</span>
+					<strong class="qmd-signal-grade" data-live="signal_grade">等待数据</strong>
+				</div>
+			</div>
+			<div class="qmd-signal-scale"><span data-live="signal_min">—</span><span data-live="signal_max">—</span></div>
+		</div>
+		<div class="qmd-hero-content">
+			<div class="qmd-identity">
+				<div>
+					<h3 data-live="name">正在读取模组...</h3>
+					<p><span data-live="manufacturer">—</span> · <span data-live="revision">—</span></p>
+				</div>
+				<span class="qmd-live"><i></i>真实模组数据</span>
+			</div>
+			<div class="qmd-quick-grid">
+				<div class="qmd-quick">
+					<span>RSRQ 信号质量</span>
+					<strong><span data-live="rsrq">—</span><small data-live="rsrq_unit">dB</small></strong>
+					<div class="qmd-mini-level"><i data-level="rsrq"></i></div>
+				</div>
+				<div class="qmd-quick">
+					<span>SINR 信噪比</span>
+					<strong><span data-live="sinr">—</span><small data-live="sinr_unit">dB</small></strong>
+					<div class="qmd-mini-level"><i data-level="sinr"></i></div>
+				</div>
+				<div class="qmd-quick">
+					<span>模组温度</span>
+					<strong><span data-live="temperature">—</span><small>°C</small></strong>
+					<div class="qmd-mini-level"><i data-level="temperature" style="background:#ffad3d"></i></div>
+				</div>
+				<div class="qmd-quick">
+					<span>供电电压</span>
+					<strong><span data-live="voltage">—</span><small>mV</small></strong>
+					<div class="qmd-mini-level"><i data-level="voltage" style="background:#9b7cff"></i></div>
+				</div>
+				<div class="qmd-quick">
+					<span>网络制式</span>
+					<strong data-live="network_type">—</strong>
+				</div>
+				<div class="qmd-quick">
+					<span>网络模式</span>
+					<strong data-live="network_mode">—</strong>
+				</div>
+				<div class="qmd-quick">
+					<span>运营商</span>
+					<strong data-live="operator">—</strong>
+				</div>
+				<div class="qmd-quick">
+					<span>当前 SIM 插槽</span>
+					<strong data-live="sim_slot">—</strong>
+				</div>
+			</div>
+			<div class="qmd-carriers" id="qmd-carriers"></div>
+		</div>
+	</section>
+
+	<div class="qmd-section-title">
+		<i>⌁</i>
+		<div><h3>实时变化趋势</h3><p>每 5 秒读取模组信号、温度与内核网卡计数，历史只保存在当前浏览器页面</p></div>
+	</div>
+	<div class="qmd-chart-grid">
+		<section class="qmd-card qmd-chart-card" data-chart="signal">
+			<div class="qmd-chart-head"><div><h3>无线信号质量</h3><p>不同指标按各自上下限归一化</p></div><span class="qmd-live"><i></i>实时</span></div>
+			<div class="qmd-chart-legend">
+				<span><i style="background:#18cf8b"></i>RSRP <strong data-live="chart_rsrp">—</strong></span>
+				<span><i style="background:#36a9ff"></i>RSRQ <strong data-live="chart_rsrq">—</strong></span>
+				<span><i style="background:#9b7cff"></i>SINR <strong data-live="chart_sinr">—</strong></span>
+			</div>
+			<svg class="qmd-chart" viewBox="0 0 600 170" preserveAspectRatio="none" aria-hidden="true">
+				<g class="qmd-chart-grid-lines">
+					<line x1="10" x2="590" y1="10" y2="10"></line><line x1="10" x2="590" y1="47.5" y2="47.5"></line>
+					<line x1="10" x2="590" y1="85" y2="85"></line><line x1="10" x2="590" y1="122.5" y2="122.5"></line>
+					<line x1="10" x2="590" y1="160" y2="160"></line>
+				</g>
+				<path class="qmd-chart-area" data-area="rsrp_quality" style="fill:#18cf8b"></path>
+				<path class="qmd-chart-line" data-line="rsrp_quality" style="stroke:#18cf8b"></path>
+				<circle class="qmd-chart-dot" data-dot="rsrp_quality" r="4" style="fill:#18cf8b"></circle>
+				<path class="qmd-chart-line" data-line="rsrq_quality" style="stroke:#36a9ff"></path>
+				<circle class="qmd-chart-dot" data-dot="rsrq_quality" r="4" style="fill:#36a9ff"></circle>
+				<path class="qmd-chart-line" data-line="sinr_quality" style="stroke:#9b7cff"></path>
+				<circle class="qmd-chart-dot" data-dot="sinr_quality" r="4" style="fill:#9b7cff"></circle>
+			</svg>
+			<div class="qmd-chart-scale"><span>0%</span><span>最近约 3 分钟</span><span>100%</span></div>
+		</section>
+
+		<section class="qmd-card qmd-chart-card" data-chart="traffic">
+			<div class="qmd-chart-head"><div><h3>实时网络吞吐</h3><p>QModem 绑定网卡真实收发计数</p></div><span class="qmd-live"><i></i>实时</span></div>
+			<div class="qmd-chart-legend">
+				<span><i style="background:#18cf8b"></i>下载 <strong data-live="chart_rx">0 B/s</strong></span>
+				<span><i style="background:#36a9ff"></i>上传 <strong data-live="chart_tx">0 B/s</strong></span>
+			</div>
+			<svg class="qmd-chart" viewBox="0 0 600 170" preserveAspectRatio="none" aria-hidden="true">
+				<g class="qmd-chart-grid-lines">
+					<line x1="10" x2="590" y1="10" y2="10"></line><line x1="10" x2="590" y1="47.5" y2="47.5"></line>
+					<line x1="10" x2="590" y1="85" y2="85"></line><line x1="10" x2="590" y1="122.5" y2="122.5"></line>
+					<line x1="10" x2="590" y1="160" y2="160"></line>
+				</g>
+				<path class="qmd-chart-area" data-area="rx_rate" style="fill:#18cf8b"></path>
+				<path class="qmd-chart-line" data-line="rx_rate" style="stroke:#18cf8b"></path>
+				<circle class="qmd-chart-dot" data-dot="rx_rate" r="4" style="fill:#18cf8b"></circle>
+				<path class="qmd-chart-line" data-line="tx_rate" style="stroke:#36a9ff"></path>
+				<circle class="qmd-chart-dot" data-dot="tx_rate" r="4" style="fill:#36a9ff"></circle>
+			</svg>
+			<div class="qmd-chart-scale"><span>0 B/s</span><span>最近约 3 分钟</span><span data-live="traffic_max">1 B/s</span></div>
+		</section>
+
+		<section class="qmd-card qmd-chart-card" data-chart="temperature">
+			<div class="qmd-chart-head"><div><h3>模组温度</h3><p>射频模组内部温度传感器</p></div><span class="qmd-live"><i></i>实时</span></div>
+			<div class="qmd-chart-legend">
+				<span><i style="background:#ffad3d"></i>温度 <strong data-live="chart_temperature">—</strong></span>
+				<span><i style="background:#9b7cff"></i>电压 <strong data-live="chart_voltage">—</strong></span>
+			</div>
+			<svg class="qmd-chart" viewBox="0 0 600 170" preserveAspectRatio="none" aria-hidden="true">
+				<g class="qmd-chart-grid-lines">
+					<line x1="10" x2="590" y1="10" y2="10"></line><line x1="10" x2="590" y1="47.5" y2="47.5"></line>
+					<line x1="10" x2="590" y1="85" y2="85"></line><line x1="10" x2="590" y1="122.5" y2="122.5"></line>
+					<line x1="10" x2="590" y1="160" y2="160"></line>
+				</g>
+				<path class="qmd-chart-area" data-area="temperature" style="fill:#ffad3d"></path>
+				<path class="qmd-chart-line" data-line="temperature" style="stroke:#ffad3d"></path>
+				<circle class="qmd-chart-dot" data-dot="temperature" r="4" style="fill:#ffad3d"></circle>
+			</svg>
+			<div class="qmd-chart-scale"><span>20°C</span><span>最近约 3 分钟</span><span>90°C</span></div>
+		</section>
+	</div>
+
+	<div class="qmd-section-title">
+		<i>↕</i>
+		<div><h3>流量与全部模组信息</h3><p>所有 QModem 原始可用字段完整保留，并按返回分类自动适配不同模组</p></div>
+	</div>
+	<div class="qmd-detail-grid" id="qmd-detail-grid">
+		<section class="qmd-card qmd-detail-card" id="qmd-runtime-card">
+			<div class="qmd-traffic-head">
+				<h3>实时流量统计</h3>
+				<div class="qmd-network-bars" id="qmd-network-bars"><i></i><i></i><i></i><i></i><i></i></div>
+			</div>
+			<div class="qmd-metrics">
+				<div class="qmd-metric"><span>绑定网卡</span><strong data-live="netdev">—</strong></div>
+				<div class="qmd-metric"><span>实时下载</span><strong data-live="rx_rate">0 B/s</strong></div>
+				<div class="qmd-metric"><span>实时上传</span><strong data-live="tx_rate">0 B/s</strong></div>
+				<div class="qmd-metric"><span>累计接收</span><strong data-live="rx_total">—</strong></div>
+				<div class="qmd-metric"><span>累计发送</span><strong data-live="tx_total">—</strong></div>
+			</div>
+		</section>
+	</div>
+
+</div>
+
+<script type="text/javascript">
+(function() {
+	'use strict';
+
+	var MODEM_URL = '<%=luci.dispatcher.build_url("admin", "modem", "qmodem", "modem_ctrl")%>';
+	var CONFIG_URL = '<%=luci.dispatcher.build_url("admin", "modem", "qmodem", "get_modem_cfg")%>';
+	var HISTORY_SIZE = 40;
+	var CIRCUMFERENCE = 452.39;
+	var state = {
+		cfg: null,
+		loading: false,
+		configSignature: '',
+		detailSignature: '',
+		detailNodes: [],
+		history: {},
+		previousStats: null
+	};
+
+	function byId(id) {
+		return document.getElementById(id);
+	}
+
+	function number(value, fallback) {
+		var match = value == null ? null : String(value).match(/-?\d+(?:\.\d+)?/);
+		var result = match ? Number(match[0]) : NaN;
+		return isFinite(result) ? result : (fallback == null ? 0 : fallback);
+	}
+
+	function clamp(value, min, max) {
+		return Math.max(min, Math.min(max, Number(value) || 0));
+	}
+
+	function clean(value) {
+		if (value == null || value === '')
+			return '—';
+		return String(value).replace(/[\r\n\t]+/g, '').trim() || '—';
+	}
+
+	function setText(key, value) {
+		var nodes = document.querySelectorAll('#qmd-dashboard [data-live="' + key + '"]');
+		value = clean(value);
+		for (var i = 0; i < nodes.length; i++) {
+			if (nodes[i].textContent === value)
+				continue;
+			nodes[i].textContent = value;
+			nodes[i].classList.remove('qmd-value-changed');
+			void nodes[i].offsetWidth;
+			nodes[i].classList.add('qmd-value-changed');
+		}
+	}
+
+	function setState(id, ok, text) {
+		var node = byId(id);
+		if (!node)
+			return;
+		node.className = 'qmd-chip ' + (ok ? 'is-ok' : 'is-off');
+		var label = node.querySelector('span');
+		if (label)
+			label.textContent = text;
+	}
+
+	function findEntry(entries, keys, extra) {
+		if (!Array.isArray(keys))
+			keys = [ keys ];
+		for (var k = 0; k < keys.length; k++) {
+			for (var i = 0; i < entries.length; i++) {
+				if (entries[i].key === keys[k] && (extra == null || entries[i].extra_info === extra))
+					return entries[i];
+			}
+		}
+		return null;
+	}
+
+	function valueOf(entries, keys, fallback) {
+		var entry = findEntry(entries, keys);
+		return entry ? clean(entry.value) : (fallback == null ? '—' : fallback);
+	}
+
+	function rangeFor(entry) {
+		if (!entry)
+			return { min: 0, max: 100 };
+		var ranges = {
+			RSRP: [ -140, -44 ], RSRQ: [ -20, -3 ], SINR: [ -20, 30 ],
+			RSSI: [ -120, -20 ], RxLev: [ -120, -25 ], CSQ: [ 0, 31 ]
+		};
+		var fallback = ranges[entry.key] || [ 0, 100 ];
+		var min = number(entry.min_value, fallback[0]);
+		var max = number(entry.max_value, fallback[1]);
+		return { min: min, max: max > min ? max : min + 1 };
+	}
+
+	function quality(entry) {
+		if (!entry)
+			return 0;
+		var range = rangeFor(entry);
+		return clamp((number(entry.value) - range.min) / (range.max - range.min) * 100, 0, 100);
+	}
+
+	function qualityLabel(percent) {
+		return percent >= 78 ? '极佳' : percent >= 58 ? '良好' : percent >= 38 ? '一般' : percent >= 20 ? '较弱' : '很弱';
+	}
+
+	function qualityColor(percent) {
+		return percent >= 58 ? '#18cf8b' : percent >= 38 ? '#36a9ff' : percent >= 20 ? '#ffad3d' : '#f25f70';
+	}
+
+	function formatBytes(bytes, rate) {
+		var value = Math.max(0, Number(bytes) || 0);
+		var units = [ 'B', 'KB', 'MB', 'GB', 'TB' ];
+		var index = 0;
+		while (value >= 1024 && index < units.length - 1) {
+			value /= 1024;
+			index++;
+		}
+		var digits = index === 0 || value >= 100 ? 0 : value >= 10 ? 1 : 2;
+		return value.toFixed(digits) + ' ' + units[index] + (rate ? '/s' : '');
+	}
+
+	function setLevel(name, percent, color) {
+		var node = document.querySelector('#qmd-dashboard [data-level="' + name + '"]');
+		if (!node)
+			return;
+		node.style.width = clamp(percent, 0, 100) + '%';
+		if (color)
+			node.style.background = color;
+	}
+
+	function pushHistory(key, value) {
+		if (!isFinite(Number(value)))
+			return;
+		if (!state.history[key])
+			state.history[key] = [];
+		state.history[key].push(Number(value));
+		if (state.history[key].length > HISTORY_SIZE)
+			state.history[key].shift();
+	}
+
+	function drawChart(id, keys, min, max, byteScale) {
+		var card = document.querySelector('#qmd-dashboard [data-chart="' + id + '"]');
+		if (!card)
+			return;
+		if (max == null) {
+			max = 1;
+			for (var k = 0; k < keys.length; k++) {
+				var values = state.history[keys[k]] || [];
+				for (var j = 0; j < values.length; j++)
+					max = Math.max(max, values[j]);
+			}
+			max *= 1.15;
+		}
+		max = Math.max(max, min + 1);
+		for (var i = 0; i < keys.length; i++) {
+			var key = keys[i];
+			var list = state.history[key] || [];
+			var points = [];
+			for (var p = 0; p < list.length; p++) {
+				points.push([
+					10 + p / (HISTORY_SIZE - 1) * 580,
+					160 - clamp((list[p] - min) / (max - min), 0, 1) * 150
+				]);
+			}
+			var d = points.map(function(point, index) {
+				return (index ? 'L' : 'M') + point[0].toFixed(1) + ' ' + point[1].toFixed(1);
+			}).join(' ');
+			var line = card.querySelector('[data-line="' + key + '"]');
+			var area = card.querySelector('[data-area="' + key + '"]');
+			var dot = card.querySelector('[data-dot="' + key + '"]');
+			if (line)
+				line.setAttribute('d', d);
+			if (area)
+				area.setAttribute('d', points.length ? d + ' L' + points[points.length - 1][0].toFixed(1) + ' 160 L10 160 Z' : '');
+			if (dot && points.length) {
+				dot.setAttribute('cx', points[points.length - 1][0]);
+				dot.setAttribute('cy', points[points.length - 1][1]);
+			}
+		}
+		if (byteScale)
+			setText('traffic_max', formatBytes(max, true));
+	}
+
+	function showAlert(messages) {
+		var alert = byId('qmd-alert');
+		if (!alert)
+			return;
+		if (!messages || !messages.length) {
+			alert.className = 'qmd-alert';
+			alert.textContent = '';
+			return;
+		}
+		alert.className = 'qmd-alert is-visible';
+		alert.textContent = messages.join(' · ');
+	}
+
+	function updateCarriers(entries) {
+		var holder = byId('qmd-carriers');
+		if (!holder)
+			return;
+		holder.textContent = '';
+		var bands = [];
+		for (var i = 0; i < entries.length; i++) {
+			if (/^Band(?: \(CA\))?$/.test(entries[i].key))
+				bands.push(entries[i]);
+		}
+		for (var b = 0; b < bands.length; b++) {
+			var entry = bands[b];
+			var ca = /CA/.test(entry.key) || /CA/.test(entry.extra_info || '');
+			var bandwidth = findEntry(entries, ca ? 'DL Bandwidth (CA)' : 'DL Bandwidth');
+			var card = document.createElement('div');
+			card.className = 'qmd-carrier';
+			var role = document.createElement('span');
+			role.textContent = ca ? '辅载波 SCell' : '主载波 PCell';
+			var band = document.createElement('strong');
+			var raw = clean(entry.value);
+			band.textContent = /[a-z]/i.test(raw) ? raw : 'n' + raw;
+			var detail = document.createElement('small');
+			detail.textContent = bandwidth ? '下行带宽 ' + clean(bandwidth.value) : clean(entry.extra_info || '');
+			card.appendChild(role);
+			card.appendChild(band);
+			card.appendChild(detail);
+			holder.appendChild(card);
+		}
+	}
+
+	function detailLabel(entry) {
+		var label = clean(entry.full_name || entry.key);
+		return entry.extra_info ? label + ' (' + clean(entry.extra_info) + ')' : label;
+	}
+
+	function detailSignature(entries) {
+		return entries.filter(function(entry) {
+			return entry.type !== 'warning_message' && entry.value != null && entry.value !== '';
+		}).map(function(entry) {
+			return [ entry['class'], entry.key, entry.extra_info, entry.type ].join('|');
+		}).join(';;');
+	}
+
+	function createCellAnalysisCard() {
+		var card = document.createElement('section');
+		card.className = 'qmd-card qmd-detail-card qmd-dynamic-card qmd-cell-analysis-card';
+		card.id = 'qmd-cell-analysis';
+		var heading = document.createElement('div');
+		heading.className = 'qmd-cell-heading';
+		var title = document.createElement('div');
+		var h3 = document.createElement('h3');
+		h3.textContent = '服务小区实时状态';
+		var status = document.createElement('p');
+		status.setAttribute('data-cell-live', 'status');
+		status.textContent = '等待基站数据';
+		title.appendChild(h3);
+		title.appendChild(status);
+		var tower = document.createElement('div');
+		tower.className = 'qmd-radio-tower';
+		tower.id = 'qmd-radio-tower';
+		tower.appendChild(document.createElement('i'));
+		tower.appendChild(document.createElement('span'));
+		tower.appendChild(document.createElement('span'));
+		tower.appendChild(document.createElement('span'));
+		heading.appendChild(title);
+		heading.appendChild(tower);
+		card.appendChild(heading);
+
+		var qualityBox = document.createElement('div');
+		qualityBox.className = 'qmd-cell-quality';
+		[ [ 'rsrp', 'RSRP 信号功率' ], [ 'rsrq', 'RSRQ 信号质量' ], [ 'sinr', 'SINR 信噪比' ], [ 'rxlev', '接收信号电平' ] ].forEach(function(item) {
+			var row = document.createElement('div');
+			var rowHead = document.createElement('div');
+			rowHead.className = 'qmd-cell-row-head';
+			var label = document.createElement('span');
+			label.textContent = item[1];
+			var value = document.createElement('strong');
+			value.setAttribute('data-cell-value', item[0]);
+			value.textContent = '—';
+			var track = document.createElement('div');
+			track.className = 'qmd-cell-row-track';
+			var fill = document.createElement('i');
+			fill.setAttribute('data-cell-level', item[0]);
+			rowHead.appendChild(label);
+			rowHead.appendChild(value);
+			track.appendChild(fill);
+			row.appendChild(rowHead);
+			row.appendChild(track);
+			qualityBox.appendChild(row);
+		});
+		var identities = document.createElement('div');
+		identities.className = 'qmd-cell-identities';
+		[ [ 'mode', '接入模式' ], [ 'plmn', 'PLMN' ], [ 'tac', 'TAC' ], [ 'cell_id', 'Cell ID' ],
+		  [ 'primary', '主小区' ], [ 'primary_channel', '主小区信道' ], [ 'bandwidth', '主小区带宽' ],
+		  [ 'secondary', '辅小区' ], [ 'secondary_channel', '辅小区信道' ] ].forEach(function(item) {
+			var box = document.createElement('div');
+			box.className = 'qmd-cell-identity';
+			var label = document.createElement('span');
+			label.textContent = item[1];
+			var value = document.createElement('strong');
+			value.setAttribute('data-cell-live', item[0]);
+			value.textContent = '—';
+			box.appendChild(label);
+			box.appendChild(value);
+			identities.appendChild(box);
+		});
+		var body = document.createElement('div');
+		body.className = 'qmd-cell-body';
+		var signalColumn = document.createElement('div');
+		signalColumn.className = 'qmd-cell-column';
+		var signalTitle = document.createElement('h4');
+		signalTitle.textContent = '信号质量';
+		signalColumn.appendChild(signalTitle);
+		signalColumn.appendChild(qualityBox);
+		var siteColumn = document.createElement('div');
+		siteColumn.className = 'qmd-cell-column';
+		var siteTitle = document.createElement('h4');
+		siteTitle.textContent = '位置、主小区与载波聚合';
+		siteColumn.appendChild(siteTitle);
+		siteColumn.appendChild(identities);
+		body.appendChild(signalColumn);
+		body.appendChild(siteColumn);
+		card.appendChild(body);
+		return card;
+	}
+
+	function setCellText(key, value) {
+		var node = document.querySelector('#qmd-cell-analysis [data-cell-live="' + key + '"]');
+		if (node)
+			node.textContent = clean(value);
+	}
+
+	function updateCellAnalysis(entries, connected, signalPercent) {
+		var card = byId('qmd-cell-analysis');
+		if (!card)
+			return;
+		var signals = {
+			rsrp: findEntry(entries, 'RSRP'),
+			rsrq: findEntry(entries, 'RSRQ'),
+			sinr: findEntry(entries, 'SINR'),
+			rxlev: findEntry(entries, [ 'RxLev', 'RSSI', 'CSQ' ])
+		};
+		Object.keys(signals).forEach(function(key) {
+			var entry = signals[key];
+			var pct = quality(entry);
+			var value = card.querySelector('[data-cell-value="' + key + '"]');
+			var fill = card.querySelector('[data-cell-level="' + key + '"]');
+			if (value)
+				value.textContent = entry ? clean(entry.value) + (entry.unit ? ' ' + clean(entry.unit) : '') : '—';
+			if (fill) {
+				fill.style.width = pct + '%';
+				fill.style.background = qualityColor(pct);
+			}
+		});
+
+		var mcc = valueOf(entries, 'MCC');
+		var mnc = valueOf(entries, 'MNC');
+		var band = valueOf(entries, 'Band');
+		var pci = valueOf(entries, 'Physical Cell ID');
+		var channel = valueOf(entries, [ 'ARFCN', 'EARFCN' ]);
+		var ul = valueOf(entries, 'UL Bandwidth');
+		var dl = valueOf(entries, 'DL Bandwidth');
+		var caBand = valueOf(entries, 'Band (CA)');
+		var caPci = valueOf(entries, 'Physical Cell ID (CA)');
+		var caChannel = valueOf(entries, [ 'ARFCN (CA)', 'EARFCN (CA)' ]);
+		setCellText('status', connected ? qualityLabel(signalPercent) + ' · 已注册基站' : '模组未连接基站');
+		setCellText('mode', valueOf(entries, 'network_mode'));
+		setCellText('plmn', mcc !== '—' || mnc !== '—' ? mcc + ' / ' + mnc : '—');
+		setCellText('tac', valueOf(entries, 'TAC'));
+		setCellText('cell_id', valueOf(entries, 'Cell ID'));
+		setCellText('primary', band !== '—' || pci !== '—' ? 'Band ' + band + ' · PCI ' + pci : '—');
+		setCellText('primary_channel', channel);
+		setCellText('bandwidth', ul !== '—' || dl !== '—' ? 'UL ' + ul + ' / DL ' + dl : '—');
+		setCellText('secondary', caBand !== '—' || caPci !== '—' ? 'Band ' + caBand + ' · PCI ' + caPci : '未聚合');
+		setCellText('secondary_channel', caChannel);
+		var tower = byId('qmd-radio-tower');
+		if (tower) {
+			tower.className = 'qmd-radio-tower' + (connected ? ' is-online' : '');
+			tower.style.setProperty('--qmd-cell-speed', clamp(2.6 - signalPercent / 55, .7, 2.6).toFixed(2) + 's');
+		}
+	}
+
+	function buildDetails(entries) {
+		var signature = detailSignature(entries);
+		if (signature === state.detailSignature) {
+			updateDetailValues(entries);
+			return;
+		}
+		state.detailSignature = signature;
+		state.detailNodes = [];
+		var grid = byId('qmd-detail-grid');
+		var oldCards = grid.querySelectorAll('.qmd-dynamic-card');
+		for (var r = 0; r < oldCards.length; r++)
+			oldCards[r].parentNode.removeChild(oldCards[r]);
+
+		var groups = {};
+		var order = [];
+		for (var i = 0; i < entries.length; i++) {
+			var entry = entries[i];
+			if (entry.type === 'warning_message' || entry.value == null || entry.value === '')
+				continue;
+			if (entry['class'] === 'Cell Information' || entry['class'] === '基站信息')
+				continue;
+			var group = clean(entry['class'] || '其他信息');
+			if (!groups[group]) {
+				groups[group] = [];
+				order.push(group);
+			}
+			groups[group].push({ entry: entry, index: i });
+		}
+
+		for (var g = 0; g < order.length; g++) {
+			var card = document.createElement('section');
+			card.className = 'qmd-card qmd-detail-card qmd-dynamic-card';
+			var heading = document.createElement('h3');
+			heading.textContent = order[g];
+			var metrics = document.createElement('div');
+			metrics.className = 'qmd-metrics';
+			card.appendChild(heading);
+			card.appendChild(metrics);
+
+			for (var n = 0; n < groups[order[g]].length; n++) {
+				var item = groups[order[g]][n];
+				var node;
+				if (item.entry.type === 'progress_bar') {
+					node = document.createElement('div');
+					node.className = 'qmd-progress';
+					var head = document.createElement('div');
+					head.className = 'qmd-progress-head';
+					var label = document.createElement('span');
+					label.textContent = detailLabel(item.entry);
+					var value = document.createElement('strong');
+					var track = document.createElement('div');
+					track.className = 'qmd-progress-track';
+					var fill = document.createElement('i');
+					head.appendChild(label);
+					head.appendChild(value);
+					track.appendChild(fill);
+					node.appendChild(head);
+					node.appendChild(track);
+					state.detailNodes[item.index] = { value: value, fill: fill };
+				}
+				else {
+					node = document.createElement('div');
+					node.className = 'qmd-metric';
+					var plainLabel = document.createElement('span');
+					plainLabel.textContent = detailLabel(item.entry);
+					var plainValue = document.createElement('strong');
+					node.appendChild(plainLabel);
+					node.appendChild(plainValue);
+					state.detailNodes[item.index] = { value: plainValue };
+				}
+				metrics.appendChild(node);
+			}
+			grid.appendChild(card);
+		}
+		grid.appendChild(createCellAnalysisCard());
+		updateDetailValues(entries);
+	}
+
+	function updateDetailValues(entries) {
+		for (var i = 0; i < entries.length; i++) {
+			var refs = state.detailNodes[i];
+			if (!refs)
+				continue;
+			var entry = entries[i];
+			var text = clean(entry.value) + (entry.unit ? ' ' + clean(entry.unit) : '');
+			if (refs.value.textContent !== text) {
+				refs.value.textContent = text;
+				refs.value.classList.remove('qmd-value-changed');
+				void refs.value.offsetWidth;
+				refs.value.classList.add('qmd-value-changed');
+			}
+			if (refs.fill) {
+				var pct = quality(entry);
+				refs.fill.style.width = pct + '%';
+				refs.fill.style.background = qualityColor(pct);
+			}
+		}
+	}
+
+	function updateInfo(entries) {
+		if (!Array.isArray(entries))
+			return;
+		var warningMessages = entries.filter(function(entry) { return entry.type === 'warning_message'; }).map(function(entry) {
+			return detailLabel(entry) + ': ' + clean(entry.value);
+		});
+		showAlert(warningMessages);
+
+		var primary = findEntry(entries, [ 'RSRP', 'RSSI', 'RxLev', 'CSQ' ]);
+		var rsrq = findEntry(entries, 'RSRQ');
+		var sinr = findEntry(entries, 'SINR');
+		var temp = findEntry(entries, [ 'temperature', 'Temperature' ]);
+		var voltage = findEntry(entries, [ 'voltage', 'Voltage' ]);
+		var percent = quality(primary);
+		var primaryRange = rangeFor(primary);
+		var dial = byId('qmd-signal-dial');
+		var ring = byId('qmd-signal-ring');
+		var color = qualityColor(percent);
+		if (dial)
+			dial.style.setProperty('--qmd-signal-color', color);
+		if (ring)
+			ring.style.strokeDashoffset = CIRCUMFERENCE * (1 - percent / 100);
+
+		setText('signal', primary ? clean(primary.value) : '—');
+		setText('signal_unit', primary && primary.unit ? primary.unit : (primary && primary.key === 'CSQ' ? '' : 'dBm'));
+		setText('signal_type', primary ? primary.key + ' 基站信号' : '基站信号');
+		setText('signal_grade', primary ? qualityLabel(percent) : '暂无数据');
+		setText('signal_min', primary ? primaryRange.min : '—');
+		setText('signal_max', primary ? primaryRange.max : '—');
+		setText('name', valueOf(entries, 'name', '未知模组'));
+		setText('manufacturer', valueOf(entries, 'manufacturer'));
+		setText('revision', valueOf(entries, 'revision'));
+		setText('rsrq', rsrq ? rsrq.value : '—');
+		setText('rsrq_unit', rsrq && rsrq.unit ? rsrq.unit : 'dB');
+		setText('sinr', sinr ? sinr.value : '—');
+		setText('sinr_unit', sinr && sinr.unit ? sinr.unit : 'dB');
+		setText('temperature', temp ? number(temp.value, '—') : '—');
+		setText('voltage', voltage ? number(voltage.value, '—') : '—');
+		setText('network_type', valueOf(entries, 'Network Type'));
+		setText('network_mode', valueOf(entries, 'network_mode'));
+		setText('operator', valueOf(entries, [ 'ISP', 'Carrier' ]));
+		setText('sim_slot', valueOf(entries, 'SIM Slot'));
+		setText('chart_rsrp', primary ? clean(primary.value) + (primary.unit ? ' ' + primary.unit : '') : '—');
+		setText('chart_rsrq', rsrq ? clean(rsrq.value) + (rsrq.unit ? ' ' + rsrq.unit : '') : '—');
+		setText('chart_sinr', sinr ? clean(sinr.value) + (sinr.unit ? ' ' + sinr.unit : '') : '—');
+		setText('chart_temperature', temp ? number(temp.value, '—') + ' °C' : '—');
+		setText('chart_voltage', voltage ? clean(voltage.value) : '—');
+
+		setLevel('rsrq', quality(rsrq), qualityColor(quality(rsrq)));
+		setLevel('sinr', quality(sinr), qualityColor(quality(sinr)));
+		setLevel('temperature', temp ? clamp((number(temp.value) - 20) / 70 * 100, 0, 100) : 0);
+		setLevel('voltage', voltage ? clamp((number(voltage.value) - 3000) / 1500 * 100, 0, 100) : 0);
+
+		var connected = /^(yes|connected|1|true|online)$/i.test(valueOf(entries, 'connect_status', ''));
+		var simReady = /^(ready|yes|1|true)$/i.test(valueOf(entries, 'SIM Status', ''));
+		setState('qmd-modem-state', connected, connected ? '模组已连接' : '模组未连接');
+		setState('qmd-sim-state', simReady, simReady ? 'SIM 已就绪' : 'SIM 未就绪');
+		updateCarriers(entries);
+		buildDetails(entries);
+		updateCellAnalysis(entries, connected, percent);
+
+		pushHistory('rsrp_quality', primary ? percent : 0);
+		pushHistory('rsrq_quality', rsrq ? quality(rsrq) : 0);
+		pushHistory('sinr_quality', sinr ? quality(sinr) : 0);
+		if (temp)
+			pushHistory('temperature', number(temp.value));
+		drawChart('signal', [ 'rsrp_quality', 'rsrq_quality', 'sinr_quality' ], 0, 100, false);
+		drawChart('temperature', [ 'temperature' ], 20, 90, false);
+		setText('updated', new Date().toLocaleTimeString());
+	}
+
+	function updateStats(data) {
+		if (!data || data.available === false)
+			return;
+		var now = Date.now();
+		var rx = Number(data.total_rx_bytes) || 0;
+		var tx = Number(data.total_tx_bytes) || 0;
+		var rxRate = 0;
+		var txRate = 0;
+		if (state.previousStats && state.previousStats.netdev === data.netdev) {
+			var elapsed = Math.max(.1, (now - state.previousStats.time) / 1000);
+			rxRate = Math.max(0, (rx - state.previousStats.rx) / elapsed);
+			txRate = Math.max(0, (tx - state.previousStats.tx) / elapsed);
+		}
+		state.previousStats = { netdev: data.netdev, rx: rx, tx: tx, time: now };
+		setText('netdev', data.netdev || '—');
+		setText('rx_rate', formatBytes(rxRate, true));
+		setText('tx_rate', formatBytes(txRate, true));
+		setText('rx_total', formatBytes(rx, false));
+		setText('tx_total', formatBytes(tx, false));
+		setText('chart_rx', formatBytes(rxRate, true));
+		setText('chart_tx', formatBytes(txRate, true));
+		var activity = rxRate + txRate;
+		var bars = byId('qmd-network-bars');
+		if (bars) {
+			bars.className = 'qmd-network-bars' + (activity > 8 ? ' is-active' : '');
+			bars.style.setProperty('--qmd-net-speed', clamp(2.5 - Math.log(activity + 1) / 6, .35, 2.5).toFixed(2) + 's');
+		}
+		pushHistory('rx_rate', rxRate);
+		pushHistory('tx_rate', txRate);
+		drawChart('traffic', [ 'rx_rate', 'tx_rate' ], 0, null, true);
+	}
+
+	function resetLiveState() {
+		state.history = {};
+		state.previousStats = null;
+		state.detailSignature = '';
+		state.detailNodes = [];
+		var cards = document.querySelectorAll('#qmd-detail-grid .qmd-dynamic-card');
+		for (var i = 0; i < cards.length; i++)
+			cards[i].parentNode.removeChild(cards[i]);
+		byId('qmd-carriers').textContent = '';
+	}
+
+	function refresh() {
+		if (!state.cfg || state.loading)
+			return;
+		state.loading = true;
+		byId('qmd-dashboard').classList.add('qmd-loading');
+		var requestCfg = state.cfg;
+		XHR.get(MODEM_URL, { cfg: requestCfg, action: 'info', translate: '1' }, function(x, data) {
+			state.loading = false;
+			byId('qmd-dashboard').classList.remove('qmd-loading');
+			if (requestCfg !== state.cfg)
+				return;
+			if (Array.isArray(data))
+				updateInfo(data);
+			else
+				showAlert([ '模组信息读取失败，请检查 QModem 服务和 AT 端口' ]);
+		});
+		XHR.get(MODEM_URL, { cfg: requestCfg, action: 'get_stats' }, function(x, data) {
+			if (requestCfg === state.cfg)
+				updateStats(data);
+		});
+	}
+
+	function applyConfigList(cfgs) {
+		cfgs = Array.isArray(cfgs) ? cfgs : [];
+		var signature = cfgs.map(function(cfg) { return cfg.cfg + '|' + cfg.name; }).join(';');
+		if (signature === state.configSignature)
+			return;
+		state.configSignature = signature;
+		var selector = byId('qmd-selector');
+		var previous = state.cfg || selector.value;
+		selector.textContent = '';
+		for (var i = 0; i < cfgs.length; i++) {
+			var option = document.createElement('option');
+			option.value = cfgs[i].cfg;
+			option.textContent = clean(cfgs[i].name);
+			selector.appendChild(option);
+		}
+		if (!cfgs.length) {
+			state.cfg = null;
+			showAlert([ '没有已启用并配置 AT 端口的模组' ]);
+			return;
+		}
+		var found = cfgs.some(function(cfg) { return cfg.cfg === previous; });
+		selector.value = found ? previous : cfgs[0].cfg;
+		var changed = state.cfg !== selector.value;
+		state.cfg = selector.value;
+		if (changed)
+			resetLiveState();
+		refresh();
+	}
+
+	function loadConfigs() {
+		XHR.get(CONFIG_URL, {}, function(x, data) {
+			applyConfigList(data && data.cfgs ? data.cfgs : []);
+		});
+	}
+
+	function init() {
+		var selector = byId('qmd-selector');
+		selector.addEventListener('change', function() {
+			state.cfg = selector.value;
+			resetLiveState();
+			refresh();
+		});
+		loadConfigs();
+		window.setInterval(refresh, 5000);
+		window.setInterval(loadConfigs, 15000);
+	}
+
+	if (document.readyState === 'loading')
+		document.addEventListener('DOMContentLoaded', init);
+	else
+		init();
+})();
+</script>
+
+<%+footer%>

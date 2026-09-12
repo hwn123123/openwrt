@@ -1,0 +1,38 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -1587,6 +1587,16 @@ class PcModemClient (threading.Thread):
+                 rat_map = {0: "Unknown", 2: "WCDMA", 4: "LTE", 9: "NR5G"}
+                 rat = rat_map.get(rat_num, f"RAT{rat_num}")
+ 
++                # GTCCINFO describes the serving cell and is authoritative for
++                # the currently active generation. COPS AcT can transiently
++                # return vendor value 13 and the PMU status can retain the old
++                # 5G mode after a 4G lock; neither should leave the header and
++                # display showing 5G while the serving cell is LTE.
++                generation = {2: "3G", 4: "4G", 9: "5G"}.get(rat_num)
++                if generation:
++                    self.basic["cell_tech"] = generation
++                    self.basic["network_info"] = rat
++
+                 if band_raw == 0:
+                     # Band not provided, derive from RAT and ARFCN
+                     band = 0
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -1398,6 +1398,6 @@ def dashboard_json():
+             "carmode": pc_app.socket_client.charger_on_auto_start_mode,
+             "network_route_mode": pc_app.socket_client.network_route_mode,
+-            "modem_mode": pc_app.socket_client.modem_mode or pc_app.modem_client.basic.get("cell_tech", ""),
++            "modem_mode": pc_app.modem_client.basic.get("cell_tech", "") or pc_app.socket_client.modem_mode,
+ 
+             # Idle shutdown monitoring status
+             "idle_shutdown_enabled": getattr(pc_app.main_app, 'idle_shutdown_enabled', False),
+@@ -5004,7 +5004,7 @@ def status2_json_action():
+         "carmode": pc_app.socket_client.charger_on_auto_start_mode,
+         "network_route_mode": pc_app.socket_client.network_route_mode,
+         "network_mode": pcat_config.get_network_mode(),
+-        "modem_mode": pc_app.socket_client.modem_mode or pc_app.modem_client.basic.get("cell_tech", ""),
++        "modem_mode": pc_app.modem_client.basic.get("cell_tech", "") or pc_app.socket_client.modem_mode,
+         "modem_signal_strength": pc_app.socket_client.modem_signal_strength,
+         "isp_name": pc_app.socket_client.isp_name,
+         "sim_state": pc_app.modem_client.get_inferred_sim_state(pc_app.socket_client.sim_state)

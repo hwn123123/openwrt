@@ -1,0 +1,28 @@
+{% extends '_base.html' %}
+{% block html_head %}
+<link rel="stylesheet" href="/static/vendor-wifi.css?v={{ cache_bust_version }}&ui=pcat-r51" />
+<script defer src="/static/vendor-wifi.js?v={{ cache_bust_version }}&ui=pcat-r51"></script>
+{% endblock %}
+{% block content %}
+<div id="pcat-wifi-page" class="container mx-auto w-full pt-10 pb-12 sm:pt-24 sm:pb-12 md:pt-28 lg:px-4">
+  <section class="pcat-wifi-intro">
+    <div>
+      <span class="pcat-wifi-kicker">无线管理</span>
+      <h1>Wi-Fi 参数中心</h1>
+      <p>自动识别本机全部无线模块。电源开关统一保留在“设备控制”，此页只保存无线参数。</p>
+    </div>
+    <a href="/device_control" class="pcat-wifi-power-link">前往设备控制</a>
+  </section>
+
+  <section id="pcat-wifi-summary" class="pcat-wifi-summary" aria-live="polite">
+    <div><span>无线设备</span><strong>检测中</strong></div>
+    <div><span>PCIe 无线</span><strong>检测中</strong></div>
+    <div><span>配置原则</span><strong>开关与参数分离</strong></div>
+  </section>
+
+  <div id="pcat-wifi-notice" class="pcat-wifi-notice" hidden></div>
+  <section id="pcat-wifi-cards" class="pcat-wifi-cards">
+    <div class="pcat-wifi-loading">正在读取本机无线模块的真实能力与当前配置…</div>
+  </section>
+</div>
+{% endblock %}

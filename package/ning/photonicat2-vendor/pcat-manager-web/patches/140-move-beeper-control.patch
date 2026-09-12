@@ -1,0 +1,231 @@
+--- a/app/templates/device_control.html
++++ b/app/templates/device_control.html
+@@ -402,99 +402,6 @@
+           </div>
+         </div>
+         
+-        <!-- Beeper Control -->
+-        <div class="mb-6 flex space-x-2 items-start sm:space-x-4">
+-          <div class="flex flex-col flex-wrap">
+-            <div class="flex items-center w-40 text-gray-700 mb-3"><img src="/static/inapp/Beeper.svg" class="mr-2 h-6 w-6" />{{locales["beeper_control"]}}</div>
+-            
+-            <!-- 3-State Icon Buttons with Current Status -->
+-            <div class="flex items-center space-x-4">
+-              <div class="flex space-x-3">
+-                <!-- On Button -->
+-                <button 
+-                  type="button"
+-                  @click="beeper_mode = 'on'; save_beeper_settings()"
+-                  :class="beeper_current_status === null ? 'bg-gray-50 border-gray-200 text-gray-400' : (beeper_mode === 'on' ? 'bg-green-100 border-green-300 text-green-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100')"
+-                  class="flex flex-col items-center justify-center w-16 h-16 rounded-lg border-2 transition-all duration-200 cursor-pointer">
+-                  <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+-                    <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"/>
+-                  </svg>
+-                  <span class="text-xs font-medium">{{locales["control_on"]}}</span>
+-                </button>
+-                
+-                <!-- Off Button -->
+-                <button 
+-                  type="button"
+-                  @click="beeper_mode = 'off'; save_beeper_settings()"
+-                  :class="beeper_current_status === null ? 'bg-gray-50 border-gray-200 text-gray-400' : (beeper_mode === 'off' ? 'bg-red-100 border-red-300 text-red-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100')"
+-                  class="flex flex-col items-center justify-center w-16 h-16 rounded-lg border-2 transition-all duration-200 cursor-pointer">
+-                  <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+-                    <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+-                    <line x1="22" y1="9" x2="16" y2="15"/>
+-                    <line x1="16" y1="9" x2="22" y2="15"/>
+-                  </svg>
+-                  <span class="text-xs font-medium">{{locales["control_off"]}}</span>
+-                </button>
+-                
+-                <!-- Timed Button -->
+-                <button 
+-                  type="button"
+-                  @click="beeper_mode = 'timed'; save_beeper_settings()"
+-                  :class="beeper_current_status === null ? 'bg-gray-50 border-gray-200 text-gray-400' : (beeper_mode === 'timed' ? 'bg-blue-100 border-blue-300 text-blue-700' : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100')"
+-                  class="flex flex-col items-center justify-center w-16 h-16 rounded-lg border-2 transition-all duration-200 cursor-pointer">
+-                  <svg class="w-6 h-6 mb-1" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+-                    <polygon points="9 5 5 8 2 8 2 16 5 16 9 19 9 5"/>
+-                    <circle cx="17" cy="12" r="5"/>
+-                    <polyline points="17,9 17,12 19,13"/>
+-                  </svg>
+-                  <span class="text-xs font-medium">{{locales["control_timed"]}}</span>
+-                </button>
+-              </div>
+-              
+-              <!-- Current Status Indicator - Now on the right -->
+-              <div class="flex items-center">
+-                <span class="text-sm font-medium text-gray-600 mr-2">{{locales["control_current"]}}:</span>
+-                <div x-show="beeper_current_status === null" class="flex items-center">
+-                  <svg class="animate-spin h-4 w-4 text-gray-500 mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+-                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+-                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+-                  </svg>
+-                  <span class="text-xs text-gray-500">Loading...</span>
+-                </div>
+-                <span 
+-                  x-show="beeper_current_status !== null"
+-                  class="px-2 py-1 rounded-full text-xs font-medium"
+-                  :class="beeper_current_status ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'"
+-                  x-text="beeper_current_status ? '{{locales["control_on"]}}' : '{{locales["control_off"]}}'">
+-                </span>
+-              </div>
+-            </div>
+-          </div>
+-          <!--<div class="ml-4 flex-1 text-left text-sm text-gray-400">{{locales["beeper_help_text"]}}</div>-->
+-        </div>
+-        
+-        <!-- Beeper Time Inputs (shown only when Timed is selected) -->
+-        <div class="flex flex-col justify-between px-2" x-show="beeper_mode === 'timed'">
+-          <div class="mb-4 flex items-center space-x-4">
+-            <input
+-              type="time"
+-              x-model="beeper_start_time"
+-              @input="debouncedSaveBeeperSettings()"
+-              class="w-32 text-center border rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+-            />
+-            <div class="flex-1 text-sm text-gray-500">{{locales["beeper_on_start_time"]}}</div>
+-          </div>
+-          <div class="mb-4 flex items-center space-x-4">
+-            <input
+-              type="time"
+-              x-model="beeper_end_time"
+-              @input="debouncedSaveBeeperSettings()"
+-              class="w-32 text-center border rounded px-2 py-1 focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+-            />
+-            <div class="flex-1 text-sm text-gray-500">{{locales["beeper_on_end_time"]}}</div>
+-          </div>
+-        </div>
+         <div class="mb-6 flex space-x-2 items-center sm:space-x-4" x-show="cpu_data_loaded">
+           <div class="flex flex-col flex-wrap">
+             <div class="flex items-center w-40 text-gray-700 mb-2"><img src="/static/inapp/Eco.svg" class="mr-2 h-6 w-6" />{{locales["cpu_powersave"]}}</div>
+@@ -809,15 +716,12 @@
+         this.fetch_fan_speed();
+         this.fetch_actual_fan_speed();
+         this.fetch_power_led_settings();
+-        this.fetch_beeper_settings();
+         this.fetch_power_led_status();
+-        this.fetch_beeper_status();
+         this.fetch_charge_limit();
+         setInterval(() => {
+           this.fetch_cpu_scheduling();
+           this.fetch_actual_fan_speed();
+           this.fetch_power_led_status();
+-          this.fetch_beeper_status();
+         }, 5000);
+       },
+       tab_page: (window.location.hash && ["network_mode", "apn_setup"].includes(window.location.hash.substring(1))) ? window.location.hash.substring(1) : "network_mode",
+@@ -839,17 +743,11 @@
+       power_led_start_time: "08:00",
+       power_led_end_time: "22:00",
+       saving_power_led: false,
+-      beeper_mode: "on",
+-      beeper_current_status: null,
+-      beeper_start_time: "08:00",
+-      beeper_end_time: "22:00",
+-      saving_beeper: false,
+       charge_limit: 100,
+       charge_limit_loaded: false,
+ 
+       // Timeout IDs for debounced saves
+       powerLedTimeoutId: null,
+-      beeperTimeoutId: null,
+ 
+       // Notification state
+       notification: {
+@@ -1319,76 +1217,6 @@
+           });
+       },
+ 
+-      fetch_beeper_settings() {
+-        fetch("/api/v1/beeper_settings.json")
+-          .then((response) => response.json())
+-          .then((data) => {
+-            this.beeper_mode = data.mode || "on";
+-            this.beeper_start_time = data.start_time || "08:00";
+-            this.beeper_end_time = data.end_time || "22:00";
+-          })
+-          .catch((error) => {
+-            console.error("Error fetching beeper settings:", error);
+-          });
+-      },
+-
+-      fetch_beeper_status() {
+-        fetch("/api/v1/beeper_status.json")
+-          .then((response) => response.json())
+-          .then((data) => {
+-            this.beeper_current_status = data.current_enabled;
+-          })
+-          .catch((error) => {
+-            console.error("Error fetching beeper status:", error);
+-          });
+-      },
+-
+-      save_beeper_settings(showNotification = true) {
+-        const post_data = {
+-          mode: this.beeper_mode,
+-          start_time: this.beeper_start_time,
+-          end_time: this.beeper_end_time,
+-        };
+-        const requestOptions = {
+-          method: "POST",
+-          headers: { "Content-Type": "application/json" },
+-          body: JSON.stringify(post_data),
+-        };
+-        this.saving_beeper = true;
+-        fetch("/api/v1/beeper_settings.json", requestOptions)
+-          .then((response) => response.json())
+-          .then((data) => {
+-            setTimeout(() => {
+-              this.saving_beeper = false;
+-              if (data.status === "ok") {
+-                if (showNotification) {
+-                  const mode_text = this.beeper_mode === 'off' ? 'Off' : this.beeper_mode === 'on' ? 'On' : 'Timed';
+-                  this.showNotification(
+-                    `Beeper set to ${mode_text}`,
+-                    `蜂鸣器已设为${this.beeper_mode === 'off' ? '关闭' : this.beeper_mode === 'on' ? '开启' : '定时'}`,
+-                    'success'
+-                  );
+-                }
+-              } else {
+-                this.showNotification(
+-                  data.message || 'Failed to save beeper settings',
+-                  '蜂鸣器设置保存失败',
+-                  'error'
+-                );
+-              }
+-            }, 500);
+-          })
+-          .catch((error) => {
+-            this.saving_beeper = false;
+-            this.showNotification(
+-              'Error saving beeper settings',
+-              '蜂鸣器设置保存出错',
+-              'error'
+-            );
+-            console.error("Error saving beeper settings:", error);
+-          });
+-      },
+-
+     fetch_fan_mode() {
+       fetch("/api/v1/fan_mode.json")
+         .then((response) => response.json())
+@@ -1551,17 +1379,6 @@
+       }, 3000);
+     },
+ 
+-    debouncedSaveBeeperSettings() {
+-      clearTimeout(this.beeperTimeoutId);
+-      this.beeperTimeoutId = setTimeout(() => {
+-        this.save_beeper_settings(false);
+-        this.showNotification(
+-          'Beeper schedule updated',
+-          '蜂鸣器时间计划已更新',
+-          'success'
+-        );
+-      }, 3000);
+-    },
+     fetch_charge_limit() {
+       fetch("/api/v1/charge_threshold.json")
+         .then((response) => response.json())

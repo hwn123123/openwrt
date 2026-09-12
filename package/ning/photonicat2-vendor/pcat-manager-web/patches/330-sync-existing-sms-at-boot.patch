@@ -1,0 +1,83 @@
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -125,6 +125,8 @@ class PcSmsClient (threading.Thread):
+         self.last_recv_time = None
+         self.recv_in_progress = False
+         self.recv_lock = threading.Lock()
++        self.startup_sms_synced = False
++        self.startup_session_confirmations = 0
+         self.database_changed_callback = None
+         self.sms_notification_event = threading.Event()
+         self.modem_client.set_sms_notification_callback(
+@@ -339,14 +341,59 @@ class PcSmsClient (threading.Thread):
+             return False
+ 
++    def _sync_existing_sms_at_startup(self):
++        """Import stored SIM/modem messages without waiting for a Web request.
++
++        A successful SMS session only enables future +CMTI notifications; it
++        does not emit notifications for messages that already existed at boot.
++        Retry this initial import until the hardware fetch itself succeeds so a
++        temporarily unavailable SIM cannot leave the display database empty.
++        """
++        with self.recv_lock:
++            if self.startup_sms_synced:
++                return True
++            if self.recv_in_progress:
++                return False
++            self.recv_in_progress = True
++
++        try:
++            result = self.recv_from_sms_tool()
++            if result is None:
++                return False
++            self.last_recv_time = time.time()
++            self.last_check_time = self.last_recv_time
++            self.startup_sms_synced = True
++            pcat_logger.logger.info(
++                "Startup SMS synchronization completed (%d stored messages)",
++                len(result.get("msg", [])))
++            return True
++        except Exception as error:
++            pcat_logger.logger.warning(
++                "Startup SMS synchronization failed: %s", error)
++            return False
++        finally:
++            with self.recv_lock:
++                self.recv_in_progress = False
++
+     def run(self):
+         next_hook_time = time.monotonic() + INTERVAL_SMS_HOOK
+         next_session_check = 0.0
+         while True:
+             now = time.monotonic()
+             if now >= next_session_check:
+                 ready = self._ensure_notification_session()
+-                next_session_check = now + (
+-                    SMS_SESSION_CHECK_INTERVAL if ready else 15)
++                if ready:
++                    synced = self._sync_existing_sms_at_startup()
++                    if synced:
++                        self.startup_session_confirmations += 1
++                    # Confirm the volatile session again after the dialer's
++                    # cold-boot recovery window. AT+CFUN can clear CNMI/CPMS.
++                    settled = (
++                        synced and self.startup_session_confirmations >= 2)
++                    next_session_check = time.monotonic() + (
++                        SMS_SESSION_CHECK_INTERVAL if settled else 15)
++                else:
++                    self.startup_session_confirmations = 0
++                    next_session_check = time.monotonic() + 15
+ 
+             if self.sms_notification_event.is_set():
+                 self.sms_notification_event.clear()
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -121,5 +121,7 @@ if __name__ == "__main__":
+ 
+     sms_client = PcSmsClient(pcat_config.modem_dev, modem_client, pcat_config.modem_db)
+     app.sms_client = sms_client
++    # Start the hardware-backed SMS worker during service boot. Existing SIM
++    # messages must be mirrored before any browser visits the vendor UI.
+     sms_client.set_database_changed_callback(web_app.notify_sms_changed)
+     sms_client.start()

@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/fan": {
+		"title": "智能风扇",
+		"order": 60,
+		"action": { "type": "view", "path": "photonicat2/fan" }
+	}
+}

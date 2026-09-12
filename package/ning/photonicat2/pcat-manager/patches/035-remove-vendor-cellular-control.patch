@@ -1,0 +1,1011 @@
+--- a/src/controller.c
++++ b/src/controller.c
+@@ -5,7 +5,6 @@
+ #include <json.h>
+ #include "controller.h"
+ #include "pmu-manager.h"
+-#include "modem-manager.h"
+ #include "common.h"
+ 
+ #define PCAT_CONTROLLER_SOCKET_FILE "/tmp/pcat-manager.sock"
+@@ -714,145 +713,6 @@
+     json_object_put(rroot);
+ }
+ 
+-static void pcat_controller_command_modem_status_get_func(
+-    PCatControllerData *ctrl_data,
+-    PCatControllerConnectionData *connection_data,
+-    const gchar *command, struct json_object *root)
+-{
+-    struct json_object *rroot, *child;
+-    PCatModemManagerMode mode = PCAT_MODEM_MANAGER_MODE_NONE;
+-    PCatModemManagerSIMState sim_state = PCAT_MODEM_MANAGER_SIM_STATE_ABSENT;
+-    gint signal_strength = 0;
+-    gchar *isp_name = NULL;
+-    gchar *isp_plmn = NULL;
+-    gint code = 0;
+-    const gchar *mode_str = "none", *sim_state_str = "absent";
+-    gboolean rfkill_state = FALSE;
+-    gboolean iface_enabled;
+-
+-    rroot = json_object_new_object();
+-    child = json_object_new_string(command);
+-    json_object_object_add(rroot, "command", child);
+-
+-    if(!pcat_modem_manager_status_get(&mode, &sim_state, &rfkill_state,
+-        &signal_strength, &isp_name, &isp_plmn))
+-    {
+-        code = 1;
+-    }
+-
+-    child = json_object_new_int(code);
+-    json_object_object_add(rroot, "code", child);
+-
+-    switch(mode)
+-    {
+-        case PCAT_MODEM_MANAGER_MODE_2G:
+-        {
+-            mode_str = "2g";
+-            break;
+-        }
+-        case PCAT_MODEM_MANAGER_MODE_3G:
+-        {
+-            mode_str = "3g";
+-            break;
+-        }
+-        case PCAT_MODEM_MANAGER_MODE_LTE:
+-        {
+-            mode_str = "lte";
+-            break;
+-        }
+-        case PCAT_MODEM_MANAGER_MODE_5G:
+-        {
+-            mode_str = "5g";
+-            break;
+-        }
+-        default:
+-        {
+-            break;
+-        }
+-    }
+-
+-    iface_enabled = pcat_modem_manager_iface_state_get();
+-
+-    if(iface_enabled)
+-    {
+-        switch(sim_state)
+-        {
+-            case PCAT_MODEM_MANAGER_SIM_STATE_ABSENT:
+-            {
+-                sim_state_str = "absent";
+-                break;
+-            }
+-            case PCAT_MODEM_MANAGER_SIM_STATE_NOT_READY:
+-            {
+-                sim_state_str = "not-ready";
+-                break;
+-            }
+-            case PCAT_MODEM_MANAGER_SIM_STATE_READY:
+-            {
+-                sim_state_str = "ready";
+-                break;
+-            }
+-            case PCAT_MODEM_MANAGER_SIM_STATE_PIN:
+-            {
+-                sim_state_str = "need-pin";
+-                break;
+-            }
+-            case PCAT_MODEM_MANAGER_SIM_STATE_PUK:
+-            {
+-                sim_state_str = "need-puk";
+-                break;
+-            }
+-            case PCAT_MODEM_MANAGER_SIM_STATE_NETWORK_PERSONALIZATION:
+-            {
+-                sim_state_str = "personalized-network";
+-                break;
+-            }
+-            case PCAT_MODEM_MANAGER_SIM_STATE_BAD:
+-            {
+-                sim_state_str = "bad";
+-                break;
+-            }
+-            default:
+-            {
+-                break;
+-            }
+-        }
+-    }
+-    else
+-    {
+-        sim_state_str = "unknown";
+-        signal_strength = -1;
+-    }
+-
+-    child = json_object_new_string(mode_str);
+-    json_object_object_add(rroot, "mode", child);
+-
+-    child = json_object_new_int(iface_enabled ? 1 : 0);
+-    json_object_object_add(rroot, "interface-enabled", child);
+-
+-    child = json_object_new_int(rfkill_state ? 1 : 0);
+-    json_object_object_add(rroot, "rfkill-state", child);
+-
+-    child = json_object_new_string(sim_state_str);
+-    json_object_object_add(rroot, "sim-state", child);
+-
+-    child = json_object_new_string(isp_name!=NULL ? isp_name : "");
+-    json_object_object_add(rroot, "isp-name", child);
+-
+-    child = json_object_new_string(isp_plmn!=NULL ? isp_plmn : "");
+-    json_object_object_add(rroot, "isp-lpmn", child);
+-    
+-    child = json_object_new_int(signal_strength);
+-    json_object_object_add(rroot, "signal-strength", child);
+-
+-    g_free(isp_name);
+-    g_free(isp_plmn);
+-
+-    pcat_controller_unix_socket_output_json_push(ctrl_data, connection_data,
+-        rroot);
+-    json_object_put(rroot);
+-}
+-
+ static void pcat_controller_command_network_route_mode_get_func(
+     PCatControllerData *ctrl_data,
+     PCatControllerConnectionData *connection_data,
+@@ -1036,205 +896,6 @@
+     json_object_put(rroot);
+ }
+ 
+-static void pcat_controller_command_modem_rfkill_mode_set_func(
+-    PCatControllerData *ctrl_data,
+-    PCatControllerConnectionData *connection_data,
+-    const gchar *command, struct json_object *root)
+-{
+-    struct json_object *rroot, *child;
+-    gboolean state = FALSE;
+-
+-    rroot = json_object_new_object();
+-
+-    child = json_object_new_string(command);
+-    json_object_object_add(rroot, "command", child);
+-
+-    child = json_object_new_int(0);
+-    json_object_object_add(rroot, "code", child);
+-
+-    if(json_object_object_get_ex(root, "state", &child))
+-    {
+-        state = (json_object_get_int(child)!=0);
+-    }
+-
+-    pcat_modem_manager_device_rfkill_mode_set(state);
+-
+-    pcat_controller_unix_socket_output_json_push(ctrl_data, connection_data,
+-        rroot);
+-    json_object_put(rroot);
+-}
+-
+-static void pcat_controller_command_modem_network_setup_func(
+-    PCatControllerData *ctrl_data,
+-    PCatControllerConnectionData *connection_data,
+-    const gchar *command, struct json_object *root)
+-{
+-    struct json_object *rroot, *child;
+-    const gchar *apn_str = NULL;
+-    const gchar *user_str = NULL;
+-    const gchar *password_str = NULL;
+-    const gchar *auth_str = NULL;
+-    PCatManagerUserConfigData *uconfig_data;
+-
+-    rroot = json_object_new_object();
+-
+-    child = json_object_new_string(command);
+-    json_object_object_add(rroot, "command", child);
+-
+-    child = json_object_new_int(0);
+-    json_object_object_add(rroot, "code", child);
+-
+-    uconfig_data = pcat_main_user_config_data_get();
+-
+-    if(json_object_object_get_ex(root, "apn", &child))
+-    {
+-        apn_str = json_object_get_string(child);
+-        if(apn_str!=NULL && *apn_str=='\0')
+-        {
+-            apn_str = NULL;
+-        }
+-
+-        g_free(uconfig_data->modem_dial_apn);
+-        uconfig_data->modem_dial_apn = g_strdup(apn_str);
+-
+-        uconfig_data->dirty = TRUE;
+-    }
+-
+-    if(json_object_object_get_ex(root, "user", &child))
+-    {
+-        user_str = json_object_get_string(child);
+-        if(user_str!=NULL && *user_str=='\0')
+-        {
+-            user_str = NULL;
+-        }
+-
+-        g_free(uconfig_data->modem_dial_user);
+-        uconfig_data->modem_dial_user = g_strdup(user_str);
+-
+-        uconfig_data->dirty = TRUE;
+-    }
+-    if(json_object_object_get_ex(root, "password", &child))
+-    {
+-        password_str = json_object_get_string(child);
+-        if(password_str!=NULL && *password_str=='\0')
+-        {
+-            password_str = NULL;
+-        }
+-
+-        g_free(uconfig_data->modem_dial_password);
+-        uconfig_data->modem_dial_password = g_strdup(password_str);
+-
+-        uconfig_data->dirty = TRUE;
+-    }
+-    if(json_object_object_get_ex(root, "auth", &child))
+-    {
+-        auth_str = json_object_get_string(child);
+-        if(auth_str!=NULL && *auth_str=='\0')
+-        {
+-            auth_str = NULL;
+-        }
+-
+-        g_free(uconfig_data->modem_dial_auth);
+-        uconfig_data->modem_dial_auth = g_strdup(auth_str);
+-
+-        uconfig_data->dirty = TRUE;
+-    }
+-
+-    if(json_object_object_get_ex(root, "disable-connection-5g-fail-auto-reset",
+-        &child))
+-    {
+-        uconfig_data->modem_disable_5g_fail_auto_reset =
+-            (json_object_get_int(child)!=0);
+-
+-        uconfig_data->dirty = TRUE;
+-    }
+-    if(json_object_object_get_ex(root, "modem-iface-auto-stop-if-wired",
+-        &child))
+-    {
+-        uconfig_data->modem_iface_auto_stop = (json_object_get_int(child)!=0);
+-        pcat_main_network_modem_iface_auto_stop_set(
+-            uconfig_data->modem_iface_auto_stop);
+-        uconfig_data->dirty = TRUE;
+-    }
+-
+-    pcat_main_user_config_data_sync();
+-
+-    pcat_controller_unix_socket_output_json_push(ctrl_data, connection_data,
+-        rroot);
+-    json_object_put(rroot);
+-}
+-
+-static void pcat_controller_command_modem_network_get_func(
+-    PCatControllerData *ctrl_data,
+-    PCatControllerConnectionData *connection_data,
+-    const gchar *command, struct json_object *root)
+-{
+-    struct json_object *rroot, *child;
+-    const PCatManagerUserConfigData *uconfig_data;
+-    PCatModemManagerDeviceType device_type;
+-    const gchar *device_type_str = "none";
+-
+-    rroot = json_object_new_object();
+-
+-    child = json_object_new_string(command);
+-    json_object_object_add(rroot, "command", child);
+-
+-    child = json_object_new_int(0);
+-    json_object_object_add(rroot, "code", child);
+-
+-    uconfig_data = pcat_main_user_config_data_get();
+-
+-    device_type = pcat_modem_manager_device_type_get();
+-    switch(device_type)
+-    {
+-        case PCAT_MODEM_MANAGER_DEVICE_5G:
+-        {
+-            device_type_str = "5g";
+-            break;
+-        }
+-        case PCAT_MODEM_MANAGER_DEVICE_GENERAL:
+-        {
+-            device_type_str = "lte";
+-            break;
+-        }
+-        default:
+-        {
+-            break;
+-        }
+-    }
+-
+-    child = json_object_new_string(device_type_str);
+-    json_object_object_add(rroot, "device-type", child);
+-
+-    child = json_object_new_string(uconfig_data->modem_dial_apn!=NULL ?
+-        uconfig_data->modem_dial_apn : "");
+-    json_object_object_add(rroot, "apn", child);
+-
+-    child = json_object_new_string(uconfig_data->modem_dial_user!=NULL ?
+-        uconfig_data->modem_dial_user : "");
+-    json_object_object_add(rroot, "user", child);
+-
+-    child = json_object_new_string(uconfig_data->modem_dial_password!=NULL ?
+-        uconfig_data->modem_dial_password : "");
+-    json_object_object_add(rroot, "password", child);
+-
+-    child = json_object_new_string(uconfig_data->modem_dial_auth!=NULL ?
+-        uconfig_data->modem_dial_auth : "");
+-    json_object_object_add(rroot, "auth", child);
+-
+-    child = json_object_new_int(uconfig_data->modem_disable_5g_fail_auto_reset
+-        ? 1 : 0);
+-    json_object_object_add(rroot, "disable-connection-5g-fail-auto-reset",
+-        child);
+-
+-    child = json_object_new_int(uconfig_data->modem_iface_auto_stop ? 1 : 0);
+-    json_object_object_add(rroot, "modem-iface-auto-stop-if-wired", child);
+-
+-    pcat_controller_unix_socket_output_json_push(ctrl_data, connection_data,
+-        rroot);
+-    json_object_put(rroot);
+-}
+-
+ static void pcat_controller_command_pmu_io_set_func(
+     PCatControllerData *ctrl_data,
+     PCatControllerConnectionData *connection_data,
+@@ -2089,100 +1750,6 @@
+     json_object_put(rroot);
+ }
+ 
+-static void pcat_controller_command_modem_log_get_func(
+-    PCatControllerData *ctrl_data,
+-    PCatControllerConnectionData *connection_data,
+-    const gchar *command, struct json_object *root)
+-{
+-    struct json_object *rroot, *child;
+-    gint64 offset_in = -1;
+-    gint64 max_size_in = 65536;
+-    gchar *data = NULL, *exec_name = NULL, *valid;
+-    gsize data_size = 0, i;
+-    guint64 chunk_offset = 0, total_offset = 0, tail_offset = 0;
+-    guint id_vendor = 0, id_product = 0;
+-    gchar usb_id[16] = {0};
+-
+-    if(json_object_object_get_ex(root, "offset", &child))
+-    {
+-        offset_in = json_object_get_int64(child);
+-    }
+-    if(json_object_object_get_ex(root, "max-size", &child))
+-    {
+-        max_size_in = json_object_get_int64(child);
+-    }
+-    if(max_size_in < 4096)
+-    {
+-        max_size_in = 4096;
+-    }
+-    if(max_size_in > 262144)
+-    {
+-        max_size_in = 262144;
+-    }
+-
+-    rroot = json_object_new_object();
+-
+-    child = json_object_new_string(command);
+-    json_object_object_add(rroot, "command", child);
+-
+-    if(pcat_modem_manager_log_read(
+-        offset_in < 0 ? G_MAXUINT64 : (guint64)offset_in,
+-        (gsize)max_size_in, &data, &data_size, &chunk_offset,
+-        &total_offset, &tail_offset, &exec_name, &id_vendor, &id_product))
+-    {
+-        /* JSON strings cannot carry NUL or invalid UTF-8; modem output is
+-         * plain ASCII text, this is just belt and braces. */
+-        for(i=0;i<data_size;i++)
+-        {
+-            if(data[i]=='\0')
+-            {
+-                data[i] = '?';
+-            }
+-        }
+-        valid = g_utf8_make_valid(data, data_size);
+-
+-        child = json_object_new_int(0);
+-        json_object_object_add(rroot, "code", child);
+-
+-        child = json_object_new_string(valid);
+-        json_object_object_add(rroot, "log", child);
+-
+-        child = json_object_new_int64((gint64)chunk_offset);
+-        json_object_object_add(rroot, "offset", child);
+-
+-        child = json_object_new_int64((gint64)(chunk_offset + data_size));
+-        json_object_object_add(rroot, "next-offset", child);
+-
+-        child = json_object_new_int64((gint64)total_offset);
+-        json_object_object_add(rroot, "total-offset", child);
+-
+-        child = json_object_new_int64((gint64)tail_offset);
+-        json_object_object_add(rroot, "tail-offset", child);
+-
+-        child = json_object_new_string(exec_name!=NULL ? exec_name : "");
+-        json_object_object_add(rroot, "exec", child);
+-
+-        g_snprintf(usb_id, sizeof(usb_id), "%04x:%04x",
+-            id_vendor, id_product);
+-        child = json_object_new_string(usb_id);
+-        json_object_object_add(rroot, "usb-id", child);
+-
+-        g_free(valid);
+-    }
+-    else
+-    {
+-        child = json_object_new_int(1);
+-        json_object_object_add(rroot, "code", child);
+-    }
+-
+-    g_free(data);
+-    g_free(exec_name);
+-
+-    pcat_controller_unix_socket_output_json_push(ctrl_data, connection_data,
+-        rroot);
+-    json_object_put(rroot);
+-}
+-
+ /* SOC gauge diagnostic records drained from the MCU's RAM ring.
+  *
+  *   {"command":"soc-log-get","from-seq":120,"max-records":256}
+@@ -2349,10 +1916,6 @@
+         .callback = pcat_controller_command_schedule_power_event_get_func
+     },
+     {
+-        .command = "modem-status-get",
+-        .callback = pcat_controller_command_modem_status_get_func,
+-    },
+-    {
+         .command = "network-route-mode-get",
+         .callback = pcat_controller_command_network_route_mode_get_func,
+     },
+@@ -2373,18 +1936,6 @@
+         .callback = pcat_controller_command_pmu_hw_version_get_func,
+     },
+     {
+-        .command = "modem-rfkill-mode-set",
+-        .callback = pcat_controller_command_modem_rfkill_mode_set_func,
+-    },
+-    {
+-        .command = "modem-network-setup",
+-        .callback = pcat_controller_command_modem_network_setup_func,
+-    },
+-    {
+-        .command = "modem-network-get",
+-        .callback = pcat_controller_command_modem_network_get_func,
+-    },
+-    {
+         .command = "pmu-io-set",
+         .callback = pcat_controller_command_pmu_io_set_func,
+     },
+@@ -2433,10 +1984,6 @@
+         .callback = pcat_controller_command_pmu_raw_command_func,
+     },
+     {
+-        .command = "modem-log-get",
+-        .callback = pcat_controller_command_modem_log_get_func,
+-    },
+-    {
+         .command = "soc-log-get",
+         .callback = pcat_controller_command_soc_log_get_func,
+     },
+--- a/src/main.c
++++ b/src/main.c
+@@ -8,7 +8,6 @@
+ #include <errno.h>
+ #include <json.h>
+ #include "common.h"
+-#include "modem-manager.h"
+ #include "pmu-manager.h"
+ #include "controller.h"
+ 
+@@ -25,12 +24,6 @@
+     PCAT_MAIN_IFACE_WIRED,
+     PCAT_MAIN_IFACE_WIRED_V6,
+     PCAT_MAIN_IFACE_WLAN,
+-    PCAT_MAIN_IFACE_MOBILE_5G,
+-    PCAT_MAIN_IFACE_MOBILE_5G_V6,
+-    PCAT_MAIN_IFACE_MOBILE_LTE,
+-    PCAT_MAIN_IFACE_MOBILE_LTE_V6,
+-    PCAT_MAIN_IFACE_MOBILE_FM350,
+-    PCAT_MAIN_IFACE_MOBILE_FM350_V6,
+     PCAT_MAIN_IFACE_LAST
+ }PCatMainIfaceType;
+ 
+@@ -39,40 +32,14 @@
+ {
+     "wan",
+     "wan6",
+-    "wan_wifi",
+-    "wwan_5g",
+-    "wwan_5g_v6",
+-    "wwan_lte",
+-    "wwan_lte_v6",
+-    "wwan_fm350",
+-    "wwan_fm350_v6"
++    "wan_wifi"
+ };
+ 
+ const gboolean g_pcat_main_iface_is_ipv6[PCAT_MAIN_IFACE_LAST] =
+ {
+     FALSE,
+     TRUE,
+-    FALSE,
+-    FALSE,
+-    TRUE,
+-    FALSE,
+-    TRUE,
+-    FALSE,
+-    TRUE
+-};
+-
+-const PCatManagerRouteMode g_pcat_main_iface_route_mode[
+-    PCAT_MAIN_IFACE_LAST] =
+-{
+-    PCAT_MANAGER_ROUTE_MODE_WIRED,
+-    PCAT_MANAGER_ROUTE_MODE_WIRED,
+-    PCAT_MANAGER_ROUTE_MODE_WIRED,
+-    PCAT_MANAGER_ROUTE_MODE_MOBILE,
+-    PCAT_MANAGER_ROUTE_MODE_MOBILE,
+-    PCAT_MANAGER_ROUTE_MODE_MOBILE,
+-    PCAT_MANAGER_ROUTE_MODE_MOBILE,
+-    PCAT_MANAGER_ROUTE_MODE_MOBILE,
+-    PCAT_MANAGER_ROUTE_MODE_MOBILE
++    FALSE
+ };
+ 
+ static gboolean g_pcat_main_cmd_daemonsize = FALSE;
+@@ -89,7 +56,6 @@
+     PCAT_MANAGER_ROUTE_MODE_NONE;
+ static gboolean g_pcat_main_mwan_route_check_flag = TRUE;
+ static gboolean g_pcat_main_connection_check_flag = TRUE;
+-static gboolean g_pcat_main_network_modem_iface_auto_stop = TRUE;
+ 
+ static PCatManagerMainConfigData g_pcat_main_config_data = {0};
+ static PCatManagerUserConfigData g_pcat_main_user_config_data =
+@@ -278,11 +244,6 @@
+     g_pcat_main_config_data.network_mwan_route_check = (ivalue!=0);
+ 
+     ivalue = g_key_file_get_integer(keyfile, "Debug",
+-        "ModemExternalExecStdoutLog", NULL);
+-    g_pcat_main_config_data.debug_modem_external_exec_stdout_log =
+-        ivalue;
+-
+-    ivalue = g_key_file_get_integer(keyfile, "Debug",
+         "OutputLog", NULL);
+     g_pcat_main_config_data.debug_output_log = ivalue;
+ 
+@@ -298,7 +259,6 @@
+     GKeyFile *keyfile;
+     GError *error = NULL;
+     gint iv;
+-    gchar *sv;
+     guint i;
+     gchar item_name[32] = {0};
+     PCatManagerUserConfigData *uconfig_data =
+@@ -390,71 +350,6 @@
+         uconfig_data->charge_threshold = 0;
+     }
+ 
+-    g_free(uconfig_data->modem_dial_apn);
+-    sv = g_key_file_get_string(keyfile, "Modem", "APN", NULL);
+-    if(sv!=NULL && *sv!='\0')
+-    {
+-        uconfig_data->modem_dial_apn = sv;
+-    }
+-    else
+-    {
+-        uconfig_data->modem_dial_apn = NULL;
+-    }
+-
+-    g_free(uconfig_data->modem_dial_user);
+-    sv = g_key_file_get_string(keyfile, "Modem", "User", NULL);
+-    if(sv!=NULL && *sv!='\0')
+-    {
+-        uconfig_data->modem_dial_user = sv;
+-    }
+-    else
+-    {
+-        uconfig_data->modem_dial_user = NULL;
+-    }
+-
+-    g_free(uconfig_data->modem_dial_password);
+-    sv = g_key_file_get_string(keyfile, "Modem", "Password", NULL);
+-    if(sv!=NULL && *sv!='\0')
+-    {
+-        uconfig_data->modem_dial_password = sv;
+-    }
+-    else
+-    {
+-        uconfig_data->modem_dial_password = NULL;
+-    }
+-
+-    g_free(uconfig_data->modem_dial_auth);
+-    sv = g_key_file_get_string(keyfile, "Modem", "Auth", NULL);
+-    if(sv!=NULL && *sv!='\0')
+-    {
+-        uconfig_data->modem_dial_auth = sv;
+-    }
+-    else
+-    {
+-        uconfig_data->modem_dial_auth = NULL;
+-    }
+-
+-    uconfig_data->modem_disable_ipv6 = (g_key_file_get_integer(keyfile,
+-        "Modem", "DisableIPv6", NULL)!=0);
+-
+-    uconfig_data->modem_disable_5g_fail_auto_reset =
+-        (g_key_file_get_integer(keyfile, "Modem",
+-        "Disable5GFailAutoReset", NULL)!=0);
+-    uconfig_data->modem_5g_fail_timeout = g_key_file_get_integer(
+-        keyfile, "Modem", "Connection5GFailTimeout", NULL);
+-
+-    uconfig_data->modem_iface_auto_stop = TRUE;
+-    if(g_key_file_has_key(keyfile, "Modem", "IfaceAutoStop", NULL))
+-    {
+-        uconfig_data->modem_iface_auto_stop = g_key_file_get_integer(
+-            keyfile, "Modem", "IfaceAutoStop", NULL);
+-    }
+-
+-    if(uconfig_data->modem_5g_fail_timeout < 60)
+-    {
+-        uconfig_data->modem_5g_fail_timeout = 600;
+-    }
+-
+     g_key_file_unref(keyfile);
+ 
+     uconfig_data->valid = TRUE;
+@@ -521,36 +416,6 @@
+             uconfig_data->charge_threshold);
+     }
+ 
+-    if(uconfig_data->modem_dial_apn!=NULL)
+-    {
+-        g_key_file_set_string(keyfile, "Modem", "APN",
+-            uconfig_data->modem_dial_apn);
+-    }
+-    if(uconfig_data->modem_dial_user!=NULL)
+-    {
+-        g_key_file_set_string(keyfile, "Modem", "User",
+-            uconfig_data->modem_dial_user);
+-    }
+-    if(uconfig_data->modem_dial_password!=NULL)
+-    {
+-        g_key_file_set_string(keyfile, "Modem", "Password",
+-            uconfig_data->modem_dial_password);
+-    }
+-    if(uconfig_data->modem_dial_auth!=NULL)
+-    {
+-        g_key_file_set_string(keyfile, "Modem", "Auth",
+-            uconfig_data->modem_dial_auth);
+-    }
+-
+-    g_key_file_set_integer(keyfile, "Modem", "DisableIPv6",
+-        uconfig_data->modem_disable_ipv6 ? 1 : 0);
+-    g_key_file_set_integer(keyfile, "Modem", "Disable5GFailAutoReset",
+-        uconfig_data->modem_disable_5g_fail_auto_reset ? 1 : 0);
+-    g_key_file_set_integer(keyfile, "Modem", "Connection5GFailTimeout",
+-        uconfig_data->modem_5g_fail_timeout);
+-    g_key_file_set_integer(keyfile, "Modem", "IfaceAutoStop",
+-        uconfig_data->modem_iface_auto_stop);
+-
+     ret = g_key_file_save_to_file(keyfile, PCAT_MAIN_USER_CONFIG_FILE,
+         &error);
+     if(ret)
+@@ -696,56 +561,6 @@
+             }
+         }
+ 
+-        if(g_pcat_main_network_modem_iface_auto_stop)
+-        {
+-            if(wan_ethernet_available &&
+-                g_pcat_main_network_route_mode!=PCAT_MANAGER_ROUTE_MODE_WIRED)
+-            {
+-                for(i=0;i<PCAT_MAIN_IFACE_LAST;i++)
+-                {
+-                    if(g_pcat_main_iface_route_mode[i]!=
+-                        PCAT_MANAGER_ROUTE_MODE_MOBILE)
+-                    {
+-                        continue;
+-                    }
+-
+-                    command = g_strdup_printf(
+-                        "ubus call network.interface.%s down",
+-                        g_pcat_main_iface_names[i]);
+-                    g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
+-                    g_free(command);
+-                }
+-
+-                g_message("Living WAN detected, taking WWAN down.");
+-            }
+-            else if(!wan_ethernet_available &&
+-                g_pcat_main_network_route_mode!=PCAT_MANAGER_ROUTE_MODE_MOBILE)
+-            {
+-                for(i=0;i<PCAT_MAIN_IFACE_LAST;i++)
+-                {
+-                    if(g_pcat_main_iface_route_mode[i]!=
+-                        PCAT_MANAGER_ROUTE_MODE_MOBILE)
+-                    {
+-                        continue;
+-                    }
+-
+-                    command = g_strdup_printf(
+-                        "ubus call network.interface.%s up",
+-                        g_pcat_main_iface_names[i]);
+-                    g_spawn_command_line_sync(command, NULL, NULL, NULL, NULL);
+-                    g_free(command);
+-                }
+-
+-                g_message("WAN disconnected, set WWAN up.");
+-            }
+-
+-            pcat_modem_manager_iface_state_set(!wan_ethernet_available);
+-        }
+-        else
+-        {
+-            pcat_modem_manager_iface_state_set(TRUE);
+-        }
+-
+         g_pcat_main_network_route_mode = wan_ethernet_available ?
+             PCAT_MANAGER_ROUTE_MODE_WIRED : PCAT_MANAGER_ROUTE_MODE_MOBILE;
+ 
+@@ -936,8 +751,6 @@
+ 
+     if(!pcat_main_user_config_data_load())
+     {
+-        g_pcat_main_user_config_data.modem_iface_auto_stop = TRUE;
+-
+         g_message("No user config data available, use default configuration.");
+     }
+ 
+@@ -957,23 +770,12 @@
+             "power management may not work!");
+     }
+ 
+-    if(!pcat_modem_manager_init())
+-    {
+-        g_warning("Failed to initialize modem manager, "
+-            "LTE/5G modem may not work!");
+-    }
+     if(!pcat_controller_init())
+     {
+         g_warning("Failed to initialize controller, may not be able to "
+             "communicate with other processes.");
+     }
+ 
+-    if(g_pcat_main_user_config_data.valid)
+-    {
+-        g_pcat_main_network_modem_iface_auto_stop =
+-            g_pcat_main_user_config_data.modem_iface_auto_stop;
+-    }
+-
+     if(!g_pcat_main_cmd_distro)
+     {
+         /* The MWAN route check thread polls all WAN/WWAN interfaces via
+@@ -997,7 +799,6 @@
+         {
+             g_message("MWAN route check disabled, WWAN always enabled.");
+             g_pcat_main_network_route_mode = PCAT_MANAGER_ROUTE_MODE_MOBILE;
+-            pcat_modem_manager_iface_state_set(TRUE);
+         }
+ 
+         g_pcat_main_status_check_timeout_id =
+@@ -1019,7 +820,6 @@
+     g_pcat_main_loop = NULL;
+ 
+     pcat_controller_uninit();
+-    pcat_modem_manager_uninit();
+     pcat_pmu_manager_uninit();
+     g_option_context_free(context);
+     pcat_main_config_data_clear();
+@@ -1057,8 +857,3 @@
+ {
+     return g_pcat_main_cmd_distro;
+ }
+-
+-void pcat_main_network_modem_iface_auto_stop_set(gboolean enabled)
+-{
+-    g_pcat_main_network_modem_iface_auto_stop = enabled;
+-}
+--- a/src/common.h
++++ b/src/common.h
+@@ -53,7 +53,6 @@
+ 
+     gboolean network_mwan_route_check;
+ 
+-    gboolean debug_modem_external_exec_stdout_log;
+     gboolean debug_output_log;
+ }PCatManagerMainConfigData;
+ 
+@@ -86,15 +85,6 @@
+      * startup and whenever it detects the MCU restarted. 0 = never set by
+      * the user, in which case the daemon leaves the MCU alone. */
+     guint charge_threshold;
+-
+-    gchar *modem_dial_apn;
+-    gchar *modem_dial_user;
+-    gchar *modem_dial_password;
+-    gchar *modem_dial_auth;
+-    gboolean modem_disable_ipv6;
+-    gboolean modem_disable_5g_fail_auto_reset;
+-    guint modem_5g_fail_timeout;
+-    gboolean modem_iface_auto_stop;
+ }PCatManagerUserConfigData;
+ 
+ PCatManagerMainConfigData *pcat_main_config_data_get();
+@@ -103,7 +93,6 @@
+ void pcat_main_request_shutdown(gboolean send_pmu_request);
+ PCatManagerRouteMode pcat_main_network_route_mode_get();
+ gboolean pcat_main_is_running_on_distro();
+-void pcat_main_network_modem_iface_auto_stop_set(gboolean enabled);
+ 
+ G_END_DECLS
+ 
+--- a/src/pmu-manager.c
++++ b/src/pmu-manager.c
+@@ -8,7 +8,6 @@
+ #include <fcntl.h>
+ 
+ #include "pmu-manager.h"
+-#include "modem-manager.h"
+ #include "common.h"
+ 
+ #define PCAT_PMU_MANAGER_PM_DEV "/dev/pcat-pm-ctl"
+@@ -2186,7 +2185,7 @@
+         }
+     }
+ 
+-    modem_power_usage = pcat_modem_manager_device_power_usage_get();
++    modem_power_usage = 0;
+ 
+     if(pmu_data->modem_power_usage!=modem_power_usage)
+     {
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -1,14 +1,12 @@
+ pcat_sources = [
+     'main.c',
+     'pmu-manager.c',
+-    'modem-manager.c',
+     'controller.c'
+ ]
+ 
+ pcat_headers = [
+     'common.h',
+     'pmu-manager.h',
+-    'modem-manager.h',
+     'controller.h'
+ ]
+ 
+--- a/README.md
++++ b/README.md
+@@ -44,12 +44,6 @@
+ - `charger-on-auto-start-set` - Configure charger auto-start
+ - `charger-on-auto-start-get` - Get charger auto-start configuration
+ 
+-**Modem Commands:**
+-- `modem-status-get` - Get modem status (mode, SIM state, signal strength, ISP info)
+-- `modem-rfkill-mode-set` - Set RF kill mode
+-- `modem-network-setup` - Configure modem network settings
+-- `modem-network-get` - Get modem network configuration
+-
+ **System Commands:**
+ - `network-route-mode-get` - Get current network routing mode
+ 
+@@ -82,30 +76,6 @@
+ }
+ ```
+ 
+-**modem-status-get**
+-Request:
+-```json
+-{
+-  "command": "modem-status-get"
+-}
+-```
+-
+-Response:
+-```json
+-{
+-  "command": "modem-status-get", 
+-  "code": 0,
+-  "mode": "LTE",
+-  "sim-state": "ready",
+-  "interface-enabled": 1,
+-  "rfkill-state": 0,
+-  "signal-strength": -75,
+-  "isp-name": "Carrier",
+-  "isp-plmn": "12345"
+-}
+-```
+-Note: sim-state, signal-strength, isp-name, isp-plmn are only available when interface-enabled is not 0.
+-
+ **pmu-io-set**
+ Request:
+ ```json
+@@ -174,54 +144,6 @@
+ }
+ ```
+ 
+-**modem-network-setup**
+-Request:
+-```json
+-{
+-  "command": "modem-network-setup",
+-  "apn": "",
+-  "user": "",
+-  "password": "",
+-  "auth": "",
+-  "disable-connection-5g-fail-auto-reset": 0,
+-  "modem-iface-auto-stop-if-wired": 1
+-}
+-```
+-
+-- auto: default, need to set "modem-iface-auto-stop-if-wired": 1
+-- 4g/5g only: just set wan disabled and set "modem-iface-auto-stop-if-wired": 0
+-- ethernet only: just set wwan disabled and set "modem-iface-auto-stop-if-wired": 0
+-
+-Response:
+-```json
+-{
+-  "command": "modem-network-setup", 
+-  "code": 0
+-}
+-```
+-
+-**modem-network-get**
+-Request:
+-```json
+-{
+-  "command": "modem-network-get"
+-}
+-```
+-
+-Response:
+-```json
+-{
+-  "command": "modem-network-get", 
+-  "code": 0,
+-  "device-type": "5g",
+-  "apn": "",
+-  "user": "",
+-  "password": "",
+-  "auth": "",
+-  "disable-connection-5g-fail-auto-reset": 0,
+-  "modem-iface-auto-stop-if-wired": 1
+-}
+-```
+ **power-on-mode-set**
+ Request:
+ ```json
+--- a/test/test.py
++++ b/test/test.py
+@@ -53,14 +53,6 @@
+     response = send_command({"command": "pmu-io-get"})
+     print_response(response, "PMU I/O Status")
+     
+-    # Modem Status
+-    response = send_command({"command": "modem-status-get"})
+-    print_response(response, "Modem Status")
+-    
+-    # Modem Network Info
+-    response = send_command({"command": "modem-network-get"})
+-    print_response(response, "Modem Network Information")
+-    
+     # Network Route Mode
+     response = send_command({"command": "network-route-mode-get"})
+     print_response(response, "Network Route Mode")
+

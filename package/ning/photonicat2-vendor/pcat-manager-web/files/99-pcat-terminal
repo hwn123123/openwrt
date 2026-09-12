@@ -1,0 +1,12 @@
+#!/bin/sh
+
+# The vendor page embeds ttyd. Start its shell directly in root's home so the
+# Web terminal behaves like an authenticated root console without a login step.
+if ! uci -q get ttyd.@ttyd[0] >/dev/null; then
+	uci -q add ttyd ttyd >/dev/null
+fi
+uci -q set ttyd.@ttyd[0].enable='1'
+uci -q set ttyd.@ttyd[0].interface='@lan'
+uci -q set ttyd.@ttyd[0].command='/usr/bin/pcat-terminal-shell'
+uci -q commit ttyd
+exit 0

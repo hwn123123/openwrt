@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/screen": {
+		"title": "迷你屏幕",
+		"order": 90,
+		"action": { "type": "view", "path": "photonicat2/screen" }
+	}
+}

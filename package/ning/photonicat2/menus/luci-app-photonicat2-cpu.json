@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/cpu": {
+		"title": "CPU 节能",
+		"order": 50,
+		"action": { "type": "view", "path": "photonicat2/cpu" }
+	}
+}

@@ -1,0 +1,45 @@
+--- a/app/pcat_util/command_parser.py
++++ b/app/pcat_util/command_parser.py
+@@ -51,21 +51,38 @@ def is_wifi_interface_enabled(dev_name):
+   val = uci_get("wireless." + dev_name + ".disabled")
+   return val == "0" or val == ""  # empty means not disabled (enabled by default)
+ 
+-def _get_hostapd_client_count(iface_names):
+-  """Try multiple hostapd interface names, return client count from first that works."""
++def _list_hostapd_objects():
++  """Return the hostapd objects currently exported by ubus."""
++  try:
++    output = subprocess.check_output(
++      ["ubus", "list", "hostapd.*"], stderr=subprocess.DEVNULL,
++      timeout=5, text=True
++    )
++    return {line.strip() for line in output.splitlines() if line.strip()}
++  except (OSError, subprocess.SubprocessError):
++    return set()
++
++def _get_hostapd_client_count(iface_names, active_objects):
++  """Return clients from the first matching, currently exported object."""
+   for iface in iface_names:
++    # python3-ubus prints "Command failed: Not found" before raising for a
++    # missing object.  Listing once avoids five harmless errors on boards
++    # whose hostapd object follows the newer phyN-apN naming convention.
++    if iface not in active_objects:
++      continue
+     result = ubus_call(iface, "get_clients")
+     if result and "clients" in result:
+       return len(result["clients"])
+   return 0
+ 
+ def get_wifi_clients_count():
+   count_0 = 0
+   count_1 = 0
++  active_objects = _list_hostapd_objects()
+   if is_wifi_interface_enabled("radio0"):
+-    count_0 = _get_hostapd_client_count(["hostapd.wlan0", "hostapd.wlan0-1", "hostapd.phy0-ap0"])
++    count_0 = _get_hostapd_client_count(["hostapd.wlan0", "hostapd.wlan0-1", "hostapd.phy0-ap0"], active_objects)
+   if is_wifi_interface_enabled("radio1"):
+-    count_1 = _get_hostapd_client_count(["hostapd.wlan1", "hostapd.wlan1-1", "hostapd.phy1-ap0"])
++    count_1 = _get_hostapd_client_count(["hostapd.wlan1", "hostapd.wlan1-1", "hostapd.phy1-ap0"], active_objects)
+   return count_0 + count_1
+ 
+ def device_exist(net_device_name):

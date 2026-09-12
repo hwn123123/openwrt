@@ -1,0 +1,13 @@
+--- a/httpServer.go
++++ b/httpServer.go
+@@ -240,6 +240,9 @@
+ 	lastActivityMu.Lock()
+ 	lastActivity = time.Now()
+ 	lastActivityMu.Unlock()
++	// Do not wait for the idle state machine's next transition: an incoming
++	// SMS must be readable immediately even when the panel was fully dark.
++	setBacklight(getEffectiveMaxBrightness())
+ 
+ 	requestSmsDisplay()
+ 	return c.JSON(fiber.Map{"status": "accepted"})
+

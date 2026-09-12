@@ -1,0 +1,132 @@
+--- a/main.go
++++ b/main.go
+@@ -160,6 +160,12 @@ var (
+ 	lastActivity   = time.Now()
+ 	lastActivityMu sync.Mutex
+ 
++
++	// A web SMS event is first handled by the SMS collector so the cached
++	// image is current, then handed to the render loop for a direct jump.
++	// Buffered channels coalesce bursts without blocking the local HTTP API.
++	smsDisplayRequest = make(chan struct{}, 1)
++	smsPageReady      = make(chan struct{}, 1)
+ 	numIntermediatePages = 15
+ 
+ 	// configuration for idle fade
+--- a/main.go
++++ b/main.go
+@@ -1199,4 +1199,10 @@ func mainLoop() {
+ 		if runMainLoop {
++			showSMSPageRequested := false
++			select {
++			case <-smsPageReady:
++				showSMSPageRequested = true
++			default:
++			}
+ 			start := time.Now()
+-			if changePageTriggered || httpChangePageTriggered { //CHANGE PAGE
+-				if buttonPressInProgress { // Too soon, skip this press
++			if changePageTriggered || httpChangePageTriggered || showSMSPageRequested { //CHANGE PAGE
++				if buttonPressInProgress && !showSMSPageRequested { // Too soon, skip this press
+--- a/main.go
++++ b/main.go
+@@ -1221,7 +1227,12 @@ func mainLoop() {
+ 
+ 				// Optimize page calculations - calculate once and reuse
+ 				currPageIdx = currPageIdx % totalNumPages
+-				nextPageIdx = (currPageIdx + 1) % totalNumPages
++				if showSMSPageRequested && cfg.ShowSms && lenSmsPagesImages > 0 {
++					// The SMS collector has already rebuilt its images for this event.
++					nextPageIdx = cfgNumPages
++				} else {
++					nextPageIdx = (currPageIdx + 1) % totalNumPages
++				}
+ 
+ 				// Pre-calculate SMS status to avoid redundant checks
+ 				isSMS = cfg.ShowSms && currPageIdx >= cfgNumPages
+--- a/processSms.go
++++ b/processSms.go
+@@ -167,3 +167,23 @@ func signalSmsRerender() {
+ }
+ 
++// requestSmsDisplay asks the collector to refresh the message images before
++// the render loop jumps to them. It is deliberately separate from a normal
++// repaint request: a new SMS must never be shown from the previous cache.
++func requestSmsDisplay() {
++	select {
++	case smsDisplayRequest <- struct{}{}:
++	default:
++	}
++}
++
++func signalSmsPageReady() {
++	select {
++	case smsPageReady <- struct{}{}:
++	default:
++	}
++	// The display may currently be dark or sleeping in its FPS delay.
++	// Interrupt it so the requested SMS page is rendered straight away.
++	signalPageChange()
++}
++
+ func collectAndDrawSms(cfg *Config) int {
+--- a/processSms.go
++++ b/processSms.go
+@@ -734,10 +754,13 @@ func getSmsPages() {
+ 	ticker := time.NewTicker(getSmsInterval())
+ 	defer ticker.Stop()
+ 
++	showAfterRefresh := false
+ 	for {
+ 		// Either the poll interval elapsed or a config remerge asked for an
+ 		// immediate repaint (theme change).
+ 		select {
+ 		case <-ticker.C:
+ 		case <-smsRerender:
++		case <-smsDisplayRequest:
++			showAfterRefresh = true
+ 		}
+--- a/processSms.go
++++ b/processSms.go
+@@ -763,2 +786,6 @@ func getSmsPages() {
+ 			totalNumPages = cfgNumPages + lenSmsPagesImages
++			if showAfterRefresh {
++				showAfterRefresh = false
++				signalSmsPageReady()
++			}
+ 		} else {
+--- a/httpServer.go
++++ b/httpServer.go
+@@ -225,3 +225,24 @@ func changePage(c *fiber.Ctx) error {
+ }
+ 
++// showSmsPage refreshes the SMS images and then takes the LCD directly to
++// the first SMS page. Updating lastActivity also wakes a dimmed/off display;
++// it intentionally keeps the user's normal page rotation and timeout intact.
++func showSmsPage(c *fiber.Ctx) error {
++	configMutex.RLock()
++	showSMS := cfg.ShowSms
++	configMutex.RUnlock()
++	if !showSMS {
++		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
++			"status": "disabled", "message": "SMS display is disabled",
++		})
++	}
++
++	lastActivityMu.Lock()
++	lastActivity = time.Now()
++	lastActivityMu.Unlock()
++
++	requestSmsDisplay()
++	return c.JSON(fiber.Map{"status": "accepted"})
++}
++
+ // GET  /api/v1/data.json
+--- a/httpServer.go
++++ b/httpServer.go
+@@ -841,4 +862,5 @@ func httpServer(port string) {
+ 	app.Get("/api/v1/go_data.json", getData)     //TODO: add content
+ 	app.Post("/api/v1/go_data.json", updateData) //TODO: add content
+ 	app.Get("/api/v1/go_changePage", changePage)
++	app.Post("/api/v1/go_show_sms", showSmsPage)
+ 	app.Get("/api/v1/go_display_text.json", httpDrawText)

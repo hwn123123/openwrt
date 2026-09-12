@@ -1,0 +1,290 @@
+--- a/app/templates/terminal.html
++++ b/app/templates/terminal.html
+@@ -109,17 +109,16 @@
+ document.addEventListener("alpine:init", () => {
+   Alpine.store("app").set_page("terminal");
+ 
+-  Alpine.data("terminalPage", () => ({
+-    term: null,
+-    fitAddon: null,
+-    socket: null,
++  Alpine.data("terminalPage", () => {
++    // Keep mutable third-party objects outside Alpine's reactive proxy. xterm
++    // and Socket.IO mutate deep internal state and must retain their identity.
++    const runtime = { term: null, fitAddon: null, socket: null };
++    return {
+     sessionId: "default",
+     status: "connecting",
+     isFullscreen: false,
+     _resizeTimeout: null,
+     _connected: false,
+-    _inputBuffer: "",
+-    _inputFlushTimeout: null,
+ 
+     get statusText() {
+       if (this.status === "connected") return "{{locales.terminal_connected}}";
+@@ -131,15 +130,19 @@
+       this._setup();
+     },
+ 
++    _writeOutput(data) {
++      if (data && runtime.term) runtime.term.write(data);
++    },
++
+     _setup() {
+       const container = document.getElementById("terminal-container");
+       const fitAddon = new FitAddon.FitAddon();
+-      this.fitAddon = fitAddon;
++      runtime.fitAddon = fitAddon;
+       const savedSize = localStorage.getItem('terminal_font_size');
+       const defaultSize = window.innerWidth < 640 ? 8 : 14;
+       const fontSize = savedSize ? parseInt(savedSize) : defaultSize;
+ 
+-      this.term = new Terminal({
++      const term = new Terminal({
+         cursorBlink: true,
+         fontSize: fontSize,
+         fontFamily: "'JetBrains Mono', 'Cascadia Code', 'Fira Code', 'Courier New', monospace",
+@@ -160,36 +163,33 @@
+         scrollback: 5000,
+         convertEol: false
+       });
+-      this.term.loadAddon(fitAddon);
+-      this.term.open(container);
++      runtime.term = term;
++      term.loadAddon(fitAddon);
++      term.open(container);
+       fitAddon.fit();
+-      this.term.focus();
++      term.focus();
+ 
+-      this.term.onData((data) => {
+-        if (this.socket && this.socket.connected) {
+-          this._inputBuffer += data;
+-          if (!this._inputFlushTimeout) {
+-            this._inputFlushTimeout = setTimeout(() => {
+-              if (this._inputBuffer && this.socket && this.socket.connected) {
+-                this.socket.emit("terminal_input", { session_id: this.sessionId, data: this._inputBuffer });
+-                this._inputBuffer = "";
+-              }
+-              this._inputFlushTimeout = null;
+-            }, 30);
+-          }
++      term.onData((data) => {
++        if (runtime.socket && runtime.socket.connected) {
++          // Preserve xterm's key-event boundaries. Socket.IO already queues
++          // packets in order, so an extra timer only creates stale input.
++          runtime.socket.emit("terminal_input", {
++            session_id: this.sessionId,
++            data: data
++          });
+         }
+       });
+ 
+-      this.term.onResize((size) => {
+-        if (this._connected && this.socket && this.socket.connected) {
+-          this.socket.emit("terminal_resize", { session_id: this.sessionId, cols: size.cols, rows: size.rows });
++      term.onResize((size) => {
++        if (this._connected && runtime.socket && runtime.socket.connected) {
++          runtime.socket.emit("terminal_resize", { session_id: this.sessionId, cols: size.cols, rows: size.rows });
+         }
+       });
+ 
+       window.addEventListener("resize", () => {
+         clearTimeout(this._resizeTimeout);
+         this._resizeTimeout = setTimeout(() => {
+-          try { this.fitAddon.fit(); } catch(e) {}
++          try { runtime.fitAddon.fit(); } catch(e) {}
+         }, 150);
+       });
+ 
+@@ -203,67 +203,68 @@
+       // Werkzeug 3 on NWRT cannot complete simple-websocket's hijacked WSGI
+       // response. Socket.IO long-polling carries the same bidirectional
+       // terminal events without triggering a failed WebSocket upgrade.
+-      this.socket = io({ transports: ["polling"], upgrade: false });
++      const socket = io({ transports: ["polling"], upgrade: false, forceNew: true });
++      runtime.socket = socket;
+ 
+-      this.socket.on("connect", () => {
++      socket.on("connect", () => {
+         this.status = "connected";
+         this._connected = true;
+         this._openCount++;
+         if (this._openCount > 1) {
+           // Reconnect: clear screen before replaying scrollback to avoid duplicates
+-          this.term.clear();
++          runtime.term.clear();
+         }
+-        this.socket.emit("terminal_open", {
++        socket.emit("terminal_open", {
+           session_id: this.sessionId,
+-          cols: this.term.cols,
+-          rows: this.term.rows
++          cols: runtime.term.cols,
++          rows: runtime.term.rows
+         });
+       });
+ 
+-      this.socket.on("terminal_output", (msg) => {
++      socket.on("terminal_output", (msg) => {
+         if (msg.data) {
+-          this.term.write(msg.data);
++          this._writeOutput(msg.data);
+         }
+       });
+ 
+-      this.socket.on("terminal_exit", () => {
+-        this.term.write("\r\n\x1b[31m[Session ended]\x1b[0m\r\n");
++      socket.on("terminal_exit", () => {
++        this._writeOutput("\r\n\x1b[31m[Session ended]\x1b[0m\r\n");
+         this.status = "disconnected";
+       });
+ 
+-      this.socket.on("disconnect", () => {
++      socket.on("disconnect", () => {
+         this.status = "disconnected";
+         this._connected = false;
+       });
+     },
+ 
+     disconnect() {
+-      if (this.socket && this.socket.connected) {
+-        this.socket.emit("terminal_kill", { session_id: this.sessionId });
++      if (runtime.socket && runtime.socket.connected) {
++        runtime.socket.emit("terminal_kill", { session_id: this.sessionId });
+       }
+       this.status = "disconnected";
+       this._connected = false;
+     },
+ 
+     reconnect() {
+-      if (this.socket && this.socket.connected) {
+-        this.socket.emit("terminal_kill", { session_id: this.sessionId });
++      if (runtime.socket && runtime.socket.connected) {
++        runtime.socket.emit("terminal_kill", { session_id: this.sessionId });
+       }
+       setTimeout(() => { window.location.reload(); }, 300);
+     },
+ 
+     fontSizeUp() {
+-      const size = Math.min(this.term.options.fontSize + 2, 32);
+-      this.term.options.fontSize = size;
++      const size = Math.min(runtime.term.options.fontSize + 2, 32);
++      runtime.term.options.fontSize = size;
+       localStorage.setItem('terminal_font_size', size);
+-      try { this.fitAddon.fit(); } catch(e) {}
++      try { runtime.fitAddon.fit(); } catch(e) {}
+     },
+ 
+     fontSizeDown() {
+-      const size = Math.max(this.term.options.fontSize - 2, 8);
+-      this.term.options.fontSize = size;
++      const size = Math.max(runtime.term.options.fontSize - 2, 8);
++      runtime.term.options.fontSize = size;
+       localStorage.setItem('terminal_font_size', size);
+-      try { this.fitAddon.fit(); } catch(e) {}
++      try { runtime.fitAddon.fit(); } catch(e) {}
+     },
+ 
+     toggleFullscreen() {
+@@ -275,11 +276,12 @@
+         wrapper.classList.remove("terminal-fullscreen");
+       }
+       setTimeout(() => {
+-        try { this.fitAddon.fit(); } catch(e) {}
+-        this.term.focus();
++        try { runtime.fitAddon.fit(); } catch(e) {}
++        runtime.term.focus();
+       }, 100);
+     }
+-  }));
++    };
++  });
+ });
+ </script>
+ {% endblock %}
+--- a/app/pc_terminal.py
++++ b/app/pc_terminal.py
+@@ -12,9 +12,7 @@
+ import struct
+ import fcntl
+ import termios
+-import subprocess
+ import threading
+-import time
+ from pcat_util import pcat_logger
+ 
+ class PtySession:
+@@ -28,8 +26,6 @@
+         self.pid = None
+         self.cols = cols
+         self.rows = rows
+-        self.created_at = time.time()
+-        self.last_active = time.time()
+         self._alive = False
+         self._scrollback = b''
+         self._scrollback_lock = threading.Lock()
+@@ -41,10 +37,16 @@
+         if pid == 0:
+             # Child process
+             env = os.environ.copy()
++            home = '/root'
+             env['TERM'] = 'xterm-256color'
+             env['COLUMNS'] = str(self.cols)
+             env['LINES'] = str(self.rows)
+-            env.setdefault('HOME', '/root')
++            env['HOME'] = home
++            # The Web service runs from /usr/share/pcat-manager-web. A login
++            # shell does not change directory by itself, so start each Web
++            # terminal in root's home explicitly and keep PWD consistent.
++            os.chdir(home)
++            env['PWD'] = home
+             env.setdefault('PATH', '/usr/sbin:/usr/bin:/sbin:/bin')
+             shell = '/bin/sh'
+             if os.path.exists('/bin/bash'):
+@@ -77,7 +79,6 @@
+ 
+     def write(self, data):
+         """Write data to the PTY master (input from user)."""
+-        self.last_active = time.time()
+         if self.master_fd is not None and self._alive:
+             try:
+                 os.write(self.master_fd, data.encode('utf-8') if isinstance(data, str) else data)
+@@ -93,7 +94,6 @@
+             if ready:
+                 data = os.read(self.master_fd, 65536)
+                 if data:
+-                    self.last_active = time.time()
+                     return data
+                 else:
+                     self._alive = False
+@@ -189,28 +189,5 @@
+             if sess:
+                 sess.kill()
+ 
+-    def list_sessions(self):
+-        """Return list of active session IDs."""
+-        with self._lock:
+-            alive = []
+-            dead = []
+-            for sid, sess in self._sessions.items():
+-                if sess.is_alive:
+-                    alive.append(sid)
+-                else:
+-                    dead.append(sid)
+-            for sid in dead:
+-                self._sessions[sid].kill()
+-                del self._sessions[sid]
+-            return alive
+-
+-    def cleanup(self):
+-        """Kill all sessions."""
+-        with self._lock:
+-            for sess in self._sessions.values():
+-                sess.kill()
+-            self._sessions.clear()
+-
+-
+ # Global terminal manager instance
+ terminal_manager = TerminalManager()

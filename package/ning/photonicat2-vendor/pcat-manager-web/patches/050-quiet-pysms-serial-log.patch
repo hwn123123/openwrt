@@ -1,0 +1,7 @@
+--- a/app/pysms_tool.py
++++ b/app/pysms_tool.py
+@@ -515,2 +515,3 @@
+         if serial_port is not None:
+-            print(f"\033[32mUsing provided serial port: {serial_port}\033[0m", file=sys.stderr)
++            if self.debug:
++                print(f"\033[32mUsing provided serial port: {serial_port}\033[0m", file=sys.stderr)

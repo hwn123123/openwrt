@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/charge": {
+		"title": "充电限制",
+		"order": 70,
+		"action": { "type": "view", "path": "photonicat2/charge" }
+	}
+}

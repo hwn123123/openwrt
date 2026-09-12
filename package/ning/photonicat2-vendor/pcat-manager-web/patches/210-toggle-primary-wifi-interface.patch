@@ -1,0 +1,49 @@
+--- a/app/app.py
++++ b/app/app.py
+@@ -652,10 +652,35 @@ def enable_wwan_interface(enable_flag):
+   return True
+ 
+ # 开启 / 关闭数据流量接口, dev_name: radio0, radio1
++def _primary_wifi_iface_section(dev_name):
++  preferred = "default_{}".format(dev_name)
++  try:
++    if uci_get("wireless.{}.device".format(preferred)) == dev_name:
++      return preferred
++  except Exception:
++    pass
++  try:
++    result = subprocess.run(
++      ["uci", "-q", "show", "wireless"], capture_output=True, text=True, timeout=5
++    )
++    matcher = re.compile(r"^wireless\.([^.]+)\.device=['\"]?{}['\"]?$".format(re.escape(dev_name)))
++    for line in result.stdout.splitlines():
++      match = matcher.match(line)
++      if match:
++        return match.group(1)
++  except Exception:
++    pass
++  return preferred
++
+ def enable_wifi_interface(dev_name, enable_flag, restart=True):
+   old_flag = is_wifi_interface_enabled(dev_name)
+-  if old_flag == enable_flag:
++  iface_section = _primary_wifi_iface_section(dev_name)
++  try:
++    iface_enabled = uci_get("wireless.{}.disabled".format(iface_section)) != "1"
++  except Exception:
++    iface_enabled = True
++  if old_flag == enable_flag and iface_enabled == enable_flag:
+     pcat_logger.logger.info("Nothing changed for wifi interface")
+     return False
+ 
+   try:
+@@ -663,9 +688,11 @@ def enable_wifi_interface(dev_name, enable_flag, restart=True):
+     if enable_flag:
+       uci_set(f"wireless.{dev_name}.disabled", "0")
++      uci_set(f"wireless.{iface_section}.disabled", "0")
+     else:
+       uci_set(f"wireless.{dev_name}.disabled", "1")
++      uci_set(f"wireless.{iface_section}.disabled", "1")
+     uci_commit("wireless")
+     if restart:
+       luci_reload()

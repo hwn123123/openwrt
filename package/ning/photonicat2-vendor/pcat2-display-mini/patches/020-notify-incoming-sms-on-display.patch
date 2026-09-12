@@ -1,0 +1,191 @@
+--- a/main.go
++++ b/main.go
+@@ -89,7 +89,10 @@ const (
+ 	// collectors together so every value on page 0 stays live.
+ 	INTERVAL_PAGE0_ACTIVE = 500 * time.Millisecond
+ 	INTERVAL_PAGE0_IDLE   = INTERVAL_DATA_COLLECT
+-	INTERVAL_SMS_COLLECT  = INTERVAL_DATA_COLLECT
++	// The vendor SMS backend throttles modem reads to roughly eight seconds.
++	// Poll just above that limit so an incoming message reaches the display
++	// promptly without increasing access to the modem's AT port.
++	INTERVAL_SMS_COLLECT = 10 * time.Second
+ 	// Link status (carrier-aware egress + public-IP flush/reprobe): fast while
+ 	// the screen is awake so unplug/plug updates the top-bar icon and PUBLIC
+ 	// IP row within a couple of seconds on any page; relaxed when dark.
+@@ -234,6 +237,10 @@ var (
+ 	buttonPressInProgress   = false
+ 	// Signal channel for interrupting FPS sleep on page changes
+ 	pageChangeSignal = make(chan struct{}, 1)
++	// A newly received SMS asks the render loop to wake the panel and jump to
++	// the first SMS page. Keep this separate from pageChangeSignal: the latter
++	// only interrupts a sleep and deliberately carries no page target.
++	smsNotificationSignal = make(chan struct{}, 1)
+ 	// Button timing tracking
+ 	buttonKeydownTime = time.Time{}
+ 	buttonKeyupTime   = time.Time{}
+@@ -1193,6 +1200,31 @@ func mainLoop() {
+ 	}
+ 
+ 	for weAreRunning() {
++		// SMS collection runs in its own goroutine. Consume its notification in
++		// the render goroutine so page indexes, redraw flags and wake state are
++		// changed in one place instead of racing the normal page transition.
++		select {
++		case <-smsNotificationSignal:
++			if cfg.ShowSms && lenSmsPagesImages > 0 && totalNumPages > 0 {
++				now := time.Now()
++				lastActivityMu.Lock()
++				lastActivity = now
++				lastActivityMu.Unlock()
++
++				// Jump directly instead of synthesising button presses. This is
++				// deterministic from every current page and avoids making the
++				// notification depend on transition/debounce state.
++				currPageIdx = cfgNumPages
++				localIdx = 0
++				isSMS = true
++				lastMiddleFingerprint = ""
++				forceMiddleRedraw = true
++				displayWake()
++				log.Println("New incoming SMS: waking display and opening SMS page")
++			}
++		default:
++		}
++
+ 		if middleFrames%300 == 0 { // Log less frequently
+ 			log.Println("showsms:", cfg.ShowSms, "totalPages:", totalNumPages, "cfgPages:", cfgNumPages)
+ 		}
+--- a/processSms.go
++++ b/processSms.go
+@@ -26,6 +26,7 @@ import (
+ )
+ 
+ type SMS struct {
++	ID        int    `json:"id,omitempty"`
+ 	Index     int    `json:"index"`
+ 	Sender    string `json:"sender"`
+ 	Timestamp string `json:"timestamp"`
+@@ -56,6 +57,12 @@ var (
+ 	// re-render is exactly the desired behaviour.
+ 	smsRerender = make(chan struct{}, 1)
+ 	
++	// The first successful fetch establishes a baseline so rebooting does not
++	// pop up every old message. Subsequent previously unseen received-message
++	// keys cause exactly one display notification.
++	smsNotificationInitialized bool
++	seenReceivedSms             = make(map[string]struct{})
++
+ 	// Memory pool for SMS images to reduce allocations
+ 	smsImagePool = sync.Pool{
+ 		New: func() interface{} {
+@@ -166,8 +173,64 @@ func signalSmsRerender() {
+ 	}
+ }
+ 
++// signalSmsNotification wakes the render loop without blocking the SMS
++// collector. Multiple messages arriving in one modem poll are intentionally
++// coalesced into one jump to the SMS page.
++func signalSmsNotification() {
++	select {
++	case smsNotificationSignal <- struct{}{}:
++		signalPageChange()
++	default:
++	}
++}
++
++// observeReceivedSms reports whether a valid API response contains a received
++// message not seen in an earlier successful poll. Sent messages (direction 1)
++// never wake the display. IDs are preferred; older vendor APIs without IDs
++// fall back to stable message fields.
++func observeReceivedSms(jsonContent string) bool {
++	var data struct {
++		Msg []SMS `json:"msg"`
++	}
++	if jsonContent == "" || secureUnmarshal([]byte(jsonContent), &data) != nil {
++		return false
++	}
++
++	keys := make([]string, 0, len(data.Msg))
++	for _, sms := range data.Msg {
++		if sms.Direction == 1 {
++			continue
++		}
++		key := ""
++		if sms.ID > 0 {
++			key = "id:" + strconv.Itoa(sms.ID)
++		} else {
++			key = fmt.Sprintf("msg:%s\x00%s\x00%s", sms.Sender, sms.Timestamp, sms.Content)
++		}
++		keys = append(keys, key)
++	}
++
++	if !smsNotificationInitialized {
++		for _, key := range keys {
++			seenReceivedSms[key] = struct{}{}
++		}
++		smsNotificationInitialized = true
++		return false
++	}
++
++	newMessage := false
++	for _, key := range keys {
++		if _, ok := seenReceivedSms[key]; !ok {
++			seenReceivedSms[key] = struct{}{}
++			newMessage = true
++		}
++	}
++	return newMessage
++}
++
+ func collectAndDrawSms(cfg *Config) int {
+ 	jsonContent := getJsonContent(cfg)
++	newReceivedSms := observeReceivedSms(jsonContent)
+ 
+ 	if len(jsonContent) < 50 { //dummy message
+ 		jsonContent = fmt.Sprintf("{\"msg\":[{\"sender\":\"System\",\"timestamp\":\"%s\",\"content\":\"No SMS - 无消息\"}]}", time.Now().Format("2006-01-02 15:04:05"))
+@@ -216,6 +279,9 @@ func collectAndDrawSms(cfg *Config) int {
+ 	}
+ 	numPages := len(smsPagesImages)
+ 	lastNumPages = numPages
++	if newReceivedSms && numPages > 0 {
++		signalSmsNotification()
++	}
+ 
+ 	return numPages
+ }
+--- /dev/null
++++ b/smsNotification_test.go
+@@ -0,0 +1,33 @@
++package main
++
++import "testing"
++
++func TestObserveReceivedSmsOnlyNotifiesForNewIncoming(t *testing.T) {
++	oldInitialized := smsNotificationInitialized
++	oldSeen := seenReceivedSms
++	t.Cleanup(func() {
++		smsNotificationInitialized = oldInitialized
++		seenReceivedSms = oldSeen
++	})
++
++	smsNotificationInitialized = false
++	seenReceivedSms = make(map[string]struct{})
++
++	baseline := `{"msg":[{"id":1,"sender":"10086","timestamp":"2026-09-06 12:00:00","content":"old","direction":0}]}`
++	if observeReceivedSms(baseline) {
++		t.Fatal("initial baseline must not notify")
++	}
++
++	sentAdded := `{"msg":[{"id":2,"sender":"me","timestamp":"2026-09-06 12:01:00","content":"sent","direction":1},{"id":1,"sender":"10086","timestamp":"2026-09-06 12:00:00","content":"old","direction":0}]}`
++	if observeReceivedSms(sentAdded) {
++		t.Fatal("sent SMS must not notify")
++	}
++
++	incomingAdded := `{"msg":[{"id":3,"sender":"10086","timestamp":"2026-09-06 12:02:00","content":"new","direction":0},{"id":1,"sender":"10086","timestamp":"2026-09-06 12:00:00","content":"old","direction":0}]}`
++	if !observeReceivedSms(incomingAdded) {
++		t.Fatal("new received SMS must notify")
++	}
++	if observeReceivedSms(incomingAdded) {
++		t.Fatal("the same received SMS must notify only once")
++	}
++}

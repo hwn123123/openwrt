@@ -1,0 +1,26 @@
+--- a/app/templates/terminal.html
++++ b/app/templates/terminal.html
+@@ -200,7 +200,10 @@
+     _initSocket() {
+       this.status = "connecting";
+       this._openCount = 0;
+-      this.socket = io({ transports: ["websocket"], upgrade: false });
++      // Werkzeug 3 on NWRT cannot complete simple-websocket's hijacked WSGI
++      // response. Socket.IO long-polling carries the same bidirectional
++      // terminal events without triggering a failed WebSocket upgrade.
++      this.socket = io({ transports: ["polling"], upgrade: false });
+ 
+       this.socket.on("connect", () => {
+         this.status = "connected";
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -368,7 +368,10 @@ else:
+     flask_app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 3600000
+-socketio = SocketIO(flask_app)
++# Werkzeug 3 cannot serve the simple-websocket WSGI socket takeover reliably
++# on this Python 3.14 OpenWrt build. Long-polling supports every event used by
++# the UI and avoids repeated failed upgrade requests and tracebacks.
++socketio = SocketIO(flask_app, transports=['polling'], allow_upgrades=False)
+ 
+ # Suppress noisy werkzeug request logs for socket.io polling
+ import logging as _logging

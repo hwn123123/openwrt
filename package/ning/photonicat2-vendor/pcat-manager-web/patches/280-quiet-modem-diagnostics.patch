@@ -1,0 +1,41 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -23,6 +23,14 @@
+ import pcat_config
+ import app
+ 
++# The vendor module contains extensive development print statements. Keep
++# them available behind the existing debug switch without feeding routine AT
++# traffic into OpenWrt's system log during normal operation.
++_builtin_print = print
++def print(*args, **kwargs):
++    if pcat_config.get_show_debug_logs():
++        _builtin_print(*args, **kwargs)
++
+ MAX_QUEUE = 20
+ MAX_MODEM_RETRY_COUNT = 1000
+ global_query_counter=0
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -385,7 +385,10 @@
+             return False
+         # The local display and open management pages read cached JSON often.
+         # Hide successful read-only API access lines, while preserving POSTs
+-        # and every 4xx/5xx response for diagnosis.
+-        if '"GET /api/' in msg and (' 200 ' in msg or ' 304 ' in msg):
++        # and every 4xx/5xx response for diagnosis. The cellular refresh POST
++        # is also a read-only hardware sampling request.
++        if (' 200 ' in msg or ' 304 ' in msg) and (
++                '"GET /' in msg or
++                '"POST /api/v1/modem/basic.json' in msg):
+             return False
+         return True
+@@ -1128,7 +1131,7 @@
+         
+         # Log slow operations (>50ms)
+         if execution_time > 50:
+-            pcat_logger.logger.warning(f"Slow dashboard operation {op_name}: {execution_time:.1f}ms")
++            pcat_logger.logger.debug(f"Slow dashboard operation {op_name}: {execution_time:.1f}ms")
+         
+         # Update cache
+         expensive_ops_cache[op_name] = {'value': value, 'timestamp': current_time}

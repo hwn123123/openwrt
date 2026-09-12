@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/battery": {
+		"title": "电池数据统计",
+		"order": 100,
+		"action": { "type": "view", "path": "photonicat2/battery" }
+	}
+}

@@ -1,0 +1,10 @@
+<link rel="stylesheet" href="<%=resource%>/qmodem/qmodem-classic-dashboard.css?v=20260905" />
+<script type="text/javascript">//<![CDATA[
+(function() {
+	var script = document.currentScript;
+	var map = script && script.closest ? script.closest('.cbi-map') : null;
+	map = map || document.querySelector('.cbi-map');
+	if (map)
+		map.classList.add('qmx-page', 'qmx-forward-page');
+})();
+//]]></script>

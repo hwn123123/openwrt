@@ -1,0 +1,63 @@
+--- a/app/pysms_tool.py
++++ b/app/pysms_tool.py
+@@ -1059,40 +1059,50 @@
+ 
+         responses = self._wait_for_response(10)
+ 
+-        print(f"\033[33mDEBUG: Processing {len(responses)} responses from {storage_type}\033[0m", file=sys.stderr)
++        if self.debug:
++            print(f"\033[33mDEBUG: Processing {len(responses)} responses from {storage_type}\033[0m", file=sys.stderr)
+ 
+         for i, response in enumerate(responses):
+-            print(f"\033[33mDEBUG: Response {i}: {response[:80]}{'...' if len(response) > 80 else ''}\033[0m", file=sys.stderr)
++            if self.debug:
++                print(f"\033[33mDEBUG: Response {i}: {response[:80]}{'...' if len(response) > 80 else ''}\033[0m", file=sys.stderr)
+ 
+             if response.startswith('+CMGL:'):
+                 # Parse message header
+                 match = re.match(r'\+CMGL:\s*(\d+),', response)
+                 if match:
+                     if current_msg:
+-                        print(f"\033[32mDEBUG: Appending message index {current_msg['index']} with PDU: {current_msg.get('pdu', 'NONE')[:40]}...\033[0m", file=sys.stderr)
++                        if self.debug:
++                            print(f"\033[32mDEBUG: Appending message index {current_msg['index']} with PDU: {current_msg.get('pdu', 'NONE')[:40]}...\033[0m", file=sys.stderr)
+                         messages.append(current_msg)
+                     current_msg = {'index': int(match.group(1)), 'storage': storage_type}
+-                    print(f"\033[32mDEBUG: Starting new message index {current_msg['index']}\033[0m", file=sys.stderr)
++                    if self.debug:
++                        print(f"\033[32mDEBUG: Starting new message index {current_msg['index']}\033[0m", file=sys.stderr)
+             elif current_msg and response and not response in ('OK', 'ERROR'):
+                 # This should be the PDU data
+-                print(f"\033[32mDEBUG: Setting PDU for message index {current_msg['index']}: {response[:40]}...\033[0m", file=sys.stderr)
++                if self.debug:
++                    print(f"\033[32mDEBUG: Setting PDU for message index {current_msg['index']}: {response[:40]}...\033[0m", file=sys.stderr)
+                 current_msg['pdu'] = response
+ 
+         if current_msg:
+-            print(f"\033[32mDEBUG: Appending final message index {current_msg['index']} with PDU: {current_msg.get('pdu', 'NONE')[:40]}...\033[0m", file=sys.stderr)
++            if self.debug:
++                print(f"\033[32mDEBUG: Appending final message index {current_msg['index']} with PDU: {current_msg.get('pdu', 'NONE')[:40]}...\033[0m", file=sys.stderr)
+             messages.append(current_msg)
+ 
+-        print(f"\033[33mDEBUG: Found {len(messages)} messages from {storage_type} before decoding\033[0m", file=sys.stderr)
++        if self.debug:
++            print(f"\033[33mDEBUG: Found {len(messages)} messages from {storage_type} before decoding\033[0m", file=sys.stderr)
+ 
+         # Decode all messages
+         for msg in messages:
+-            print(f"\033[33mDEBUG: Decoding message index {msg['index']} with PDU length {len(msg.get('pdu', ''))}\033[0m", file=sys.stderr)
++            if self.debug:
++                print(f"\033[33mDEBUG: Decoding message index {msg['index']} with PDU length {len(msg.get('pdu', ''))}\033[0m", file=sys.stderr)
+             msg['decoded'] = PDUDecoder.decode_pdu(msg['pdu'])
+-            print(f"\033[33mDEBUG: Decoded result: sender={msg['decoded'].get('sender')}, message={msg['decoded'].get('message', '')[:40]}...\033[0m", file=sys.stderr)
++            if self.debug:
++                print(f"\033[33mDEBUG: Decoded result: sender={msg['decoded'].get('sender')}, message={msg['decoded'].get('message', '')[:40]}...\033[0m", file=sys.stderr)
+         
+         # Delete messages if requested
+         if delete_after:
+-            print(f"Starting deletion of {len(messages)} messages from {storage_type} storage", file=sys.stderr)
++            if self.debug:
++                print(f"Starting deletion of {len(messages)} messages from {storage_type} storage", file=sys.stderr)
+             for msg in messages:
+                 cmd = f"AT+CMGD={msg['index']}"
+                 if self.debug:

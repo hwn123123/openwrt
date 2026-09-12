@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/power": {
+		"title": "开关机策略",
+		"order": 80,
+		"action": { "type": "view", "path": "photonicat2/policy" }
+	}
+}

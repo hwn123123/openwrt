@@ -1,0 +1,21 @@
+{
+	"luci-app-photonicat2": {
+		"description": "访问 Photonicat 2 原生硬件管理页面",
+		"read": {
+			"cgi-io": [ "exec" ],
+			"uci": [ "photonicat2", "wireless" ],
+			"ubus": { "file": [ "exec" ] },
+			"file": {
+				"/usr/libexec/photonicat2ctl *": [ "exec" ]
+			}
+		},
+		"write": {
+			"cgi-io": [ "exec" ],
+			"uci": [ "photonicat2", "wireless" ],
+			"ubus": { "file": [ "exec" ], "uci": [ "apply", "commit", "set" ] },
+			"file": {
+				"/usr/libexec/photonicat2ctl *": [ "exec" ]
+			}
+		}
+	}
+}

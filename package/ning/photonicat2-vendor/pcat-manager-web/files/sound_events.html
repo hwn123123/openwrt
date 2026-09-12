@@ -1,0 +1,87 @@
+{% extends '_base.html' %}
+{% block content %}
+<div class="container mx-auto w-full pt-14 pb-10 sm:pt-24 md:pt-28 lg:px-4" data-settings-page="sound_events">
+  <h1 class="px-1 py-4 font-bold uppercase text-gray-600">设置</h1>
+
+  <main class="pcat-sound-page" aria-label="蜂鸣器控制">
+    <section class="pcat-sound-hero">
+      <div class="pcat-sound-speaker" data-sound-speaker aria-hidden="true">
+        <i></i><i></i><i></i><span></span>
+      </div>
+      <div class="pcat-sound-title">
+        <small>PHOTONICAT PMU BUZZER</small>
+        <h2>蜂鸣器与事件提醒</h2>
+        <p>每个事件都有独立音效与自定义音序；监测只读取厂家缓存和系统状态，不占用模组 AT 口。</p>
+      </div>
+      <div class="pcat-sound-live">
+        <span><i data-monitor-dot></i><b data-monitor-text>监测启动中</b></span>
+        <strong data-beeper-state>读取状态…</strong>
+        <small data-last-event>还没有触发记录</small>
+      </div>
+    </section>
+
+    <div class="pcat-sound-layout">
+      <section class="pcat-sound-card pcat-sound-policy">
+        <header><div><h3>蜂鸣器工作策略</h3><p>统一控制系统提示音和事件提醒</p></div><span data-mode-summary>读取中</span></header>
+        <div class="pcat-sound-mode-grid">
+          <button type="button" data-beeper-mode="on"><b>◖))</b><strong>始终开启</strong><small>全天允许提示音</small></button>
+          <button type="button" data-beeper-mode="off"><b>◖×</b><strong>始终关闭</strong><small>所有提示音静音</small></button>
+          <button type="button" data-beeper-mode="timed"><b>◷</b><strong>定时允许</strong><small>只在指定时段响铃</small></button>
+        </div>
+        <div class="pcat-sound-schedule" data-sound-schedule hidden>
+          <label><span>开始时间</span><input type="time" value="08:00" data-beeper-start></label>
+          <i>至</i>
+          <label><span>结束时间</span><input type="time" value="22:00" data-beeper-end></label>
+          <small>跨越零点的时间段会自动按夜间时段处理</small>
+        </div>
+      </section>
+
+      <section class="pcat-sound-card pcat-sound-runtime">
+        <header><div><h3>事件监测状态</h3><p>5 秒刷新一次真实设备状态</p></div><button type="button" data-sound-refresh>↻ 刷新</button></header>
+        <div class="pcat-sound-runtime-grid">
+          <div><span>5G 蜂窝</span><strong data-runtime="cellular">—</strong></div>
+          <div><span>LAN 链路</span><strong data-runtime="lan">—</strong></div>
+          <div><span>WAN 网络</span><strong data-runtime="wan">—</strong></div>
+          <div><span>Wi-Fi 接入点</span><strong data-runtime="wifi">—</strong></div>
+          <div><span>无线客户端</span><strong data-runtime="wifi_clients">—</strong></div>
+          <div><span>电池 / 供电</span><strong data-runtime="battery">—</strong></div>
+          <div><span>SIM 卡</span><strong data-runtime="sim">—</strong></div>
+          <div><span>默认出口</span><strong data-runtime="uplink">—</strong></div>
+          <div><span>主板温度</span><strong data-runtime="board_temperature">—</strong></div>
+          <div><span>模组最高温度</span><strong data-runtime="modem_temperature">—</strong></div>
+          <div><span>SD 卡</span><strong data-runtime="sd">—</strong></div>
+          <div><span>NVMe</span><strong data-runtime="nvme">—</strong></div>
+        </div>
+      </section>
+    </div>
+
+    <section class="pcat-sound-card pcat-sound-events">
+      <header>
+        <div><h3>设备事件提醒</h3><p>按系统、短信、电源、温度和网络分类；每个事件可单独选择预设或编辑自己的音序</p></div>
+        <div><button type="button" data-reset-events>恢复默认方案</button><button type="button" class="is-primary" data-save-events>保存事件设置</button></div>
+      </header>
+      <div class="pcat-sound-event-grid" data-event-grid></div>
+    </section>
+
+    <div class="pcat-sound-layout pcat-sound-bottom">
+      <section class="pcat-sound-card pcat-sound-thresholds">
+        <header><div><h3>告警阈值</h3><p>阈值变化会应用到对应的低电量和温度事件</p></div></header>
+        <div class="pcat-sound-threshold-grid">
+          <label><span>低电量提醒</span><input type="number" min="5" max="50" value="15" data-threshold="low_battery_threshold"><b>%</b></label>
+          <label><span>严重低电量</span><input type="number" min="2" max="30" value="5" data-threshold="critical_battery_threshold"><b>%</b></label>
+          <label><span>主板高温提醒</span><input type="number" min="45" max="95" value="65" data-threshold="board_temperature_threshold"><b>°C</b></label>
+          <label><span>模组高温提醒</span><input type="number" min="45" max="105" value="75" data-threshold="modem_temperature_threshold"><b>°C</b></label>
+        </div>
+        <p class="pcat-sound-threshold-note">温度恢复事件采用 5°C 回差，避免在临界值附近反复响铃；严重低电量阈值必须低于低电量阈值。</p>
+      </section>
+
+      <section class="pcat-sound-card pcat-sound-history">
+        <header><div><h3>最近触发</h3><p>当前 Web 服务运行期间的真实提示记录</p></div><span data-history-count>0 条</span></header>
+        <div class="pcat-sound-history-list" data-history-list><p>暂无触发记录</p></div>
+      </section>
+    </div>
+  </main>
+
+  <div class="pcat-sound-toast" data-sound-toast role="status" aria-live="polite"></div>
+</div>
+{% endblock %}

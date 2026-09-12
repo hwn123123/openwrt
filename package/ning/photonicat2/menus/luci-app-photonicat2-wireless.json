@@ -1,0 +1,7 @@
+{
+	"admin/system/photonicat2/wireless": {
+		"title": "内置无线",
+		"order": 20,
+		"action": { "type": "view", "path": "photonicat2/wireless" }
+	}
+}

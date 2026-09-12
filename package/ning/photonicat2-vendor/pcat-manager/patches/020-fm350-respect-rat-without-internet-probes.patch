@@ -1,0 +1,898 @@
+--- a/src/fm350-mm.c
++++ b/src/fm350-mm.c
+@@ -44,71 +44,18 @@
+ 
+ #define WATCH_POLL_INTERVAL 10      /* seconds between CGPADDR polls */
+ #define WATCH_SIGNAL_EVERY 3        /* signal info every N polls */
+-#define WATCH_MAX_MISSES 12         /* polls without IPv4 before re-dial */
+-
+-/* Data-plane liveness watchdog. AT+CGPADDR only proves the modem still holds
+- * an address, not that packets actually flow: on a silently dead bearer the
+- * address lingers while nothing routes (observed on the 5G-SA reject). So on
+- * top of the CGPADDR poll we (a) enable +CGEV URCs and treat a PDP
+- * deactivation/detach event as a confirmed loss, and (b) periodically ping a
+- * public host through the modem interface, requiring several consecutive
+- * failures before forcing a re-dial so a transient blip does not tear down a
+- * good link.
+- *
+- * The probe targets are public anycast DNS resolvers, NOT the RNDIS gateway:
+- * the FM350's local gateway does not answer ICMP even when the bearer is
+- * healthy, so pinging it would false-positive and tear down a working link.
+- * A probe counts as success if ANY target replies. */
+-#define WATCH_PING_EVERY 3          /* ping every N polls */
+-#define WATCH_PING_MAX_FAILS 4      /* consecutive probe fails before re-dial */
+-#define WATCH_PING_COUNT 2          /* ICMP echoes per target */
+-#define WATCH_PING_TIMEOUT 3        /* seconds per target */
+-
+-/* Until a bearer has passed its FIRST probe it gets a much shorter leash:
+- * probed every poll and declared dead after this many consecutive failures.
+- * The 30s-cadence/4-fail schedule above exists to keep a transient blip from
+- * tearing down a proven link — but a bearer that has never forwarded a single
+- * packet has earned no such benefit of the doubt, and on the FM350's dead-5G
+- * fault it IS the steady state: waiting the full ~120s just delays the escape
+- * to the fallback RAT by a minute and a half on ~60% of boots. */
+-#define WATCH_PING_UNPROVEN_FAILS 2
+-
+-static const char *g_watch_ping_hosts[] = {"223.5.5.5", "119.29.29.29"};
+ 
+ #define MAX_ATTEMPTS 10
+ #define ATTEMPT_RETRY_DELAY 10      /* seconds between full retries */
+ #define ATTEMPT_RESET_UPTIME 600    /* stable secs before attempt reset */
+ 
+-/* Preferred radio access technology, controlled with the Fibocom-specific
+- * AT+GTACT (NOT the 3GPP AT+WS46, which the FM350 accepts but ignores for NR:
+- * WS46=31 leaves the modem on LTE and never re-selects 5G — verified on
+- * hardware). GTACT is also what the web UI (/modem#modem_adv) uses, so the
+- * dialer and UI speak the same RAT language.
+- *
+- *   AT+GTACT=20  auto, all RATs incl. NR (the default we want — try 5G first)
+- *   AT+GTACT=2   LTE-only
+- *
+- * Some carriers register the SIM on 5G-SA but reject every PDP/data-bearer
+- * activation there with a vendor CME error, while the same SIM activates fine
+- * on LTE (observed: China Unicom, +CME ERROR 5847/5848). So we fall back to
+- * LTE-only when all activation attempts fail, then — once a stable LTE bearer
+- * is up — periodically try to climb back to 5G (see WATCH_PREF_RETRY_POLLS). */
++/* Apply the user's saved RAT. Data reachability never changes this choice. */
+ #define GTACT_AUTO 20               /* auto: GSM/UMTS/LTE/NR, NR preferred */
+ #define GTACT_LTE_ONLY 2            /* E-UTRAN (LTE) only, no NR */
+ #define GTACT_NR_ONLY 14            /* NR-RAN (5G) only, no LTE */
+ 
+-/* User RAT preference, chosen in the web UI (/modem#modem_adv) and handed to us
+- * via a small JSON file that pc_modem_client.py writes. We read it at every dial
+- * and re-check it each watch cycle so a change applies on the fly — no reboot.
+- *
+- *   PREF_AUTO  prefer 5G, fall back to LTE if 5G cannot carry data, re-climb.
+- *   PREF_LTE   user wants 4G: lock LTE; only escape to auto if LTE has no data.
+- *   PREF_NR5G  user wants 5G: lock NR;  only escape to auto if 5G has no data.
+- *
+- * The web UI and this dialer both drive the modem's single persistent AT+GTACT
+- * register, so without this shared file the dialer's frequent re-dials would
+- * silently overwrite whatever the user selected. The file is the source of
+- * truth for intent; the GTACT register is just how we enact it. */
++/* Shared with the Web UI. AUTO lets the modem select the network;
++ * LTE and NR5G keep the user's explicit lock, including during retries. */
+ #define MODEM_PREF_PATH "/etc/pcat-modem-pref.json"
+ 
+ typedef enum
+@@ -118,65 +65,8 @@
+     PREF_NR5G
+ } modem_pref_t;
+ 
+-/* Base interval for re-attempting the user's preferred RAT when we had to escape
+- * it to keep data flowing: 60 polls x WATCH_POLL_INTERVAL = 10 min. */
+-#define WATCH_PREF_RETRY_POLLS 60
+-
+-/* The re-climb is not free: AT+GTACT only takes effect after a CFUN cycle, so
+- * the attempt tears the working bearer down and re-dials (tens of seconds of
+- * downtime, and it ends back on the fallback RAT if the network still refuses
+- * the preferred one). Two guards keep it from being felt:
+- *
+- *   - Backoff. Each consecutive dial that could only get data up on the
+- *     fallback RAT doubles the wait before the next attempt, from
+- *     WATCH_PREF_RETRY_POLLS up to a 2^RECLIMB_BACKOFF_MAX_SHIFT multiple
+- *     (10 min -> 20 -> 40 ... -> ~5.3 h). It never stops retrying: a 4G-only
+- *     plan can be upgraded, a roaming network left, a carrier-side block
+- *     lifted, and a box that gave up for the rest of the run would sit on LTE
+- *     until something rebooted it. A data activation while actually registered
+- *     on the preferred RAT resets the streak.
+- *
+- *   - Idle gate. When an attempt comes due it waits for a poll interval in
+- *     which the modem interface moved less than RECLIMB_IDLE_BYTES, so the
+- *     unavoidable outage lands on an idle link instead of interrupting a
+- *     transfer. While traffic keeps flowing the attempt simply stays pending
+- *     and fires at the first quiet interval. */
+-#define RECLIMB_BACKOFF_MAX_SHIFT 5     /* cap the doubling at 32x (~5.3 h) */
+-#define RECLIMB_IDLE_BYTES 8192         /* rx+tx per poll that still counts as idle */
+-#define RECLIMB_FIRST_POLLS 6           /* first re-climb ~60 s after falling back */
+-static int g_reclimb_fallback_streak = 0;
+-static int g_reclimb_defer_logged = 0;
+-
+-/* GTACT value that a just-completed set_rat_preference() CFUN cycle put into
+- * effect, or -1. dial_prepare() consumes it: when the RAT it wants is already
+- * in force from that cycle, its own CFUN=0/1 + re-registration (~30-40s) is
+- * pure repetition and is skipped. One-shot, and compared against the wanted
+- * value so a RAT-preference change in the intervening seconds still gets its
+- * cycle. */
+-static int g_radio_cycled_gtact = -1;
+-
+ static int g_os_is_openwrt = 0;
+ static char g_current_ip[64] = "";
+-
+-/* Whether this process is currently sitting on a *fallback* RAT — i.e. not on
+- * the RAT the user (or the AUTO default) actually wants, because that preferred
+- * RAT could register but not carry data. Two cases share this state:
+- *   - AUTO pref: preferred RAT is 5G, fallback is LTE-only (the classic case).
+- *   - LTE/NR5G pref: preferred RAT is the user's lock, fallback is AUTO so the
+- *     modem can use the other RAT to keep data alive until the lock works.
+- *
+- * This lives in the process (not just a dial-local flag) because the fallback
+- * RAT is written to the modem's *persistent* AT+GTACT register: without
+- * process-level memory, a later bearer drop would re-dial, find data comes
+- * straight up on the (still-locked) fallback RAT, conclude "no fallback needed",
+- * and lose all knowledge that it must keep trying to return to the preferred
+- * RAT — stranding the user off their choice forever. The counter schedules the
+- * periodic retry of the preferred RAT. */
+-static int g_on_rat_fallback = 0;
+-static unsigned int g_rat_fallback_polls = 0;
+-
+-/* The user's RAT preference for the current dial, re-read from MODEM_PREF_PATH
+- * at each dial and each watch cycle. */
+ static modem_pref_t g_modem_pref = PREF_AUTO;
+ 
+ static int64_t now_ms(void)
+@@ -259,125 +149,6 @@
+         case PREF_NR5G: return GTACT_NR_ONLY;
+         default:        return GTACT_AUTO;
+     }
+-}
+-
+-/* The RAT to escape to when the preferred one registers but cannot carry data:
+- * from AUTO we drop to LTE-only (the 5G-reject case), and from an explicit user
+- * lock we open up to AUTO so the other RAT can keep data alive. Shared by the
+- * activation-failure path in at_dial() and the dead-data-plane path in
+- * watch_loop() so the two can never disagree about where to go. */
+-static int fallback_gtact_for(modem_pref_t pref, const char **name_out)
+-{
+-    if(pref==PREF_AUTO)
+-    {
+-        if(name_out!=NULL)
+-        {
+-            *name_out = "LTE-only";
+-        }
+-
+-        return GTACT_LTE_ONLY;
+-    }
+-
+-    if(name_out!=NULL)
+-    {
+-        *name_out = "auto (all RATs)";
+-    }
+-
+-    return GTACT_AUTO;
+-}
+-
+-/* Polls to wait before the next preferred-RAT re-climb.
+- *
+- * The FIRST attempt after falling back is deliberately quick
+- * (RECLIMB_FIRST_POLLS, ~60 s). The common reason we are here is the FM350's
+- * intermittent dead 5G bearer: on ~60% of boots the modem registers on NR,
+- * activates a PDP context and forwards nothing, and one LTE bearer is enough to
+- * clear it — after which 5G comes straight up. Making the box wait the full
+- * WATCH_PREF_RETRY_POLLS (10 min) to discover that would leave it on 4G for ten
+- * minutes after every affected boot, which is the whole complaint.
+- *
+- * From the second consecutive fallback on we use the original base interval and
+- * its doubling, so a SIM/plan that genuinely cannot do 5G costs one cheap 60 s
+- * probe and then backs off 10 -> 20 -> 40 min ... instead of oscillating. */
+-static unsigned int reclimb_due_polls(void)
+-{
+-    int shift;
+-
+-    if(g_reclimb_fallback_streak <= 1)
+-    {
+-        return RECLIMB_FIRST_POLLS;
+-    }
+-
+-    shift = g_reclimb_fallback_streak - 2;
+-
+-    if(shift > RECLIMB_BACKOFF_MAX_SHIFT)
+-    {
+-        shift = RECLIMB_BACKOFF_MAX_SHIFT;
+-    }
+-
+-    return (unsigned int)WATCH_PREF_RETRY_POLLS << shift;
+-}
+-
+-/* Bytes moved on the modem interface in both directions, or 0 when the counters
+- * cannot be read. */
+-static unsigned long long iface_total_bytes(const char *iface)
+-{
+-    static const char *const names[] = {"rx_bytes", "tx_bytes"};
+-    char path[256];
+-    unsigned long long total = 0;
+-    size_t i;
+-
+-    if(iface==NULL || iface[0]=='\0')
+-    {
+-        return 0;
+-    }
+-
+-    for(i=0;i<sizeof(names)/sizeof(names[0]);i++)
+-    {
+-        FILE *fp;
+-        unsigned long long v = 0;
+-
+-        snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/%s",
+-            iface, names[i]);
+-
+-        fp = fopen(path, "r");
+-        if(fp==NULL)
+-        {
+-            return 0;
+-        }
+-        if(fscanf(fp, "%llu", &v)!=1)
+-        {
+-            v = 0;
+-        }
+-        fclose(fp);
+-
+-        total += v;
+-    }
+-
+-    return total;
+-}
+-
+-/* True when the link has been quiet enough over the last poll to absorb the
+- * re-climb outage. *last_bytes carries the previous sample and is refreshed on
+- * every call, so this must be called once per watch poll or the delta would
+- * span several and always look busy.
+- *
+- * Reports idle when the counters are unreadable, missing, or were reset (a
+- * re-created netdev): we cannot measure the link then, and never climbing would
+- * strand the box on the fallback RAT - worse than a possible short blip. */
+-static int reclimb_link_idle(const char *iface, unsigned long long *last_bytes)
+-{
+-    unsigned long long now = iface_total_bytes(iface);
+-    unsigned long long prev = *last_bytes;
+-
+-    *last_bytes = now;
+-
+-    if(now==0 || prev==0 || now < prev)
+-    {
+-        return 1;
+-    }
+-
+-    return (now - prev) < RECLIMB_IDLE_BYTES;
+ }
+ 
+ /* Materialize MODEM_PREF_PATH with the AUTO default when it is missing (or was
+@@ -1022,64 +793,26 @@
+ {
+     char resp[AT_RESP_MAX];
+     char cmd[64];
+-    int cycled_gtact = g_radio_cycled_gtact;
+-    int skip_cycle;
+-
+-    g_radio_cycled_gtact = -1;
++    int want;
+ 
+     at_cmd(fd, "AT+CMEE=2", resp, sizeof(resp), 3000);
+ 
+-    /* Re-read the user's RAT preference and assert it at the start of every dial
+-     * UNLESS we are deliberately parked on a fallback RAT (see g_on_rat_fallback).
+-     *
+-     * Asserting it every dial is essential because AT+GTACT is *persistent* in
+-     * the modem and both we and the web UI write it: after any bearer drop the
+-     * modem would boot the next dial on whatever RAT was last written and could
+-     * never move on its own. Writing the preferred RAT here makes each fresh
+-     * dial honor the user's current choice (and, for AUTO, prefer 5G) so a
+-     * transient drop does not cement the modem on the wrong RAT.
+-     *
+-     * While g_on_rat_fallback is set we intentionally leave the fallback RAT in
+-     * place so re-dials after a drop stay on the known-good bearer; the watch
+-     * loop clears g_on_rat_fallback when it is time to retry the preferred RAT. */
+     g_modem_pref = read_modem_pref();
+-
+-    if(!g_on_rat_fallback)
+-    {
+-        int want = pref_gtact(g_modem_pref);
+-
+-        fprintf(stderr, "User RAT preference: %s (AT+GTACT=%d)\n",
+-            pref_name(g_modem_pref), want);
+-
+-        snprintf(cmd, sizeof(cmd), "AT+GTACT=%d", want);
+-        if(at_cmd(fd, cmd, resp, sizeof(resp), 5000)!=1)
+-        {
+-            flatten_whitespace(resp);
+-            fprintf(stderr, "AT+GTACT=%d (%s) failed: %s (continuing)\n",
+-                want, pref_name(g_modem_pref), resp);
+-        }
+-
+-        /* Redundant only if the cycle we just did applied this same value. */
+-        skip_cycle = (cycled_gtact==want);
+-    }
+-    else
+-    {
+-        /* On a fallback the GTACT register holds whatever the escape path
+-         * cycled in; any completed cycle covers this dial. */
+-        skip_cycle = (cycled_gtact!=-1);
+-    }
+-
+-    if(skip_cycle)
+-    {
+-        fprintf(stderr, "Radio was cycled for this RAT moments ago "
+-            "(GTACT=%d); skipping the redundant CFUN cycle.\n", cycled_gtact);
+-    }
+-    else
+-    {
+-        at_cmd(fd, "AT+CFUN=0", resp, sizeof(resp), 15000);
+-        at_cmd(fd, "AT+CFUN=1", resp, sizeof(resp), 15000);
+-        sleep(3);
+-    }
++    want = pref_gtact(g_modem_pref);
++    fprintf(stderr, "User RAT preference: %s (AT+GTACT=%d)\n",
++        pref_name(g_modem_pref), want);
++    snprintf(cmd, sizeof(cmd), "AT+GTACT=%d", want);
++    if(at_cmd(fd, cmd, resp, sizeof(resp), 5000)!=1)
++    {
++        flatten_whitespace(resp);
++        fprintf(stderr, "AT+GTACT=%d (%s) failed: %s\n",
++            want, pref_name(g_modem_pref), resp);
++        return -1;
++    }
++
++    at_cmd(fd, "AT+CFUN=0", resp, sizeof(resp), 15000);
++    at_cmd(fd, "AT+CFUN=1", resp, sizeof(resp), 15000);
++    sleep(3);
+ 
+     at_cmd(fd, "AT+GTFCCLOCKMODE?", resp, sizeof(resp), 5000);
+     if(strstr(resp, "+GTFCCLOCKMODE: 2")!=NULL ||
+@@ -1220,56 +953,6 @@
+     at_cmd(fd, cmd, resp, sizeof(resp), 10000);
+ 
+     return -1;
+-}
+-
+-/* Set the modem's radio access technology via AT+GTACT and cycle the radio so
+- * the change takes effect, then wait for it to re-register. Returns 0 once
+- * registered, -1 otherwise. */
+-static int set_rat_preference(int fd, int gtact_value)
+-{
+-    char resp[AT_RESP_MAX];
+-    char cmd[64];
+-
+-    snprintf(cmd, sizeof(cmd), "AT+GTACT=%d", gtact_value);
+-    if(at_cmd(fd, cmd, resp, sizeof(resp), 5000)!=1)
+-    {
+-        flatten_whitespace(resp);
+-        fprintf(stderr, "AT+GTACT=%d failed: %s\n", gtact_value, resp);
+-
+-        return -1;
+-    }
+-
+-    at_cmd(fd, "AT+CFUN=0", resp, sizeof(resp), 15000);
+-    at_cmd(fd, "AT+CFUN=1", resp, sizeof(resp), 15000);
+-    sleep(3);
+-
+-    return wait_registration(fd, 90);
+-}
+-
+-/* Read the current radio access technology from AT+COPS? field 3 (access
+- * technology): 7 = E-UTRAN (LTE), 11/12 = NR (5G). Returns the raw value, or
+- * -1 if it cannot be parsed. */
+-static int get_access_tech(int fd)
+-{
+-    char resp[AT_RESP_MAX];
+-    char line[512];
+-
+-    if(at_cmd(fd, "AT+COPS?", resp, sizeof(resp), 5000)!=1)
+-    {
+-        return -1;
+-    }
+-    if(get_line_after(resp, "+COPS:", line, sizeof(line))!=0)
+-    {
+-        return -1;
+-    }
+-
+-    return (int)field_get_int(line, 3, -1);
+-}
+-
+-/* True if the access technology value denotes 5G NR. */
+-static int access_tech_is_5g(int act)
+-{
+-    return act==11 || act==12;
+ }
+ 
+ /* Try every PDP-activation path the modem offers, in order:
+@@ -1326,37 +1009,16 @@
+     return -1;
+ }
+ 
+-/* Activate a PDP context. Returns the active context index, or -1.
+- *
+- * Data is first attempted on the user's preferred RAT (set in dial_prepare from
+- * g_modem_pref). If every activation path fails there, we fall back to a
+- * different RAT and retry once, honoring the user's intent but not letting it
+- * strand the link with no data:
+- *   - PREF_AUTO: preferred is 5G-capable auto; fall back to LTE-only (some
+- *     carriers register the SIM on 5G-SA but reject all PDP activation there).
+- *   - PREF_LTE / PREF_NR5G: the user locked one RAT; if it cannot carry data,
+- *     fall back to AUTO so the modem may use the other RAT to stay online. The
+- *     watch loop periodically retries the locked RAT (WATCH_PREF_RETRY_POLLS).
+- *
+- * *on_fallback is set to 1 iff we had to leave the preferred RAT to get data
+- * up, so the watch loop knows to periodically try returning to it. */
+-static int at_dial(int fd, int pdp_index, const char *apn, int *on_fallback)
++/* Activate on the configured RAT. A failed activation is retried by main()
++ * using the same preference; it never selects another RAT on the user's behalf. */
++static int at_dial(int fd, int pdp_index, const char *apn)
+ {
+     char resp[AT_RESP_MAX];
+     int eps_state;
+-    int active;
+-    int fallback_gtact;
+-    const char *fallback_name;
+-
+-    if(on_fallback!=NULL)
+-    {
+-        *on_fallback = 0;
+-    }
+ 
+     at_cmd(fd, "AT+CREG=2", resp, sizeof(resp), 3000);
+     at_cmd(fd, "AT+CGREG=2", resp, sizeof(resp), 3000);
+     at_cmd(fd, "AT+CEREG=2", resp, sizeof(resp), 3000);
+-
+     at_cmd(fd, "AT+CEREG?", resp, sizeof(resp), 5000);
+     eps_state = parse_reg_state(resp, "+CEREG: ");
+ 
+@@ -1373,75 +1035,10 @@
+     if(wait_registration(fd, 90)!=0)
+     {
+         fprintf(stderr, "Network registration failed, giving up.\n");
+-
+         return -1;
+     }
+ 
+-    active = try_activate_all(fd, pdp_index, apn);
+-    if(active >= 0)
+-    {
+-        /* Activation succeeded on the preferred RAT. Deliberately NOT resetting
+-         * g_reclimb_fallback_streak here: on this modem a successful AT+CGACT
+-         * on NR proves nothing at all — the intermittent fault this dialer
+-         * exists to survive is precisely an activation that reports OK and then
+-         * forwards zero packets. Resetting on activation would clear the streak
+-         * on every zombie bearer, pin reclimb_due_polls() at its shortest
+-         * interval and make a permanently-bad 5G cell oscillate between RATs
+-         * forever. The streak is cleared in watch_loop() instead, when a ping
+-         * probe actually proves the data plane works on the preferred RAT. */
+-        return active;
+-    }
+-
+-    /* Data would not come up on the preferred RAT. Pick the fallback RAT: from
+-     * AUTO we drop to LTE-only (the 5G-SA-reject case); from an explicit user
+-     * lock we open up to AUTO so the other RAT can carry data. If the user is
+-     * already on AUTO's LTE fallback target for their pref, there is nothing
+-     * else to try. */
+-    fallback_gtact = fallback_gtact_for(g_modem_pref, &fallback_name);
+-
+-    fprintf(stderr,
+-        "Data activation failed on preferred RAT (%s); falling back to %s "
+-        "and retrying...\n", pref_name(g_modem_pref), fallback_name);
+-
+-    if(set_rat_preference(fd, fallback_gtact)!=0)
+-    {
+-        fprintf(stderr,
+-            "%s fallback failed to register, giving up.\n", fallback_name);
+-
+-        return -1;
+-    }
+-
+-    active = try_activate_all(fd, pdp_index, apn);
+-    if(active >= 0)
+-    {
+-        fprintf(stderr, "Data activated on %s fallback.\n", fallback_name);
+-        if(on_fallback!=NULL)
+-        {
+-            *on_fallback = 1;
+-        }
+-        /* Remember across re-dials that we are parked off the preferred RAT and
+-         * owe a periodic retry of it; reset the poll counter so the first retry
+-         * lands one full interval from now. */
+-        g_on_rat_fallback = 1;
+-        g_rat_fallback_polls = 0;
+-        g_reclimb_defer_logged = 0;
+-
+-        /* One more consecutive fallback: widen the retry interval (capped), so
+-         * a network that keeps refusing the preferred RAT costs us one short
+-         * re-dial every few hours instead of one every 10 minutes. */
+-        if(g_reclimb_fallback_streak <= RECLIMB_BACKOFF_MAX_SHIFT)
+-        {
+-            g_reclimb_fallback_streak++;
+-        }
+-
+-        return active;
+-    }
+-
+-    fprintf(stderr,
+-        "Data activation failed on both preferred RAT and %s fallback.\n",
+-        fallback_name);
+-
+-    return -1;
++    return try_activate_all(fd, pdp_index, apn);
+ }
+ 
+ /* ---------------------------------------------------------------------- */
+@@ -1463,27 +1060,6 @@
+     {
+         fprintf(stderr, "Command '%s' returned %d\n", cmd, ret);
+     }
+-}
+-
+-/* Run a command and return its exit status (0 = success), without logging or
+- * capturing output. Used by the liveness ping so a failing probe is silent. */
+-static int run_cmd_read_status(const char *fmt, ...)
+-{
+-    char cmd[1024];
+-    va_list ap;
+-    int ret;
+-
+-    va_start(ap, fmt);
+-    vsnprintf(cmd, sizeof(cmd), fmt, ap);
+-    va_end(ap);
+-
+-    ret = system(cmd);
+-    if(ret==-1)
+-    {
+-        return -1;
+-    }
+-
+-    return WIFEXITED(ret) ? WEXITSTATUS(ret) : -1;
+ }
+ 
+ static int run_cmd_read(char *out, size_t outsz, const char *fmt, ...)
+@@ -1871,145 +1447,56 @@
+     return 0;
+ }
+ 
+-/* Ping public hosts through the modem interface to confirm the data plane
+- * actually forwards packets. Returns 1 if ANY target replies, 0 only when
+- * every target is unreachable (or if nothing is dialed yet). */
+-static int watch_ping_probe(const char *iface)
+-{
+-    size_t i;
+-
+-    if(iface[0]=='\0')
+-    {
+-        return 1;    /* nothing dialed yet; do not count as a failure */
+-    }
+-
+-    for(i=0;i<sizeof(g_watch_ping_hosts)/sizeof(g_watch_ping_hosts[0]);i++)
+-    {
+-        if(run_cmd_read_status("ping -I %s -c %d -W %d %s >/dev/null 2>&1",
+-            iface, WATCH_PING_COUNT, WATCH_PING_TIMEOUT,
+-            g_watch_ping_hosts[i])==0)
++/* Only an explicit inactive state for our own PDP context confirms a loss.
++ * A failed/partial AT response is not evidence of an internet outage. This
++ * local modem query sends no network traffic and never changes the RAT. */
++static int bearer_inactive(int fd, int pdp_index)
++{
++    char resp[AT_RESP_MAX];
++    const char *p;
++    char line[256];
++
++    if(at_cmd(fd, "AT+CGACT?", resp, sizeof(resp), 5000)!=1)
++    {
++        return 0;
++    }
++
++    for(p=resp; (p=strstr(p, "+CGACT:"))!=NULL; p++)
++    {
++        if(get_line_after(p, "+CGACT:", line, sizeof(line))==0 &&
++            field_get_int(line, 0, -1)==pdp_index &&
++            field_get_int(line, 1, -1)==0)
+         {
+             return 1;
+         }
+     }
+-
+     return 0;
+ }
+ 
+-/* Watch the connection. Returns only when the caller should re-dial: on a
+- * confirmed bearer loss, when the user changes the RAT preference in the web UI
+- * (live apply), or (when g_on_rat_fallback is set) when it is time to retry the
+- * preferred RAT — in which case the preferred RAT is asserted first and the
+- * tested at_dial() fallback drops back again if it still cannot carry data.
+- *
+- * The preferred-RAT retry schedule is driven by g_rat_fallback_polls, a
+- * process-level counter, NOT the per-watch-loop `cycle`: a bearer drop on the
+- * fallback re-enters watch_loop with a fresh cycle=0, so a loop-local schedule
+- * would reset the retry clock on every blip and, on a flaky link, never reach
+- * the interval. Carrying the count across re-dials guarantees the retry
+- * eventually fires. */
++/* Maintain host addressing and respond to modem/user events. There is no
++ * internet probe, miss counter, traffic-idle gate, or automatic RAT switch. */
+ static void watch_loop(int fd, const char *iface, int pdp_index)
+ {
+-    int misses = 0;
+-    int ping_fails = 0;
+-    int bearer_proven = 0;
+-    int fail_limit;
+     unsigned int cycle = 0;
+-    unsigned long long last_bytes = 0;
+-    int link_idle;
+ 
+     g_current_ip[0] = '\0';
+-
+     for(;;)
+     {
+-        /* Check for a network-initiated deactivation first: the modem tells
+-         * us authoritatively, so no need to wait out the miss/ping counters. */
+         if(watch_check_cgev(fd))
+         {
+             fprintf(stderr,
+                 "Bearer deactivated by network, restarting dial process...\n");
+-
+             return;
+         }
+ 
+-        /* Live RAT-preference change: the user picked a different 4G/5G/auto
+-         * option in the web UI, which rewrote MODEM_PREF_PATH. Re-dial so the
+-         * new preference takes effect within one poll (~WATCH_POLL_INTERVAL s),
+-         * no reboot needed. Clear the fallback state so the fresh dial asserts
+-         * the newly chosen RAT rather than sticking on an old fallback. */
+-        {
+-            modem_pref_t cur = read_modem_pref();
+-
+-            if(cur!=g_modem_pref)
+-            {
+-                fprintf(stderr, "RAT preference changed (%s -> %s); "
+-                    "re-dialing to apply.\n", pref_name(g_modem_pref),
+-                    pref_name(cur));
+-                g_modem_pref = cur;
+-                g_on_rat_fallback = 0;
+-
+-                return;
+-            }
+-        }
+-
+-        /* Sample the interface counters once per poll, whether or not a re-climb
+-         * is pending, so the idle test below always sees exactly one poll's
+-         * worth of traffic. */
+-        link_idle = reclimb_link_idle(iface, &last_bytes);
+-
+-        /* If we are parked on a fallback RAT because the preferred one rejected
+-         * data earlier, periodically try to return to the preferred RAT. Only
+-         * when the link is currently healthy (address present, no pending
+-         * misses) so we do not disturb a struggling connection. Asserting the
+-         * preferred RAT clears g_on_rat_fallback and unlocks the persistent
+-         * fallback; returning then triggers a clean re-dial on the preferred
+-         * RAT. If it still cannot carry data, at_dial() falls back again
+-         * (re-setting g_on_rat_fallback) and we are no worse off.
+-         *
+-         * The attempt is due on a backoff schedule (reclimb_due_polls) and then
+-         * held until the link is idle, so it keeps probing for the rest of the
+-         * run without an in-flight transfer ever paying for it. Deliberately
+-         * >= rather than a modulo: once due it re-checks every poll until it
+-         * finds a quiet one, instead of missing the window and waiting out
+-         * another whole interval. */
+-        if(g_on_rat_fallback && misses==0 &&
+-            g_rat_fallback_polls >= reclimb_due_polls())
+-        {
+-            if(!link_idle)
+-            {
+-                if(!g_reclimb_defer_logged)
+-                {
+-                    g_reclimb_defer_logged = 1;
+-                    fprintf(stderr, "Preferred-RAT (%s) re-climb is due but the "
+-                        "link is carrying traffic; holding it until the link is "
+-                        "idle so the re-dial breaks nothing.\n",
+-                        pref_name(g_modem_pref));
+-                }
+-            }
+-            else
+-            {
+-                int act;
+-
+-                fprintf(stderr, "On fallback RAT; attempting to return to "
+-                    "preferred RAT (%s)...\n", pref_name(g_modem_pref));
+-                g_on_rat_fallback = 0;
+-                if(set_rat_preference(fd, pref_gtact(g_modem_pref))==0)
+-                {
+-                    g_radio_cycled_gtact = pref_gtact(g_modem_pref);
+-                }
+-
+-                act = get_access_tech(fd);
+-                fprintf(stderr, "After preferred-RAT re-attempt, registered on "
+-                    "%s (COPS act=%d); re-dialing to bring data up.\n",
+-                    access_tech_is_5g(act) ? "NR/5G" : "LTE/other", act);
+-
+-                return;
+-            }
+-        }
+-
+-        if(g_on_rat_fallback)
+-        {
+-            g_rat_fallback_polls++;
++        modem_pref_t cur = read_modem_pref();
++        if(cur!=g_modem_pref)
++        {
++            fprintf(stderr, "RAT preference changed (%s -> %s); "
++                "re-dialing to apply.\n", pref_name(g_modem_pref),
++                pref_name(cur));
++            g_modem_pref = cur;
++            return;
+         }
+ 
+         if(cycle % WATCH_SIGNAL_EVERY==0)
+@@ -2017,126 +1504,11 @@
+             watch_signal_info(fd);
+         }
+ 
+-        if(watch_ipaddr(fd, iface, pdp_index))
+-        {
+-            misses = 0;
+-        }
+-        else
+-        {
+-            misses++;
+-            fprintf(stderr, "No active IPv4 bearer (%d/%d)\n", misses,
+-                WATCH_MAX_MISSES);
+-
+-            if(misses >= WATCH_MAX_MISSES)
+-            {
+-                fprintf(stderr,
+-                    "Bearer loss confirmed, restarting dial process...\n");
+-
+-                return;
+-            }
+-        }
+-
+-        /* Data-plane liveness: an address can linger on a dead bearer, so
+-         * ping the gateway. On a PROVEN bearer (one that has passed at least
+-         * one probe) escalate only after several spaced-out failures, so a
+-         * transient blip does not tear down a good link. An UNPROVEN bearer is
+-         * probed every poll and killed after WATCH_PING_UNPROVEN_FAILS — it has
+-         * never carried a packet, and on the dead-5G fault it never will, so
+-         * patience there only postpones the escape to the fallback RAT.
+-         * Skipped while the address is absent (misses>0), since that path
+-         * already drives its own re-dial. */
+-        if(misses==0 && (!bearer_proven || cycle % WATCH_PING_EVERY==0))
+-        {
+-            fail_limit = bearer_proven ?
+-                WATCH_PING_MAX_FAILS : WATCH_PING_UNPROVEN_FAILS;
+-
+-            if(watch_ping_probe(iface))
+-            {
+-                ping_fails = 0;
+-                bearer_proven = 1;
+-
+-                /* Traffic actually flows. If this is the preferred RAT, that is
+-                 * the only proof that exists that it can carry data (AT+CGACT
+-                 * saying OK is not), so clear the fallback streak here and
+-                 * nowhere else. */
+-                if(!g_on_rat_fallback && g_reclimb_fallback_streak!=0)
+-                {
+-                    fprintf(stderr, "Data plane verified on preferred RAT (%s); "
+-                        "clearing the fallback streak.\n",
+-                        pref_name(g_modem_pref));
+-                    g_reclimb_fallback_streak = 0;
+-                }
+-            }
+-            else
+-            {
+-                ping_fails++;
+-                fprintf(stderr,
+-                    "Data plane probe failed via %s (%d/%d%s)\n",
+-                    iface, ping_fails, fail_limit,
+-                    bearer_proven ? "" : ", bearer never carried data");
+-
+-                if(ping_fails >= fail_limit)
+-                {
+-                    fprintf(stderr, "Data plane dead (address present but no "
+-                        "external reachability), restarting dial process...\n");
+-
+-                    /* A bearer that activated cleanly and forwards nothing is
+-                     * the FM350's intermittent 5G fault (~60% of boots on the
+-                     * China Telecom SIM: registers on NR, AT+CGACT returns OK
+-                     * after one +CME ERROR 5848, zero packets ever). Re-dialing
+-                     * on the same RAT reproduces it exactly — measured looping
+-                     * for ten minutes without once recovering — because
+-                     * at_dial() only falls back when activation *fails*, and
+-                     * here it succeeds.
+-                     *
+-                     * So treat a dead data plane as what it is: this RAT cannot
+-                     * carry data. Escape to the fallback RAT right here, which
+-                     * is proven to come up every time, and let the existing
+-                     * re-climb take us back to the preferred RAT ~60 s later —
+-                     * by which point the fault has cleared and 5G works. The
+-                     * box ends up on 5G, not parked on 4G.
+-                     *
+-                     * Only when we are not already on the fallback: if the
+-                     * fallback itself is dead this is a coverage problem, not a
+-                     * RAT problem, and a plain re-dial is the right response. */
+-                    if(!g_on_rat_fallback)
+-                    {
+-                        const char *fallback_name;
+-                        int fallback = fallback_gtact_for(g_modem_pref,
+-                            &fallback_name);
+-
+-                        fprintf(stderr, "Preferred RAT (%s) registered but "
+-                            "cannot carry data; escaping to %s.\n",
+-                            pref_name(g_modem_pref), fallback_name);
+-
+-                        if(set_rat_preference(fd, fallback)==0)
+-                        {
+-                            g_radio_cycled_gtact = fallback;
+-                            g_on_rat_fallback = 1;
+-                            g_rat_fallback_polls = 0;
+-                            g_reclimb_defer_logged = 0;
+-
+-                            if(g_reclimb_fallback_streak <=
+-                                RECLIMB_BACKOFF_MAX_SHIFT + 1)
+-                            {
+-                                g_reclimb_fallback_streak++;
+-                            }
+-
+-                            fprintf(stderr, "Now on %s; will retry %s in ~%u s "
+-                                "at the first idle moment.\n", fallback_name,
+-                                pref_name(g_modem_pref),
+-                                reclimb_due_polls() * WATCH_POLL_INTERVAL);
+-                        }
+-                        else
+-                        {
+-                            fprintf(stderr, "Could not register on %s; "
+-                                "re-dialing as-is.\n", fallback_name);
+-                        }
+-                    }
+-
+-                    return;
+-                }
+-            }
++        if(!watch_ipaddr(fd, iface, pdp_index) && bearer_inactive(fd, pdp_index))
++        {
++            fprintf(stderr, "PDP context %d is inactive; re-dialing "
++                "on the configured RAT.\n", pdp_index);
++            return;
+         }
+ 
+         cycle++;
+@@ -2159,7 +1531,6 @@
+     char resp[AT_RESP_MAX];
+     int port_count, i, fd = -1;
+     int active_pdp;
+-    int on_fallback = 0;
+     int64_t dial_time;
+ 
+     *connected_duration_ms = 0;
+@@ -2225,7 +1596,7 @@
+         return 4;
+     }
+ 
+-    active_pdp = at_dial(fd, 1, apn, &on_fallback);
++    active_pdp = at_dial(fd, 1, apn);
+     if(active_pdp < 0)
+     {
+         close(fd);
+@@ -2233,18 +1604,8 @@
+         return 6;
+     }
+ 
+-    if(on_fallback)
+-    {
+-        fprintf(stderr, "Data is up on a fallback RAT (preferred %s could not "
+-            "carry data); will retry the preferred RAT in ~%u s, at the first "
+-            "idle moment after that.\n", pref_name(g_modem_pref),
+-            reclimb_due_polls() * WATCH_POLL_INTERVAL);
+-    }
+-
+-    /* Ask the modem to emit +CGEV URCs for PDP/attach state changes so the
+-     * watch loop learns about a network-initiated deactivation immediately
+-     * instead of waiting out the CGPADDR/ping counters. Best-effort: if the
+-     * modem rejects it the loop still falls back to polling + ping. */
++    /* Subscribe to modem detach/deactivation events for normal reconnection.
++     * If unsupported, an explicit CGACT inactive state can also trigger it. */
+     {
+         char resp[AT_RESP_MAX];
+ 

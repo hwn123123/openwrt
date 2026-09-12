@@ -15,8 +15,26 @@ SPOOF_VALUE="hiveton,h5000m"
 mkdir -p "$SYSINFO_DIR"
 echo "$SPOOF_VALUE" > "$BOARD_NAME_FILE"
 
-# 2. 获取真实 AT 端口（通用，支持 USB/PCIe 任意模组）
-AT_DEV=$(uci -q get qmodem.@modem-device[0].at_port 2>/dev/null)
+# 2. 获取 QModem 当前启用模组及其真实 AT 端口。QModem 会保留已经
+# disabled 的旧 USB 路径，因此不能无条件使用第一个 modem-device。
+MODEM_SECTION=$(
+    uci -q show qmodem 2>/dev/null |
+        sed -n 's/^qmodem\.\([^.=]*\)=modem-device$/\1/p' |
+        while read -r section; do
+            state=$(uci -q get "qmodem.$section.state" 2>/dev/null)
+            port=$(uci -q get "qmodem.$section.at_port" 2>/dev/null)
+            if [ "$state" != "disabled" ] && [ -n "$port" ]; then
+                echo "$section"
+                break
+            fi
+        done
+)
+
+if [ -n "$MODEM_SECTION" ]; then
+    AT_DEV=$(uci -q get "qmodem.$MODEM_SECTION.at_port" 2>/dev/null)
+else
+    AT_DEV=$(uci -q get qmodem.@modem-device[0].at_port 2>/dev/null)
+fi
 if [ -z "$AT_DEV" ]; then
     AT_DEV=$(ubus call at-daemon list 2>/dev/null | jsonfilter -e '@.ports[0].port' 2>/dev/null)
 fi
@@ -46,11 +64,19 @@ chmod +x /usr/bin/sendat 2>/dev/null
 # 5a. 自动探测数据网络接口
 DATA_IFACE="wwan0"
 if ! ip link show "$DATA_IFACE" >/dev/null 2>&1; then
-    DATA_IFACE=$(uci -q get qmodem.@modem-device[0].network 2>/dev/null)
+    if [ -n "$MODEM_SECTION" ]; then
+        DATA_IFACE=$(uci -q get "qmodem.$MODEM_SECTION.network" 2>/dev/null)
+    else
+        DATA_IFACE=$(uci -q get qmodem.@modem-device[0].network 2>/dev/null)
+    fi
 fi
 
 # 5b. 从 qmodem 配置读取 data_interface 字段（二进制实际用这个值查UCI）
-DATA_INTF=$(uci -q get qmodem.@modem-device[0].data_interface 2>/dev/null)
+if [ -n "$MODEM_SECTION" ]; then
+    DATA_INTF=$(uci -q get "qmodem.$MODEM_SECTION.data_interface" 2>/dev/null)
+else
+    DATA_INTF=$(uci -q get qmodem.@modem-device[0].data_interface 2>/dev/null)
+fi
 if [ -z "$DATA_INTF" ]; then
     DATA_INTF="pcie"
 fi

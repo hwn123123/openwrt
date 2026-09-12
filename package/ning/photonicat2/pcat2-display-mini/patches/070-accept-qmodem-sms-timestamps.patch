@@ -1,0 +1,84 @@
+--- a/processSms.go
++++ b/processSms.go
+@@ -1,6 +1,7 @@
+ package main
+ 
+ import (
++	"encoding/json"
+ 	"fmt"
+ 	"image"
+ 	"image/color"
+@@ -25,10 +26,27 @@
+ 	"golang.org/x/image/math/fixed"
+ )
+ 
++type SMSTimestamp string
++
++func (s *SMSTimestamp) UnmarshalJSON(data []byte) error {
++	var text string
++	if err := json.Unmarshal(data, &text); err == nil {
++		*s = SMSTimestamp(text)
++		return nil
++	}
++
++	var unixSeconds float64
++	if err := json.Unmarshal(data, &unixSeconds); err != nil {
++		return fmt.Errorf("invalid SMS timestamp: %w", err)
++	}
++	*s = SMSTimestamp(time.Unix(int64(unixSeconds), 0).Local().Format("2006-01-02 15:04:05"))
++	return nil
++}
++
+ type SMS struct {
+ 	Index     int    `json:"index"`
+ 	Sender    string `json:"sender"`
+-	Timestamp string `json:"timestamp"`
++	Timestamp SMSTimestamp `json:"timestamp"`
+ 	Reference int    `json:"reference,omitempty"`
+ 	Part      int    `json:"part,omitempty"`
+ 	Total     int    `json:"total,omitempty"`
+@@ -396,8 +414,8 @@
+ 
+ 	// Sort messages by timestamp descending
+ 	sort.Slice(smsData.Msg, func(i, j int) bool {
+-		ti, err1 := time.Parse(layout, smsData.Msg[i].Timestamp)
+-		tj, err2 := time.Parse(layout, smsData.Msg[j].Timestamp)
++		ti, err1 := time.Parse(layout, string(smsData.Msg[i].Timestamp))
++		tj, err2 := time.Parse(layout, string(smsData.Msg[j].Timestamp))
+ 		if err1 != nil || err2 != nil {
+ 			return smsData.Msg[i].Timestamp > smsData.Msg[j].Timestamp
+ 		}
+@@ -427,7 +445,7 @@
+ 	})
+ 
+ 	for _, msg := range smsData.Msg {
+-		timestamp, _ := time.Parse(layout, msg.Timestamp)
++		timestamp, _ := time.Parse(layout, string(msg.Timestamp))
+ 		formattedTime := timestamp.Format(titleTimeLayout)
+ 		
+ 		// Change display: show "> number" instead of "me" for sent messages
+--- a/processData.go
++++ b/processData.go
+@@ -240,7 +240,10 @@
+ 		return nil
+ 	}
+ 
+-	var values map[string]int
++	// QModem reports temperatures as JSON numbers and some modems include a
++	// decimal (for example 46.0). Preserve the object exactly instead of
++	// requiring every value to decode as an integer.
++	var values map[string]json.RawMessage
+	if err := json.Unmarshal(data, &values); err != nil {
+		return err
+	}
+--- a/linuxFallback.go
++++ b/linuxFallback.go
+@@ -633,7 +633,7 @@
+ 		msgs = append(msgs, SMS{
+ 			Index:     idx,
+ 			Sender:    m.SMS.Content.Number,
+-			Timestamp: ts,
++			Timestamp: SMSTimestamp(ts),
+ 			Content:   m.SMS.Content.Text,
+ 		})
+ 	}

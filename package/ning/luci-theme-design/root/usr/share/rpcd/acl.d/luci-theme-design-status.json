@@ -1,0 +1,15 @@
+{
+	"luci-mod-status-index": {
+		"description": "Grant read-only access to Design overview metrics",
+		"read": {
+			"file": {
+				"/proc/stat": [ "read" ],
+				"/sys/devices/system/cpu/online": [ "read" ],
+				"/sys/devices/system/cpu/cpufreq/policy0/scaling_cur_freq": [ "read" ],
+				"/sys/devices/system/cpu/cpufreq/policy4/scaling_cur_freq": [ "read" ],
+				"/sys/class/thermal/thermal_zone0/temp": [ "read" ],
+				"/sys/class/thermal/thermal_zone2/temp": [ "read" ]
+			}
+		}
+	}
+}

@@ -1,0 +1,318 @@
+--- a/src/fm350-mm.c
++++ b/src/fm350-mm.c
+@@ -55,5 +55,7 @@
+  * LTE and NR5G keep the user's explicit lock, including during retries. */
+ #define MODEM_PREF_PATH "/etc/pcat-modem-pref.json"
++#define APN_PROFILE_PATH "/etc/pcat-apn.conf"
++#define APN_MAX_LEN 100
+ 
+ typedef enum
+ {
+@@ -560,6 +562,204 @@ static int parse_reg_state(const char *b
+     return (int)field_get_int(line, 1, -1);
+ }
+ 
++/* Return the first response line made entirely of digits. This is used for
++ * AT+CIMI, whose payload is the IMSI followed by the final OK line. */
++static int response_digits_line(const char *buf, char *out, size_t outsz)
++{
++    const char *p = buf;
++
++    while(*p!='\0')
++    {
++        const char *start;
++        const char *end;
++        const char *q;
++        size_t len;
++
++        while(*p=='\r' || *p=='\n' || isspace((unsigned char)*p))
++        {
++            p++;
++        }
++        start = p;
++        while(*p!='\0' && *p!='\r' && *p!='\n')
++        {
++            p++;
++        }
++        end = p;
++        while(end > start && isspace((unsigned char)*(end - 1)))
++        {
++            end--;
++        }
++        len = (size_t)(end - start);
++        if(len >= 5 && len < outsz)
++        {
++            for(q=start;q<end && isdigit((unsigned char)*q);q++);
++            if(q==end)
++            {
++                memcpy(out, start, len);
++                out[len] = '\0';
++                return 0;
++            }
++        }
++    }
++
++    return -1;
++}
++
++static int apn_valid(const char *apn)
++{
++    const unsigned char *p = (const unsigned char *)apn;
++    size_t len = strlen(apn);
++
++    if(len==0 || len > APN_MAX_LEN)
++    {
++        return 0;
++    }
++    for(;*p!='\0';p++)
++    {
++        if(!isalnum(*p) && *p!='.' && *p!='-')
++        {
++            return 0;
++        }
++    }
++
++    return 1;
++}
++
++/* Look up the longest IMSI/PLMN prefix in the user-editable profile file.
++ * Each non-comment line is: PREFIX APN CARRIER. The carrier label is optional
++ * and is used only in the log. Longest-prefix matching permits a private or
++ * MVNO profile to override a five-digit national operator entry. */
++static int apn_profile_lookup(const char *identity, char *apn, size_t apnsz,
++    char *carrier, size_t carriersz)
++{
++    FILE *fp;
++    char line[256];
++    char prefix[32], candidate[APN_MAX_LEN + 1], label[128];
++    size_t best = 0;
++
++    fp = fopen(APN_PROFILE_PATH, "r");
++    if(fp==NULL)
++    {
++        fprintf(stderr, "Cannot open APN profile %s: %s\n",
++            APN_PROFILE_PATH, strerror(errno));
++        return -1;
++    }
++
++    apn[0] = '\0';
++    carrier[0] = '\0';
++    while(fgets(line, sizeof(line), fp)!=NULL)
++    {
++        char *p = line;
++        char *end;
++        size_t prefix_len;
++
++        while(isspace((unsigned char)*p))
++        {
++            p++;
++        }
++        if(*p=='\0' || *p=='#')
++        {
++            continue;
++        }
++
++        label[0] = '\0';
++        if(sscanf(p, "%31s %100s %127[^\r\n]", prefix, candidate,
++            label) < 2 || !apn_valid(candidate))
++        {
++            continue;
++        }
++        prefix_len = strlen(prefix);
++        if(prefix_len <= best || strncmp(identity, prefix, prefix_len)!=0)
++        {
++            continue;
++        }
++        for(end=prefix;*end!='\0' && isdigit((unsigned char)*end);end++);
++        if(*end!='\0')
++        {
++            continue;
++        }
++        while(isspace((unsigned char)*label))
++        {
++            memmove(label, label + 1, strlen(label));
++        }
++
++        snprintf(apn, apnsz, "%s", candidate);
++        snprintf(carrier, carriersz, "%s", label);
++        best = prefix_len;
++    }
++    fclose(fp);
++
++    return best > 0 ? 0 : -1;
++}
++
++static int serving_plmn(int fd, char *plmn, size_t plmnsz)
++{
++    char resp[AT_RESP_MAX];
++    char line[256];
++    const char *p;
++
++    if(at_cmd(fd, "AT+COPS=3,2", resp, sizeof(resp), 5000)!=1 ||
++       at_cmd(fd, "AT+COPS?", resp, sizeof(resp), 5000)!=1 ||
++       get_line_after(resp, "+COPS: ", line, sizeof(line))!=0 ||
++       field_get(line, 2, plmn, plmnsz)!=0)
++    {
++        return -1;
++    }
++
++    if(strlen(plmn)!=5 && strlen(plmn)!=6)
++    {
++        return -1;
++    }
++    for(p=plmn;*p!='\0' && isdigit((unsigned char)*p);p++);
++
++    return *p=='\0' ? 0 : -1;
++}
++
++/* Manual APN wins. An empty APN means real automatic selection from the SIM
++ * home identity, with the currently serving PLMN as a fallback only. */
++static int resolve_apn(int fd, const char *configured, char *apn, size_t apnsz)
++{
++    char resp[AT_RESP_MAX];
++    char imsi[32] = "";
++    char plmn[16] = "";
++    char carrier[128] = "";
++
++    if(configured!=NULL && configured[0]!='\0')
++    {
++        if(!apn_valid(configured))
++        {
++            fprintf(stderr, "Configured APN contains invalid characters.\n");
++            return -1;
++        }
++        snprintf(apn, apnsz, "%s", configured);
++        fprintf(stderr, "APN source: manual, selected APN: %s\n", apn);
++        return 0;
++    }
++
++    if(at_cmd(fd, "AT+CIMI", resp, sizeof(resp), 5000)==1 &&
++       response_digits_line(resp, imsi, sizeof(imsi))==0 &&
++       apn_profile_lookup(imsi, apn, apnsz, carrier, sizeof(carrier))==0)
++    {
++        fprintf(stderr, "APN source: SIM IMSI, IMSI prefix %.6s%s%s, selected APN: %s\n",
++            imsi, carrier[0]!='\0' ? ", carrier: " : "", carrier, apn);
++        return 0;
++    }
++
++    if(serving_plmn(fd, plmn, sizeof(plmn))==0 &&
++       apn_profile_lookup(plmn, apn, apnsz, carrier, sizeof(carrier))==0)
++    {
++        fprintf(stderr, "APN source: serving PLMN fallback, PLMN %s%s%s, "
++            "selected APN: %s\n", plmn,
++            carrier[0]!='\0' ? ", carrier: " : "", carrier, apn);
++        return 0;
++    }
++
++    apn[0] = '\0';
++    fprintf(stderr, "APN source: automatic; no profile matched, using only "
++        "the modem's operator-assigned initial context.\n");
++    return 0;
++}
++
+ /* ---------------------------------------------------------------------- */
+ /* Device discovery                                                        */
+ /* ---------------------------------------------------------------------- */
+@@ -991,22 +1191,46 @@ static int try_cgdcont(int fd, int pdp_i
+ }
+ 
+ /* Try every PDP-activation path the modem offers, in order:
+- *   1. the operator-assigned initial context 0 (retried, per the CFUN race), then
+- *   2. an explicit context with the configured APN, one PDP type at a time.
++ *   1. an explicit context using a manual or SIM-selected APN, then
++ *   2. the operator-assigned initial context 0 as a compatibility fallback.
+  * Returns the active context index (0 or pdp_index) on success, or -1 if
+  * nothing activated. */
+ static int try_activate_all(int fd, int pdp_index, const char *apn)
+ {
+     char resp[AT_RESP_MAX];
+     int attempt;
+-    const char *pdp_types[] = {"IP", "IPV4V6", "IPV6"};
++    int initial_attempts = (apn!=NULL && apn[0]!='\0') ? 2 : 6;
++    const char *pdp_types[] = {"IPV4V6", "IP"};
+     size_t i;
+ 
++    /* A known manual/automatic APN follows the vendor's documented path:
++     * define context 1 and activate it directly. This avoids spending about
++     * 30 seconds retrying context 0 before using the APN we already know. */
++    if(apn!=NULL && apn[0]!='\0')
++    {
++        char cmd[64];
++
++        snprintf(cmd, sizeof(cmd), "AT+CGACT=0,%d", pdp_index);
++        at_cmd(fd, cmd, resp, sizeof(resp), 10000);
++
++        for(i=0;i<sizeof(pdp_types)/sizeof(pdp_types[0]);i++)
++        {
++            if(try_cgdcont(fd, pdp_index, apn, pdp_types[i])==0)
++            {
++                fprintf(stderr, "PDP context %d activated with APN %s, "
++                    "type %s\n", pdp_index, apn, pdp_types[i]);
++                return pdp_index;
++            }
++        }
++        fprintf(stderr, "Explicit APN activation failed; trying the modem's "
++            "initial context.\n");
++    }
++
+     /* Some roaming networks reject the first AT+CGACT=1,0 right after
+      * CFUN=1 (returning CME 5873) and only accept a retry a few seconds
+      * later. AT+CGACT=1,0 is what opens the data pipe to the net
+      * interface, so it must succeed. */
+-    for(attempt=0;attempt<6;attempt++)
++    for(attempt=0;attempt<initial_attempts;attempt++)
+     {
+         if(at_cmd(fd, "AT+CGACT=1,0", resp, sizeof(resp), 30000)==1)
+         {
+@@ -1020,19 +1244,7 @@ static int try_activate_all(int fd, int
+     fprintf(stderr,
+         "Initial PDP context (0) activation failed after retries.\n");
+ 
+-    for(i=0;i<sizeof(pdp_types)/sizeof(pdp_types[0]);i++)
+-    {
+-        if(try_cgdcont(fd, pdp_index, apn, pdp_types[i])==0)
+-        {
+-            fprintf(stderr, "PDP context %d activated with type %s\n",
+-                pdp_index, pdp_types[i]);
+-
+-            return pdp_index;
+-        }
+-    }
+-
+-    fprintf(stderr,
+-        "All PDP activation attempts failed (tried IP, IPV4V6, IPV6).\n");
++    fprintf(stderr, "All PDP activation attempts failed.\n");
+ 
+     return -1;
+ }
+@@ -1595,5 +1807,6 @@ static int run_once(const char *apn, int
+     char ports[MAX_SERIAL_PORTS][64];
+     char resp[AT_RESP_MAX];
++    char selected_apn[APN_MAX_LEN + 1];
+     int port_count, i, fd = -1;
+     int active_pdp;
+     int64_t dial_time;
+@@ -1654,7 +1855,13 @@ static int run_once(const char *apn, int
+         return 4;
+     }
+ 
+-    active_pdp = at_dial(fd, 1, apn);
++    if(resolve_apn(fd, apn, selected_apn, sizeof(selected_apn))!=0)
++    {
++        close(fd);
++        return 4;
++    }
++
++    active_pdp = at_dial(fd, 1, selected_apn);
+     if(active_pdp < 0)
+     {
+         close(fd);
+@@ -1681,7 +1888,7 @@ static int run_once(const char *apn, int
+ 
+ int main(int argc, char *argv[])
+ {
+-    const char *apn = "cbnet";
++    const char *apn = NULL;
+     int i;
+     int attempt = 1;
+     int ret = 0;

@@ -1,0 +1,276 @@
+.theme-design.node-admin-status-overview {
+	--dov-accent: #58b6ff;
+	--dov-cyan: #21d4c3;
+	--dov-good: #18cf8b;
+	--dov-purple: #9b7cff;
+	--dov-warn: #ffad3d;
+	--dov-bad: #f25f70;
+	--dov-panel: transparent;
+	--dov-soft: color-mix(in srgb, var(--dov-accent) 8%, transparent);
+	--dov-line: var(--border_color);
+	background-color: var(--bg) !important;
+}
+
+.theme-design.node-admin-status-overview .main,
+.theme-design.node-admin-status-overview .main-right,
+.theme-design.node-admin-status-overview #maincontent,
+.theme-design.node-admin-status-overview #maincontent > .container,
+.theme-design.node-admin-status-overview #view,
+.theme-design.node-admin-status-overview .dov-dashboard {
+	background-color: transparent !important;
+	background-image: none !important;
+}
+
+@media (prefers-color-scheme: dark) {
+	.theme-design.node-admin-status-overview { background-color: #000 !important; }
+}
+
+.theme-design.node-admin-status-overview #maincontent > .container {
+	max-width: none;
+	margin: 34px 24px 50px 30px;
+}
+
+.theme-design.node-admin-status-overview .main-left {
+	box-shadow: none !important;
+}
+
+.theme-design.node-admin-status-overview #view {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 1rem;
+}
+
+.theme-design.node-admin-status-overview #view > h2,
+.theme-design.node-admin-status-overview #view > .alert-message,
+.theme-design.node-admin-status-overview #view > .dov-dashboard-section,
+.theme-design.node-admin-status-overview #view > .dov-standard-system,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem,
+.theme-design.node-admin-status-overview #view > .dov-standard-ports,
+.theme-design.node-admin-status-overview #view > .dov-standard-network,
+.theme-design.node-admin-status-overview #view > .dov-standard-dhcp,
+.theme-design.node-admin-status-overview #view > .dov-standard-wireless {
+	grid-column: 1 / -1;
+}
+
+.theme-design.node-admin-status-overview #view > h2 {
+	position: relative;
+	z-index: 2;
+	margin: 0 0 .65rem;
+	padding: 0;
+	color: var(--active_color);
+	font-size: 1.25rem;
+	line-height: 1.4;
+}
+
+.theme-design.node-admin-status-overview #view > .cbi-section {
+	min-width: 0;
+	margin: 0 !important;
+	padding: 1rem;
+	overflow: hidden;
+	border: 0 !important;
+	border-radius: 14px !important;
+	background: var(--dov-panel) !important;
+	box-shadow: none !important;
+}
+
+.theme-design.node-admin-status-overview #view > .cbi-section .cbi-section,
+.theme-design.node-admin-status-overview #view > .cbi-section .cbi-section-node {
+	background-color: transparent !important;
+	background-image: none !important;
+}
+
+.theme-design.node-admin-status-overview #view > .cbi-section > .cbi-title h3 {
+	display: flex !important;
+	align-items: center;
+	justify-content: space-between;
+	gap: .8rem;
+	width: 100%;
+	margin: 0 0 .85rem;
+	padding: 0 !important;
+	color: var(--active_color) !important;
+	font-size: 1rem;
+}
+
+.theme-design.node-admin-status-overview #view > .cbi-section > .cbi-title .label {
+	min-width: 0 !important;
+	padding: .26rem .65rem;
+	border: 0;
+	border-radius: 999px;
+	background: var(--dov-soft);
+	font-size: .68rem;
+}
+
+.theme-design.node-admin-status-overview .dov-dashboard-section {
+	padding: 0 !important;
+	overflow: visible !important;
+	border: 0 !important;
+	background: transparent !important;
+	box-shadow: none !important;
+}
+
+.theme-design.node-admin-status-overview .dov-dashboard-section > .cbi-title {
+	display: none;
+}
+
+.dov-dashboard {
+	--dov-speed: 1.4s;
+	display: grid;
+	gap: 1rem;
+	width: 100%;
+}
+
+.dov-dashboard * { box-sizing: border-box; }
+
+.dov-live i {
+	width: 7px;
+	height: 7px;
+	flex: 0 0 auto;
+	border-radius: 50%;
+	background: currentColor;
+	animation: dov-pulse 1.8s ease-out infinite;
+}
+
+.dov-gauge-grid { display: grid; grid-template-columns: repeat(4, minmax(170px, 1fr)); gap: 1rem; }
+.dov-gauge-card,.dov-info-card,.dov-chart-card {
+	min-width: 0;
+	border: 0;
+	border-radius: 13px;
+	background: var(--dov-panel);
+	box-shadow: none;
+}
+.dov-gauge-card { padding: .9rem .9rem .75rem; text-align: center; }
+.dov-gauge-label { opacity: .66; font-size: .73rem; font-weight: 600; }
+.dov-gauge { position: relative; width: min(100%, 185px); height: 112px; margin: .2rem auto -.12rem; }
+.dov-gauge svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.dov-gauge-track,.dov-gauge-fill { fill: none; stroke-width: 8; stroke-linecap: round; }
+.dov-gauge-track { stroke: var(--dov-line); }
+.dov-gauge-fill { stroke: var(--dov-meter); stroke-dasharray: 100; stroke-dashoffset: var(--dov-offset); filter: drop-shadow(0 0 5px var(--dov-meter)); animation: dov-meter-update .65s cubic-bezier(.2,.8,.2,1); }
+.dov-gauge-needle { stroke: var(--dov-meter); stroke-width: 2.2; stroke-linecap: round; transform: rotate(var(--dov-angle)); transform-origin: 60px 66px; animation: dov-needle-update .65s cubic-bezier(.2,.8,.2,1); filter: drop-shadow(0 0 3px var(--dov-meter)); }
+.dov-gauge-pin { fill: var(--dov-meter); }
+.dov-gauge-value { position: absolute; inset: 48px 0 auto; display: flex; align-items: baseline; justify-content: center; gap: .2rem; }
+.dov-gauge-value strong { font-size: 1.5rem; font-variant-numeric: tabular-nums; letter-spacing: -.04em; }
+.dov-gauge-value span { opacity: .52; font-size: .68rem; }
+.dov-gauge-note { min-height: 1.1em; opacity: .52; font-size: .65rem; }
+
+.dov-info-grid { display: grid; grid-template-columns: repeat(6, minmax(120px, 1fr)); gap: .7rem; }
+.dov-info-card { display: flex; align-items: center; gap: .72rem; padding: .75rem; }
+.dov-info-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: 0 0 auto; border-radius: 10px; color: var(--dov-accent); background: var(--dov-soft); font-style: normal; font-size: 1.05rem; }
+.dov-info-card > div { min-width: 0; }
+.dov-info-card span,.dov-info-card strong,.dov-info-card small { display: block; }
+.dov-info-card span { opacity: .5; font-size: .62rem; }
+.dov-info-card strong { margin-top: .18rem; overflow: hidden; text-overflow: ellipsis; font-size: .83rem; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dov-info-card small { margin-top: .13rem; overflow: hidden; text-overflow: ellipsis; opacity: .46; font-size: .58rem; white-space: nowrap; }
+
+.dov-chart-grid { display: grid; grid-template-columns: repeat(3, minmax(250px, 1fr)); gap: 1rem; }
+.dov-chart-card { padding: .9rem; }
+.dov-chart-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: .7rem; }
+.dov-chart-heading h4 { margin: 0; font-size: .9rem; }
+.dov-chart-heading p { margin: .16rem 0 0; opacity: .48; font-size: .62rem; }
+.dov-live { display: flex; align-items: center; gap: .35rem; color: var(--dov-good); font-size: .62rem; }
+.dov-chart-legend { display: flex; flex-wrap: wrap; gap: .4rem .8rem; min-height: 20px; margin: .65rem 0 .2rem; }
+.dov-chart-legend span { display: flex; align-items: center; gap: .28rem; opacity: .65; font-size: .62rem; }
+.dov-chart-legend i { width: 11px; height: 3px; border-radius: 3px; }
+.dov-chart-legend strong { font-variant-numeric: tabular-nums; }
+.dov-chart { display: block; width: 100%; height: 145px; overflow: visible; }
+.dov-chart-lines line { stroke: var(--dov-line); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.dov-chart-line { fill: none; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 3px currentColor); animation: dov-line-enter .65s ease-out; }
+.dov-chart-area { opacity: .09; }
+.dov-chart-scale { display: flex; justify-content: space-between; margin-top: -.15rem; opacity: .4; font-size: .56rem; }
+
+.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) .table { width: 100%; border-collapse: separate; border-spacing: 0; }
+.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) .tr { border-bottom: 1px solid color-mix(in srgb, var(--dov-line) 70%, transparent); }
+.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) .tr:last-child { border-bottom: 0; }
+.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) .td,
+.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) .th { padding: .62rem .55rem; }
+.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) .tr:hover { background: var(--dov-soft); }
+.theme-design.node-admin-status-overview #view > .dov-standard-system table,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(225px, 1fr));
+	gap: .58rem;
+}
+.theme-design.node-admin-status-overview #view > .dov-standard-system table > tbody,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table > tbody { display: contents; }
+.theme-design.node-admin-status-overview #view > .dov-standard-system table .tr,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table .tr {
+	display: flex;
+	flex-direction: column;
+	gap: .27rem;
+	min-width: 0;
+	padding: .62rem .7rem;
+	border: 1px solid var(--dov-line);
+	border-left: 3px solid var(--dov-accent);
+	border-radius: 9px;
+	background: transparent;
+}
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table .tr { border-left-color: var(--dov-cyan); }
+.theme-design.node-admin-status-overview #view > .dov-standard-system table .tr.table-titles,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table .tr.table-titles { grid-column: 1 / -1; border-left-width: 1px; }
+.theme-design.node-admin-status-overview #view > .dov-standard-system table .td,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table .td {
+	display: block;
+	width: 100% !important;
+	padding: 0;
+	overflow-wrap: anywhere;
+}
+.theme-design.node-admin-status-overview #view > .dov-standard-system table .td:first-child,
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table .td:first-child { opacity: .5; font-size: .65rem; }
+.theme-design.node-admin-status-overview #view > .dov-standard-system table .td:nth-child(2),
+.theme-design.node-admin-status-overview #view > .dov-standard-modem table .td:nth-child(2) { font-size: .82rem; font-weight: 600; }
+.theme-design.node-admin-status-overview #view .cbi-progressbar { height: 9px; overflow: hidden; border-radius: 999px; background: var(--dov-line); }
+.theme-design.node-admin-status-overview #view .cbi-progressbar > div { height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--dov-accent), var(--dov-cyan)); box-shadow: 0 0 9px color-mix(in srgb, var(--dov-accent) 55%, transparent); transition: width .8s ease; }
+.theme-design.node-admin-status-overview #view .network-status-table { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .75rem; }
+.theme-design.node-admin-status-overview #view .ifacebox { margin: 0; overflow: hidden; border: 1px solid var(--dov-line); border-radius: 11px; background: transparent; }
+.theme-design.node-admin-status-overview #view .ifacebox-head { padding: .55rem .7rem; }
+.theme-design.node-admin-status-overview #view .ifacebox-head.active { color: var(--dov-good); background: color-mix(in srgb, var(--dov-good) 10%, transparent); }
+.theme-design.node-admin-status-overview #view .ifacebox-body { padding: .75rem; }
+.theme-design.node-admin-status-overview #view .eth-port { border-radius: 10px; }
+.theme-design.node-admin-status-overview #view .leases { min-width: 760px; }
+
+@keyframes dov-pulse {
+	0% { box-shadow: 0 0 0 0 currentColor; }
+	70% { box-shadow: 0 0 0 8px transparent; }
+	100% { box-shadow: 0 0 0 0 transparent; }
+}
+@keyframes dov-meter-update { from { stroke-dashoffset: var(--dov-previous-offset); } to { stroke-dashoffset: var(--dov-offset); } }
+@keyframes dov-needle-update { from { transform: rotate(var(--dov-previous-angle)); } to { transform: rotate(var(--dov-angle)); } }
+@keyframes dov-line-enter { from { opacity: .15; } to { opacity: 1; } }
+
+@media (max-width: 1180px) {
+	.dov-gauge-grid { grid-template-columns: repeat(2, minmax(170px, 1fr)); }
+	.dov-info-grid { grid-template-columns: repeat(3, minmax(135px, 1fr)); }
+	.dov-chart-grid { grid-template-columns: repeat(2, minmax(250px, 1fr)); }
+	.dov-chart-grid > :last-child { grid-column: 1 / -1; }
+}
+
+@media (max-width: 760px) {
+	.theme-design.node-admin-status-overview #maincontent > .container { margin: 24px 12px calc(70px + env(safe-area-inset-bottom)) 14px; }
+	.theme-design.node-admin-status-overview #view { grid-template-columns: 1fr; gap: .8rem; padding-bottom: calc(4rem + env(safe-area-inset-bottom)); }
+	.theme-design.node-admin-status-overview #view > .cbi-section { grid-column: auto; padding: .8rem; border-radius: 12px !important; }
+	.theme-design.node-admin-status-overview .dov-dashboard-section { padding: 0 !important; }
+	.dov-dashboard { gap: .8rem; }
+	.dov-gauge-grid { grid-template-columns: repeat(2, minmax(135px, 1fr)); gap: .65rem; }
+	.dov-gauge-card { padding: .72rem .5rem .62rem; }
+	.dov-gauge { height: 96px; }
+	.dov-gauge-value { inset: 42px 0 auto; }
+	.dov-gauge-value strong { font-size: 1.3rem; }
+	.dov-info-grid { grid-template-columns: repeat(2, minmax(125px, 1fr)); gap: .6rem; }
+	.dov-info-card { padding: .65rem; }
+	.dov-info-icon { width: 30px; height: 30px; }
+	.dov-chart-grid { grid-template-columns: 1fr; gap: .8rem; }
+	.dov-chart-grid > :last-child { grid-column: auto; }
+	.dov-chart { height: 130px; }
+	.theme-design.node-admin-status-overview #view > .cbi-section:not(.dov-dashboard-section) > div:last-child { overflow-x: auto; }
+	.theme-design.node-admin-status-overview #view > .dov-standard-system .td:first-child,
+	.theme-design.node-admin-status-overview #view > .dov-standard-modem .td:first-child { min-width: 105px; }
+}
+
+@media (max-width: 420px) {
+	.dov-gauge-grid,.dov-info-grid { grid-template-columns: 1fr 1fr; }
+	.dov-info-card { align-items: flex-start; }
+	.dov-info-icon { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.dov-live i,.dov-gauge-fill,.dov-gauge-needle,.dov-chart-line { animation: none !important; }
+}

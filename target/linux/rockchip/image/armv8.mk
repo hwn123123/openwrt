@@ -52,6 +52,21 @@ define Device/rk3588s
   KERNEL_LOADADDR := 0x03000000
 endef
 
+define Device/ariaboard_photonicat-2
+  $(Device/rk3576)
+  DEVICE_VENDOR := Ariaboard
+  DEVICE_MODEL := Photonicat 2
+  DEVICE_DTS := rk3576-photonicat-2
+  UBOOT_DEVICE_NAME := generic-rk3576
+  IMAGES := sysupgrade.img.gz emmc.img
+  IMAGE/emmc.img = boot-common | boot-script $$(BOOT_SCRIPT) | pine64-img
+  DEVICE_PACKAGES := \
+    blkdiscard block-mount mkf2fs kmod-nvme kmod-rfkill-gpio \
+    kmod-mt7925e mt7927-firmware wpad-basic-mbedtls \
+    pcat-manager-web pcat2-display-mini
+endef
+TARGET_DEVICES += ariaboard_photonicat-2
+
 define Device/armsom_sige7
   $(Device/rk3588)
   DEVICE_VENDOR := ArmSoM

@@ -1,0 +1,400 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -62,6 +62,8 @@
+ 
+         self.api_lookup_lock = threading.Lock()
+         self.serial_lock = threading.Lock()
++        self.sms_notification_callback = None
++        self.unsolicited_buffer = b""
+ 
+         # AT command failure tracking for battery saving
+         # Must be initialized before any cmd_queue_append call, since
+@@ -153,7 +155,16 @@
+         if not app.is_wwan_powered():
+             return
+         
+-        if refresh_type == "all":
++        if refresh_type == "cellular_temperature":
++            self.cmd_queue_append(
++                "AT+GTSENRDTEMP=0" if self.is_fm350() else "AT+QTEMP")
++            return
++        elif refresh_type == "cellular_settings":
++            self.cmd_queue_append(
++                "AT+GTACT?" if self.is_fm350() else
++                'AT+QNWPREFCFG="mode_pref"')
++            return
++        elif refresh_type == "all":
+             return
+             self.cmd_queue_append("AT+CMGF=1")
+             self.cmd_queue_append("AT+CSCS=\"GSM\"")
+@@ -266,6 +277,52 @@
+                 if not self.is_fm350():
+                     self.cmd_queue_append('AT+COPS?') # carrier info (FM350 queries COPS in routine block)
+ 
++    def set_sms_notification_callback(self, callback):
++        """Register a lightweight handler for modem +CMTI notifications."""
++        self.sms_notification_callback = callback
++
++    def _handle_unsolicited_line(self, line):
++        line = line.strip()
++        if not line:
++            return False
++        if line.startswith("+CMTI:"):
++            callback = self.sms_notification_callback
++            if callback is not None:
++                try:
++                    callback(line)
++                except Exception as error:
++                    pcat_logger.logger.warning(
++                        "SMS notification callback failed: %s", error)
++            return True
++        return False
++
++    def _read_idle_unsolicited(self):
++        """Consume modem URCs while no AT command is queued.
++
++        Reading an already-buffered unsolicited line sends no command to the
++        modem.  A small carry buffer preserves a line split across reads.
++        """
++        serial_obj = self.serial_obj
++        if serial_obj is None or not getattr(serial_obj, "is_open", False):
++            return
++        if not self.serial_lock.acquire(blocking=False):
++            return
++        try:
++            waiting = serial_obj.in_waiting
++            if waiting <= 0:
++                return
++            self.unsolicited_buffer += serial_obj.read(waiting)
++            parts = self.unsolicited_buffer.split(b"\n")
++            self.unsolicited_buffer = parts.pop() if parts else b""
++            for raw_line in parts:
++                line = raw_line.decode("utf-8", errors="ignore").strip()
++                if not self._handle_unsolicited_line(line):
++                    pcat_logger.logger.debug("Modem URC: %s", line)
++        except Exception as error:
++            pcat_logger.logger.warning("Failed to read modem notification: %s", error)
++        finally:
++            self.serial_lock.release()
++
+     # Thread entrance, invoked by start method
+     def run(self):
+         sms_check_max_count = 10
+@@ -282,7 +339,8 @@
+ 
+             if len(self.cmd_queue) == 0:
+                 self.querying = False
+-                time.sleep(1)  # Wait for 1 second before checking the queue again
++                self._read_idle_unsolicited()
++                time.sleep(0.5)
+                 continue
+             else:
+                 #TODO fix when no modem is installed. (home/mobile version)
+@@ -314,9 +372,9 @@
+                                 self.querying = False
+                                 continue
+                             
+-                            # Clear any leftover data in input buffer before sending command
++                            # Never clear the input buffer here: it may contain
++                            # a +CMTI notification delivered between commands.
+                             try:
+-                                self.serial_obj.reset_input_buffer()
+                                 self.serial_obj.reset_output_buffer()
+                             except:
+                                 pass  # Some serial implementations don't support buffer reset
+@@ -358,6 +416,14 @@
+                                 # Skip completely empty lines
+                                 if not line_str:
+                                     continue
++
++                                # Unsolicited modem notifications may be
++                                # interleaved with a normal AT response. Keep
++                                # them out of recv_data so response parsing
++                                # remains synchronized.
++                                if self._handle_unsolicited_line(line_str):
++                                    recv_data = recv_data[:-len(line)]
++                                    continue
+                                 
+                                 response_lines.append(line_str)
+                                 
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -56,6 +56,8 @@
+ import os
+ import sqlite3
+ import sys
++from urllib.error import HTTPError, URLError
++from urllib.request import Request, urlopen
+ 
+ import pcat_config
+ import app as app_module
+@@ -64,7 +66,8 @@
+ from pysms_tool import SMSTool
+ 
+ INTERVAL_SMS_HOOK = 30
+-INTERVAL_SMS_POLL = 10
++SMS_SESSION_CHECK_INTERVAL = 600
++SIDECAR_SMS_NOTIFY_URL = "http://127.0.0.1:8092/v1/sms/notify"
+ # Keep raw AT traffic quiet by default and honor the existing UI setting.
+ SMS_DEBUG_BOOL = pcat_config.get_show_debug_logs()
+ 
+@@ -122,6 +125,9 @@
+         self.last_recv_time = None
+         self.recv_in_progress = False
+         self.recv_lock = threading.Lock()
++        self.sms_notification_event = threading.Event()
++        self.modem_client.set_sms_notification_callback(
++            self._on_modem_sms_notification)
+ 
+         init_db(modem_db_path, SMS_INIT_SQL)
+         
+@@ -131,6 +137,42 @@
+         connect_db(modem_db_path)
+         print("SMS database initialization completed")
+ 
++    def _on_modem_sms_notification(self, _line):
++        """Wake the SMS worker when FM350 reports a new stored message."""
++        self.sms_notification_event.set()
++
++    def _notify_database_changed(self):
++        """Notify the local display sidecar without sending message content."""
++        request = Request(
++            SIDECAR_SMS_NOTIFY_URL, data=b"{}", method="POST",
++            headers={"Content-Type": "application/json",
++                     "User-Agent": "pcat-manager-web sms-event"})
++        try:
++            with urlopen(request, timeout=2.0) as response:
++                response.read(4096)
++        except (HTTPError, URLError, OSError, TimeoutError):
++            # The database is authoritative. A stopped/restarting display
++            # sidecar must never make SMS receive or send fail.
++            pass
++
++    def _ensure_notification_session(self):
++        """Open the vendor-owned AT port and enable +CMTI notifications."""
++        if not app_module.is_wwan_powered():
++            return False
++        try:
++            with self.modem_client.serial_lock:
++                serial_obj = self.modem_client.serial_obj
++                if serial_obj is None or not getattr(serial_obj, "is_open", False):
++                    if not self.modem_client.open_modem_uart():
++                        return False
++                    serial_obj = self.modem_client.serial_obj
++                return self._ensure_sms_session(
++                    SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL))
++        except Exception as error:
++            pcat_logger.logger.warning(
++                "Failed to enable modem SMS notifications: %s", error)
++            return False
++
+     def exec_sql(self, sql_command):
+         if isinstance(sql_command, str):
+             sql_command = [sql_command]
+@@ -248,20 +290,29 @@
+ 
+     def run(self):
+         next_hook_time = time.monotonic() + INTERVAL_SMS_HOOK
++        next_session_check = 0.0
+         while True:
+-            try:
+-                # Hardware polling belongs to the backend thread.  Web and LCD
+-                # clients now consume the database instead of being required to
+-                # trigger modem access themselves.
+-                self.get_sms()
+-            except Exception as error:
+-                pcat_logger.logger.warning("Background SMS poll failed: %s", error)
+-
+             now = time.monotonic()
++            if now >= next_session_check:
++                ready = self._ensure_notification_session()
++                next_session_check = now + (
++                    SMS_SESSION_CHECK_INTERVAL if ready else 15)
++
++            if self.sms_notification_event.is_set():
++                self.sms_notification_event.clear()
++                try:
++                    self.get_sms(refresh_modem=True)
++                except Exception as error:
++                    pcat_logger.logger.warning(
++                        "Incoming SMS collection failed: %s", error)
++
+             if now >= next_hook_time:
+-                self.process_hook_shell()
++                if pcat_config.get_sms_hook_enabled():
++                    self.process_hook_shell()
+                 next_hook_time = now + INTERVAL_SMS_HOOK
+-            time.sleep(min(5, INTERVAL_SMS_POLL))
++            wait_until = min(next_hook_time, next_session_check)
++            self.sms_notification_event.wait(
++                max(0.2, min(30.0, wait_until - time.monotonic())))
+ 
+     def process_hook_shell(self, dry_run=False):
+         """
+@@ -427,22 +478,20 @@
+             pcat_logger.logger.error(f"Failed to query or process hook: {e}")
+             return False
+ 
+-    def get_sms(self):
++    def get_sms(self, refresh_modem=False):
+         #default we get from db:
+         current_time = time.time()
+ 
+-        # Check if we should call recv_from_sms_tool (throttled to once per 8 seconds)
++        # Normal callers read SQLite only. Hardware is touched solely for an
++        # explicit Web refresh or after the modem emits +CMTI.
+         should_fetch = False
+         is_startup_fetch = False
+         with self.recv_lock:
+-            if (self.last_check_time is None or current_time - self.last_check_time > 9):
+-                # Check throttling - only call recv_from_sms_tool if not in progress and 8+ seconds passed
+-                if (not self.recv_in_progress and
+-                    (self.last_recv_time is None or current_time - self.last_recv_time >= 8)):
+-                    should_fetch = True
+-                    is_startup_fetch = (self.last_recv_time is None)  # Track if this is the first fetch
+-                    self.recv_in_progress = True
+-                    self.last_recv_time = current_time
++            if refresh_modem and not self.recv_in_progress:
++                should_fetch = True
++                is_startup_fetch = self.last_recv_time is None
++                self.recv_in_progress = True
++                self.last_recv_time = current_time
+                 self.last_check_time = current_time
+ 
+         if should_fetch:
+@@ -576,6 +625,7 @@
+ 
+         print("save_sms_to_db: ", sms_list)
+         messages_to_delete = []  # Track messages to delete from modem after saving
++        inserted_count = 0
+         
+         for sms in sms_list.get('msg', []):
+             # Compute unique hash
+@@ -629,6 +679,7 @@
+             
+             try:
+                 self.exec_sql(complete_sql)
++                inserted_count += 1
+                 print(f"SMS saved to database successfully")
+                 
+                 # Add to delete list only after successful database save
+@@ -645,6 +696,9 @@
+         
+         # Delete saved messages from modem/SIM storage
+         self._delete_messages_from_modem(messages_to_delete)
++        if inserted_count:
++            self._notify_database_changed()
++        return inserted_count
+ 
+     def mark_sms_read(self, sms_id=None, hash_id=None):
+         """Mark a received SMS as read in the vendor database.
+@@ -665,6 +719,7 @@
+                     "WHERE hash_digest = ? AND direction = 0", [str(hash_id)])
+             else:
+                 return False
++            self._notify_database_changed()
+             return True
+         except (TypeError, ValueError, sqlite3.Error) as e:
+             pcat_logger.logger.error("Failed to mark SMS read: %s", e)
+@@ -723,6 +778,7 @@
+             sql_command = "DELETE FROM sms WHERE id = ?;"
+             print("delete_sms_from_db: ", sql_command, "params:", [int(sms_id)])
+             self.exec_sql_param(sql_command, [int(sms_id)])
++            self._notify_database_changed()
+         except Exception as e:
+             pcat_logger.logger.error(f"Failed to delete sms from db: {e}")
+             return False
+@@ -838,6 +894,7 @@
+                 conn.commit()
+                 conn.close()
+                 print(f"Stored sent SMS to {send_to_number} in database")
++                self._notify_database_changed()
+             except Exception as e:
+                 print(f"Failed to store sent SMS in database: {e}")
+                 pcat_logger.logger.error(f"Failed to store sent SMS in database: {e}")
+@@ -1005,6 +1062,7 @@
+         try:
+             self.exec_sql("DELETE FROM sms")
+             print("Database: All SMS messages cleared successfully")
++            self._notify_database_changed()
+         except Exception as e:
+             pcat_logger.logger.error(f"Failed to clear SMS from database: {e}")
+             raise Exception(f"Database clear failed: {e}")
+@@ -1400,4 +1458,4 @@
+                 "number": None,
+                 "ring_count": 0,
+                 "duration": 0
+-            }
+\ No newline at end of file
++            }
+--- a/app/app.py
++++ b/app/app.py
+@@ -1489,8 +1489,6 @@
+         socket_client.query_network_route_mode_status()
+         socket_client.query_modem_status()
+ 
+-      if self.tick_count % 60 == 0:
+-        modem_client.start_query("")
+       if self.wan_ip == "":
+         if self.tick_count % 30 == 0:
+           threading.Thread(target=self._update_wan_ip, daemon=True).start()
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -379,14 +379,19 @@
+ import logging as _logging
+ _werkzeug_logger = _logging.getLogger('werkzeug')
+ 
+-class _SocketIOPollFilter(_logging.Filter):
++class _RoutineAccessFilter(_logging.Filter):
+     def filter(self, record):
+         msg = record.getMessage()
+         if '/socket.io/' in msg and 'transport=polling' in msg:
+             return False
++        # The local display and open management pages read cached JSON often.
++        # Hide successful read-only API access lines, while preserving POSTs
++        # and every 4xx/5xx response for diagnosis.
++        if '"GET /api/' in msg and (' 200 ' in msg or ' 304 ' in msg):
++            return False
+         return True
+ 
+-_werkzeug_logger.addFilter(_SocketIOPollFilter())
++_werkzeug_logger.addFilter(_RoutineAccessFilter())
+ 
+ # Add security headers to all responses
+ @flask_app.after_request
+@@ -6532,12 +6537,7 @@
+     # Force refresh or cache miss - acquire lock and fetch fresh data
+     with sms_cache['lock']:
+         if force_refresh:
+-            print("SMS list force refresh requested - bypassing cache and throttle")
+-            # Clear SMS client throttling to force hardware refresh
+-            if hasattr(pc_app.sms_client, 'last_check_time'):
+-                pc_app.sms_client.last_check_time = None
+-            if hasattr(pc_app.sms_client, 'last_recv_time'):
+-                pc_app.sms_client.last_recv_time = None
++            print("SMS list force refresh requested")
+ 
+         # Mark fetch in progress to prevent concurrent calls
+         sms_cache['fetch_in_progress'] = True
+@@ -6545,7 +6545,7 @@
+ 
+     try:
+         # Cache miss or expired, fetch fresh data
+-        sms_list = pc_app.sms_client.get_sms()
++        sms_list = pc_app.sms_client.get_sms(refresh_modem=force_refresh)
+         print("sms_list length:   ", len(sms_list["msg"]))
+         if sms_list is None:
+             sms_list = {}
+--- a/app/templates/screen.html
++++ b/app/templates/screen.html
+@@ -1066,7 +1066,7 @@
+ 
+           this.basic.ping_site0 = cfg.ping_site0 || "taobao.com";
+           this.basic.ping_site1 = cfg.ping_site1 || "photonicat.com";
+           this.basic.on_battery_auto_dim_time = cfg.screen_dimmer_time_on_battery_seconds || 60;
+-          this.basic.on_charger_auto_dim_time = cfg.screen_dimmer_time_on_dc_seconds       || 86400;
++          this.basic.on_charger_auto_dim_time = cfg.screen_dimmer_time_on_dc_seconds       || 300;
+           this.basic.screen_max_brightness = cfg.screen_max_brightness || 100;
+           this.basic.screen_min_brightness = cfg.screen_min_brightness || 0;
+           this.basic.show_sms                  = cfg.show_sms !== false;
+

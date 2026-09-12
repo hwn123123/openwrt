@@ -1,0 +1,19 @@
+{
+  "cell_lock": {
+    "enabled": false,
+    "rat": "",
+    "arfcn": "",
+    "pci": "",
+    "lock_mode": 3,
+    "reapply": true,
+    "verification": "off",
+    "message": "未锁定",
+    "updated": 0,
+    "verify_deadline": 0
+  },
+  "operator": {
+    "mode": "auto",
+    "plmn": "",
+    "updated": 0
+  }
+}

@@ -1,0 +1,95 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -135,7 +135,7 @@
+             if cmd in self.cmd_failure_counts:
+                 del self.cmd_failure_counts[cmd]
+ 
+-    def cmd_queue_append(self, cmd):
++    def cmd_queue_append(self, cmd, timeout=10):
+         # Check if command should be skipped due to failures
+         if self.cmd_should_skip(cmd):
+             return
+@@ -143,7 +143,11 @@
+         self.mutex.acquire()
+         try:
+             # 1) avoid duplicates
+-            if cmd in self.cmd_queue:
++            queued_names = [
++                item[0] if isinstance(item, tuple) else item
++                for item in self.cmd_queue
++            ]
++            if cmd in queued_names:
+                 print(f"Warning: {cmd} is already in the queue")
+                 return
+ 
+@@ -152,7 +156,14 @@
+                 self.cmd_queue.pop(0)
+ 
+             # 3) add the new command
+-            self.cmd_queue.append(cmd)
++            # Most status commands complete in less than ten seconds.  Manual
++            # operator selection is allowed by 3GPP to take much longer, so
++            # keep an optional per-command timeout without changing existing
++            # queue callers.
++            command_timeout = max(1.0, min(float(timeout), 180.0))
++            self.cmd_queue.append(
++                cmd if command_timeout == 10.0 else (cmd, command_timeout)
++            )
+         finally:
+             self.mutex.release()
+ 
+@@ -370,7 +381,12 @@
+                     self.modem_tty_failed_count = 0
+ 
+                 self.querying = True
+-                cmd_str = self.cmd_queue.pop(0) + "\r"
++                queued_command = self.cmd_queue.pop(0)
++                if isinstance(queued_command, tuple):
++                    command, command_timeout = queued_command
++                else:
++                    command, command_timeout = queued_command, 10.0
++                cmd_str = command + "\r"
+ 
+                 try:
+                     with self.serial_lock:
+@@ -402,14 +418,18 @@
+                             expected_echo = cmd_str.strip()
+                             
+                             while True:
+-                                # Check for overall timeout (10 seconds max)
+-                                if time.time() - start_time > 10.0:
+-                                    print(f"Command timeout exceeded 10 seconds for: {expected_echo}")
++                                # COPS manual registration can legitimately
++                                # take up to two minutes.  Other commands keep
++                                # the historical ten-second ceiling.
++                                if time.time() - start_time > command_timeout:
++                                    print(f"Command timeout exceeded {command_timeout:g} seconds for: {expected_echo}")
+                                     break
+                                     
+                                 try:
+                                     line = self.serial_obj.readline()
+                                     if not line:  # Timeout occurred on readline
++                                        if command_timeout > 10.0 and time.time() - start_time < command_timeout:
++                                            continue
+                                         if not command_echoed:
+                                             print(f"No echo received for command: {expected_echo}")
+                                         print("Readline timeout - no more data")
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -19,6 +19,7 @@
+ from pcat_timer_manager import PcatTimerManager
+ from pcat_sound_events import SoundEventManager
+ import pcat_nas
++import pcat_radio
+ import pcat_manager_web as web_app
+ import app
+ 
+@@ -28,6 +29,8 @@
+     # before the Flask serving thread accepts its first request.
+     pcat_nas.register_nas(web_app.flask_app, web_app.api_auth_required,
+                           web_app.base_locales, web_app.socketio)
++    pcat_radio.register_radio(web_app.flask_app, web_app.api_auth_required,
++                              app)
+ 
+     current_working_path = pathlib.Path(__file__).parent.resolve()
+     os.chdir(str(current_working_path))

@@ -78,6 +78,16 @@ define Package/mt7925bt-firmware/install
 endef
 $(eval $(call BuildPackage,mt7925bt-firmware))
 
+Package/mt7927-firmware = $(call Package/firmware-default,MediaTek MT7927 WiFi firmware,,LICENCE.mediatek)
+define Package/mt7927-firmware/install
+	$(INSTALL_DIR) $(1)/lib/firmware/mediatek/mt7927
+	$(INSTALL_DATA) \
+		$(PKG_BUILD_DIR)/mediatek/mt7927/WIFI_MT6639_PATCH_MCU_2_1_hdr.bin \
+		$(PKG_BUILD_DIR)/mediatek/mt7927/WIFI_RAM_CODE_MT6639_2_1.bin \
+		$(1)/lib/firmware/mediatek/mt7927
+endef
+$(eval $(call BuildPackage,mt7927-firmware))
+
 Package/mt7981-wo-firmware = $(call Package/firmware-default,MT7981 offload firmware,,LICENCE.mediatek)
 define Package/mt7981-wo-firmware/install
 	$(INSTALL_DIR) $(1)/lib/firmware/mediatek

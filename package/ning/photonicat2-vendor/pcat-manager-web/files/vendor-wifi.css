@@ -1,0 +1,319 @@
+:root {
+  --wifi-bg: #000;
+  --wifi-panel: #07100d;
+  --wifi-panel-2: #040907;
+  --wifi-line: rgba(133, 171, 158, .2);
+  --wifi-text: #e8f1ed;
+  --wifi-muted: #82928c;
+  --wifi-green: #22d7a2;
+  --wifi-blue: #4ca6ff;
+  --wifi-amber: #e4b54a;
+}
+
+body.pcat-modern-settings,
+body.pcat-modern-settings main { background: var(--wifi-bg) !important; }
+
+#pcat-wifi-page {
+  color: var(--wifi-text);
+  font-size: 15px;
+}
+
+.pcat-wifi-intro {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0 0 .72rem;
+  padding: .95rem 1.1rem;
+  border: 1px solid var(--wifi-line);
+  border-radius: 13px;
+  background: linear-gradient(110deg, rgba(34, 215, 162, .105), transparent 42%), #030705;
+}
+
+.pcat-wifi-kicker {
+  color: var(--wifi-green);
+  font-size: .7rem;
+  font-weight: 800;
+  letter-spacing: .16em;
+}
+
+.pcat-wifi-intro h1 { margin: .12rem 0; color: #f5faf8; font-size: 1.35rem; font-weight: 800; }
+.pcat-wifi-intro p { margin: 0; color: var(--wifi-muted); font-size: .72rem; }
+.pcat-wifi-power-link,
+.pcat-wifi-preset,
+.pcat-wifi-sta-tools button,
+.pcat-wifi-actions button {
+  border: 1px solid rgba(34, 215, 162, .34);
+  border-radius: 8px;
+  background: rgba(34, 215, 162, .09);
+  color: var(--wifi-green);
+  font-weight: 750;
+}
+.pcat-wifi-power-link { flex: 0 0 auto; padding: .48rem .72rem; font-size: .66rem; text-decoration: none; }
+
+.pcat-wifi-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .55rem;
+  margin-bottom: .72rem;
+}
+.pcat-wifi-summary > div {
+  padding: .64rem .75rem;
+  border: 1px solid var(--wifi-line);
+  border-radius: 10px;
+  background: #030705;
+}
+.pcat-wifi-summary span,
+.pcat-wifi-summary strong { display: block; }
+.pcat-wifi-summary span { color: var(--wifi-muted); font-size: .56rem; }
+.pcat-wifi-summary strong { margin-top: .15rem; color: #eaf4f0; font-size: .68rem; }
+
+.pcat-wifi-notice {
+  position: sticky;
+  top: 8.2rem;
+  z-index: 24;
+  margin-bottom: .7rem;
+  padding: .65rem .78rem;
+  border: 1px solid var(--wifi-line);
+  border-radius: 9px;
+  background: #07110d;
+  color: var(--wifi-text);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .4);
+  font-size: .68rem;
+}
+.pcat-wifi-notice.is-success { border-color: rgba(34, 215, 162, .55); color: var(--wifi-green); }
+.pcat-wifi-notice.is-error { border-color: rgba(255, 102, 119, .55); color: #ff8391; }
+
+.pcat-wifi-cards { display: grid; gap: .82rem; }
+.pcat-wifi-loading {
+  padding: 2rem;
+  border: 1px solid var(--wifi-line);
+  border-radius: 12px;
+  background: var(--wifi-panel);
+  color: var(--wifi-muted);
+  text-align: center;
+}
+.pcat-wifi-loading.is-error { color: #ff8391; }
+
+.pcat-wifi-card {
+  overflow: hidden;
+  border: 1px solid var(--wifi-line);
+  border-left: 2px solid var(--wifi-green);
+  border-radius: 13px;
+  background: var(--wifi-panel-2);
+  box-shadow: 0 16px 44px rgba(0, 0, 0, .22);
+}
+.pcat-wifi-card.is-onboard { border-left-color: var(--wifi-blue); }
+.pcat-wifi-card-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: .75rem;
+  padding: .78rem .9rem;
+  border-bottom: 1px solid var(--wifi-line);
+  background: linear-gradient(100deg, rgba(34, 215, 162, .08), transparent 43%);
+}
+.pcat-wifi-card.is-onboard .pcat-wifi-card-head { background: linear-gradient(100deg, rgba(76, 166, 255, .07), transparent 43%); }
+.pcat-wifi-radio-mark {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(34, 215, 162, .38);
+  border-radius: 11px;
+  background: rgba(34, 215, 162, .09);
+  color: var(--wifi-green);
+  font-size: 1.1rem;
+  font-weight: 900;
+}
+.is-onboard .pcat-wifi-radio-mark { border-color: rgba(76, 166, 255, .4); background: rgba(76, 166, 255, .08); color: var(--wifi-blue); }
+.pcat-wifi-card-title small { color: #607069; font: 600 .51rem/1.2 monospace; letter-spacing: .1em; text-transform: uppercase; }
+.pcat-wifi-card-title h2 { margin: .08rem 0 .2rem; color: #f1f7f5; font-size: .9rem; font-weight: 800; }
+.pcat-wifi-badges { display: flex; flex-wrap: wrap; gap: .25rem; }
+.pcat-wifi-badges span {
+  padding: .16rem .32rem;
+  border: 1px solid var(--wifi-line);
+  border-radius: 5px;
+  color: #9baaa4;
+  font-size: .5rem;
+}
+.pcat-wifi-power-state { display: grid; grid-template-columns: auto auto; align-items: center; gap: .16rem .34rem; min-width: 125px; }
+.pcat-wifi-power-state i { width: 7px; height: 7px; border-radius: 50%; background: #67716d; }
+.pcat-wifi-power-state strong { color: #aab5b1; font-size: .62rem; }
+.pcat-wifi-power-state span { grid-column: 1 / -1; color: #66746f; font-size: .49rem; }
+.pcat-wifi-power-state.is-on i { background: var(--wifi-green); box-shadow: 0 0 10px rgba(34, 215, 162, .8); }
+.pcat-wifi-power-state.is-on strong { color: var(--wifi-green); }
+.pcat-wifi-power-state.is-wait i { background: var(--wifi-amber); }
+.pcat-wifi-power-state.is-off { opacity: .65; }
+
+.pcat-wifi-current {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .42rem;
+  padding: .58rem .78rem;
+  border-bottom: 1px solid var(--wifi-line);
+  background: #020503;
+}
+.pcat-wifi-current > div {
+  min-width: 0;
+  padding: .42rem .5rem;
+  border: 1px solid rgba(133, 171, 158, .13);
+  border-radius: 7px;
+}
+.pcat-wifi-current span,
+.pcat-wifi-current strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pcat-wifi-current span { color: var(--wifi-muted); font-size: .5rem; }
+.pcat-wifi-current strong { margin-top: .1rem; color: #dce8e3; font-size: .61rem; }
+
+.pcat-wifi-form { padding: .76rem .8rem 0; }
+.pcat-wifi-section-title { display: flex; align-items: center; justify-content: space-between; gap: .7rem; margin-bottom: .52rem; }
+.pcat-wifi-section-title strong,
+.pcat-wifi-section-title span { display: block; }
+.pcat-wifi-section-title strong { color: #dfe9e5; font-size: .69rem; }
+.pcat-wifi-section-title span { margin-top: .08rem; color: var(--wifi-muted); font-size: .51rem; }
+.pcat-wifi-preset { flex: 0 0 auto; padding: .38rem .55rem; font-size: .57rem; cursor: pointer; }
+
+.pcat-wifi-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .48rem;
+  margin-bottom: .78rem;
+}
+.pcat-wifi-fields label > span:first-child { display: block; margin: 0 0 .2rem .05rem; color: #8c9b95; font-size: .52rem; }
+.pcat-wifi-fields input,
+.pcat-wifi-fields select {
+  width: 100%;
+  height: 35px;
+  padding: 0 .52rem;
+  border: 1px solid var(--wifi-line) !important;
+  border-radius: 7px !important;
+  background: #030705 !important;
+  color: #e0ebe6 !important;
+  font-size: .61rem !important;
+  box-shadow: none !important;
+}
+.pcat-wifi-fields input:focus,
+.pcat-wifi-fields select:focus { border-color: rgba(34, 215, 162, .65) !important; outline: none; }
+.pcat-wifi-fields input[readonly] { color: #76857f !important; }
+.pcat-wifi-password { display: flex; }
+.pcat-wifi-password input { border-radius: 7px 0 0 7px !important; }
+.pcat-wifi-password button {
+  padding: 0 .5rem;
+  border: 1px solid var(--wifi-line);
+  border-left: 0;
+  border-radius: 0 7px 7px 0;
+  background: #09110e;
+  color: var(--wifi-green);
+  font-size: .52rem;
+}
+.pcat-wifi-check > span:last-child {
+  display: flex !important;
+  align-items: center;
+  gap: .38rem;
+  height: 35px;
+  padding: 0 .52rem;
+  border: 1px solid var(--wifi-line);
+  border-radius: 7px;
+  background: #030705;
+  color: #c8d5d0 !important;
+  font-size: .6rem !important;
+}
+.pcat-wifi-check input { width: 15px; height: 15px; accent-color: var(--wifi-green); }
+
+.pcat-wifi-sta-tools { display: flex; align-items: center; gap: .55rem; margin: -.15rem 0 .7rem; }
+.pcat-wifi-sta-tools[hidden],
+.pcat-wifi-sta-only[hidden],
+.pcat-wifi-ap-only[hidden] { display: none !important; }
+.pcat-wifi-sta-tools button { padding: .38rem .55rem; font-size: .56rem; }
+.pcat-wifi-sta-tools span { color: var(--wifi-muted); font-size: .5rem; }
+.pcat-wifi-scan {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .38rem;
+  max-height: 220px;
+  margin-bottom: .7rem;
+  padding: .5rem;
+  overflow-y: auto;
+  border: 1px solid var(--wifi-line);
+  border-radius: 8px;
+  background: #010302;
+}
+.pcat-wifi-scan[hidden] { display: none; }
+.pcat-wifi-scan button {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: .08rem .3rem;
+  padding: .45rem;
+  border: 1px solid rgba(133, 171, 158, .16);
+  border-radius: 7px;
+  background: #050a08;
+  text-align: left;
+}
+.pcat-wifi-scan strong { overflow: hidden; color: #dce8e3; font-size: .58rem; text-overflow: ellipsis; }
+.pcat-wifi-scan span { grid-column: 1; color: var(--wifi-muted); font-size: .48rem; }
+.pcat-wifi-scan em { grid-column: 2; grid-row: 1 / span 2; align-self: center; color: var(--wifi-green); font-size: .46rem; font-style: normal; }
+.pcat-wifi-scan p { grid-column: 1 / -1; margin: 0; color: var(--wifi-muted); font-size: .56rem; }
+.pcat-wifi-scan p.is-error { color: #ff8391; }
+
+.pcat-wifi-capabilities { margin-bottom: .72rem; border: 1px solid rgba(133, 171, 158, .15); border-radius: 8px; background: #020503; }
+.pcat-wifi-capabilities summary { padding: .48rem .58rem; color: #9caca5; font-size: .55rem; cursor: pointer; }
+.pcat-wifi-cap-row {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr) auto;
+  gap: .5rem;
+  padding: .38rem .58rem;
+  border-top: 1px solid rgba(133, 171, 158, .12);
+  font-size: .51rem;
+}
+.pcat-wifi-cap-row strong { color: var(--wifi-green); }
+.pcat-wifi-cap-row span { overflow-wrap: anywhere; color: #aab8b2; }
+.pcat-wifi-cap-row em { color: var(--wifi-muted); font-style: normal; }
+.pcat-wifi-hardware-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .35rem; padding: .5rem .58rem; border-top: 1px solid rgba(133, 171, 158, .12); }
+.pcat-wifi-hardware-grid span { color: var(--wifi-muted); font-size: .48rem; }
+.pcat-wifi-hardware-grid strong { display: block; margin-top: .08rem; overflow: hidden; color: #cbd7d2; font-size: .53rem; text-overflow: ellipsis; white-space: nowrap; }
+
+.pcat-wifi-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: .7rem;
+  margin: 0 -.8rem;
+  padding: .58rem .8rem;
+  border-top: 1px solid var(--wifi-line);
+  background: #020503;
+}
+.pcat-wifi-actions span { flex: 1; color: var(--wifi-muted); font-size: .5rem; }
+.pcat-wifi-actions button { padding: .44rem .7rem; background: var(--wifi-green); color: #02100b; font-size: .58rem; cursor: pointer; }
+.pcat-wifi-actions button:disabled,
+.pcat-wifi-sta-tools button:disabled { cursor: wait; opacity: .55; }
+
+@media (max-width: 900px) {
+  .pcat-wifi-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcat-wifi-current { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcat-wifi-scan { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcat-wifi-hardware-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 600px) {
+  #pcat-wifi-page { padding-right: .65rem !important; padding-left: .65rem !important; }
+  .pcat-wifi-intro { align-items: flex-start; padding: .75rem; }
+  .pcat-wifi-intro h1 { font-size: 1.05rem; }
+  .pcat-wifi-intro p { max-width: 250px; line-height: 1.55; }
+  .pcat-wifi-power-link { padding: .38rem .46rem; white-space: nowrap; }
+  .pcat-wifi-summary { grid-template-columns: 1fr; gap: .35rem; }
+  .pcat-wifi-summary > div { display: flex; align-items: center; justify-content: space-between; padding: .48rem .58rem; }
+  .pcat-wifi-summary strong { margin: 0; }
+  .pcat-wifi-card-head { grid-template-columns: auto 1fr; padding: .68rem; }
+  .pcat-wifi-power-state { grid-column: 1 / -1; display: flex; min-width: 0; padding-top: .35rem; border-top: 1px solid var(--wifi-line); }
+  .pcat-wifi-power-state span { margin-left: auto; }
+  .pcat-wifi-current { gap: .32rem; padding: .5rem; }
+  .pcat-wifi-form { padding: .62rem .58rem 0; }
+  .pcat-wifi-fields { grid-template-columns: 1fr; gap: .42rem; }
+  .pcat-wifi-section-title { align-items: flex-start; }
+  .pcat-wifi-section-title span { max-width: 220px; line-height: 1.45; }
+  .pcat-wifi-preset { padding: .32rem .38rem; }
+  .pcat-wifi-scan { grid-template-columns: 1fr; }
+  .pcat-wifi-cap-row { grid-template-columns: 55px 1fr; }
+  .pcat-wifi-cap-row em { grid-column: 2; }
+  .pcat-wifi-actions { margin-right: -.58rem; margin-left: -.58rem; }
+}

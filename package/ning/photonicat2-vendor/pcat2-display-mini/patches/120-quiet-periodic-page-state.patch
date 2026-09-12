@@ -1,0 +1,12 @@
+--- a/main.go
++++ b/main.go
+@@ -1218,9 +1218,6 @@
+ 		default:
+ 		}
+ 
+-		if middleFrames%300 == 0 { // Log less frequently
+-			log.Println("showsms:", cfg.ShowSms, "totalPages:", totalNumPages, "cfgPages:", cfgNumPages)
+-		}
+ 		if runMainLoop {
+ 			start := time.Now()
+ 			if changePageTriggered || httpChangePageTriggered { //CHANGE PAGE

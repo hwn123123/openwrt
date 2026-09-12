@@ -1,0 +1,96 @@
+--- a/src/modem-manager.c
++++ b/src/modem-manager.c
+@@ -435,7 +435,7 @@
+                         mm_data->modem_signal_strength = signal_value;
+                     }
+ 
+-                    g_message("Modem signal strength: %d",
++                    g_debug("Modem signal strength: %d",
+                         mm_data->modem_signal_strength);
+                 }
+                 else if(g_strcmp0(cmd, "SIMSTATUS")==0)
+--- a/src/controller.c
++++ b/src/controller.c
+@@ -129,7 +129,7 @@
+             ret = FALSE;
+             need_close = TRUE;
+ 
+-            g_message("A Unix socket connection closed.");
++            g_debug("A Unix socket connection closed.");
+         }
+         else
+         {
+@@ -147,7 +147,7 @@
+         ret = FALSE;
+         need_close = TRUE;
+ 
+-        g_message("A Unix socket connection closed.");
++        g_debug("A Unix socket connection closed.");
+     }
+ 
+     if(need_close)
+@@ -323,7 +323,7 @@
+         {
+             ret = FALSE;
+ 
+-            g_message("A Unix socket connection closed.");
++            g_debug("A Unix socket connection closed.");
+         }
+         else
+         {
+@@ -339,7 +339,7 @@
+     {
+         ret = FALSE;
+ 
+-        g_message("A Unix socket connection closed.");
++        g_debug("A Unix socket connection closed.");
+     }
+ 
+     if(!ret)
+@@ -378,7 +378,7 @@
+     g_hash_table_replace(ctrl_data->control_connection_table,
+         connection_data->connection, connection_data);
+ 
+-    g_message("Controller client connected.");
++    g_debug("Controller client connected.");
+ 
+     return TRUE;
+ }
+--- a/src/pmu-manager.c
++++ b/src/pmu-manager.c
+@@ -1320,7 +1320,7 @@
+                             pmu_data->beeper_state = (extra_data[0] >> 1) & 1;
+                         }
+ 
+-                        g_message("PMU IO operation status: %X",
++                        g_debug("PMU IO operation status: %X",
+                             extra_data[0]);
+ 
+                         break;
+@@ -1413,7 +1413,7 @@
+                             break;
+                         }
+ 
+-                        g_message("User beep play status: %X",
++                        g_debug("User beep play status: %X",
+                             extra_data[0]);
+ 
+                         break;
+@@ -1430,7 +1430,7 @@
+                             pmu_data->charge_threshold = extra_data[0];
+                         }
+ 
+-                        g_message("Get charge threshold: %u",
++                        g_debug("Get charge threshold: %u",
+                             extra_data[0]);
+ 
+                         break;
+@@ -1654,7 +1654,7 @@
+                             pmu_data->mcu_uptime_prev_valid = TRUE;
+                         }
+ 
+-                        g_message("Battery info: capacity %umAh (nominal "
++                        g_debug("Battery info: capacity %umAh (nominal "
+                             "%umAh), %u cycles, flags 0x%X, R_int %umOhm, "
+                             "runtime %us, mid %umV",
+                             pmu_data->battery_full_capacity_mah,

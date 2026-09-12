@@ -1,0 +1,88 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -6013,6 +6013,85 @@ def api_model_basic():
+     rsp.headers['Content-Type'] = 'application/json'
+     return rsp  
+ 
++@flask_app.route("/api/v1/modem/dial-log.json", methods=['GET'])
++@api_auth_required
++def api_modem_dial_log():
++    """Return read-only FM350 dial status and relevant in-memory log lines."""
++    try:
++        limit = max(20, min(int(request.args.get("limit", 240)), 500))
++    except (TypeError, ValueError):
++        limit = 240
++
++    def process_pid(name):
++        try:
++            result = subprocess.run(
++                ["pidof", name], capture_output=True, text=True, timeout=2,
++                check=False)
++            return result.stdout.strip().split()[0] if result.returncode == 0 else ""
++        except (OSError, subprocess.SubprocessError):
++            return ""
++
++    interface = {
++        "up": False, "pending": False, "available": False,
++        "device": "", "ipv4": "", "gateway": "", "dns": [],
++        "uptime": 0,
++    }
++    try:
++        result = subprocess.run(
++            ["ubus", "call", "network.interface.wwan_fm350", "status"],
++            capture_output=True, text=True, timeout=3, check=False)
++        if result.returncode == 0:
++            status = json.loads(result.stdout)
++            addresses = status.get("ipv4-address") or []
++            routes = status.get("route") or []
++            default_route = next(
++                (row for row in routes if row.get("target") == "0.0.0.0"), {})
++            interface.update({
++                "up": bool(status.get("up")),
++                "pending": bool(status.get("pending")),
++                "available": bool(status.get("available")),
++                "device": status.get("l3_device") or status.get("device") or "",
++                "ipv4": addresses[0].get("address", "") if addresses else "",
++                "gateway": default_route.get("nexthop", ""),
++                "dns": status.get("dns-server") or [],
++                "uptime": int(status.get("uptime") or 0),
++            })
++    except (OSError, ValueError, subprocess.SubprocessError):
++        pass
++
++    lines = []
++    try:
++        result = subprocess.run(
++            ["logread", "-l", "1600"], capture_output=True, text=True,
++            timeout=4, check=False)
++        keywords = (
++            "fm350-mm", "quectel", "wwan", "rmnet", "registration",
++            "registered", "pdp", "sim state", "network interface")
++        for line in result.stdout.splitlines():
++            lowered = line.lower()
++            # The Web process polls the modem with AT commands. Those records
++            # belong to the data acquisition layer, not to the dial log.
++            if "python3[" in lowered:
++                continue
++            # SMS content belongs on the SMS page, never in the dial log.
++            if any(word in lowered for word in ("pysms", "cmgl", "cmgs", "sms content")):
++                continue
++            if any(word in lowered for word in keywords):
++                lines.append(line)
++        lines = lines[-limit:]
++    except (OSError, subprocess.SubprocessError):
++        lines = []
++
++    return jsonify({
++        "status": "ok",
++        "generated_at": datetime.now().strftime("%H:%M:%S"),
++        "manager_pid": process_pid("pcat-manager"),
++        "dialer_pid": process_pid("fm350-mm"),
++        "interface": interface,
++        "lines": lines,
++        "count": len(lines),
++    })
++
+ @api_auth_required
+ @flask_app.route("/api/v1/modem/basic.json", methods=['POST'])
+ def api_modem_refresh():

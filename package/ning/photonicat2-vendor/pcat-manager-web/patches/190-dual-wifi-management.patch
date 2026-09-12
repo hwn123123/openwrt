@@ -1,0 +1,264 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -31,6 +31,7 @@ import power_event_log
+ import battery_history
+ import nt
+ import pc_modem_client
++import pcat_wifi
+ import app as pc_app
+ from cmd_tool import CmdTool
+ from pc_terminal import terminal_manager
+@@ -1189,8 +1190,9 @@ def get_network_interfaces_data_optimized():
+     # Device existence checks
+     lan_exists = os.path.exists("/sys/class/net/eth1")
+     wan_exists = os.path.exists("/sys/class/net/eth0")
+-    onboard_wifi_exists = os.path.exists("/sys/class/ieee80211/phy0")
+-    pcie_wifi_exists = os.path.exists("/sys/class/ieee80211/phy1")
++    onboard_phy, pcie_phy = pc_app.get_wifi_phy_mapping()
++    onboard_wifi_exists = bool(onboard_phy)
++    pcie_wifi_exists = bool(pcie_phy)
+ 
+     # Carrier/connection status
+     wan_carrier = pc_app.does_wan_have_carrier() if wan_exists else False
+@@ -4215,6 +4217,6 @@ def device_control_action():
+             "wan_interface": "WAN 网卡",
+             "cellular_network": "蜂窝网络",
+             "lan_interface": "LAN 网卡",
+-            "onboard_wifi": "板载 WiFi",
+-            "pcie_wifi": "PCIE WiFi",
++            "onboard_wifi": "板载 Wi-Fi（AIC8800）",
++            "pcie_wifi": "MT7927 PCIe Wi-Fi",
+             "configuring_network": "正在配置网络，请稍候...",
+@@ -4320,6 +4322,6 @@ def device_control_action():
+             "wan_interface": "WAN NIC",
+             "cellular_network": "Cellular Module",
+             "lan_interface": "LAN NIC",
+-            "onboard_wifi": "Onboard WiFi",
+-            "pcie_wifi": "PCIE WiFi",
++            "onboard_wifi": "Onboard Wi-Fi (AIC8800)",
++            "pcie_wifi": "MT7927 PCIe Wi-Fi",
+             "configuring_network": "Configuring network, please wait...",
+@@ -5030,13 +5032,7 @@ def system_info_json_action():
+ @api_auth_required
+ @flask_app.route("/api/v2/wireless.json", methods=['GET'])
+ def wireless_v2_action():
+-    wireless_list = {}
+-    mock_data = request.args.get('mock') == 'true'
+-    wireless_list["interfaces"] = command_parser.parse_uci_show_wireless(mock_data)
+-    json_str = json.dumps(wireless_list)  
+-    rsp = make_response(json_str)
+-    rsp.headers['Content-Type'] = 'application/json'
+-    return rsp
++    return jsonify(pcat_wifi.get_wireless_state())
+ 
+ @api_auth_required
+ @flask_app.route("/api/v1/wireless.json", methods=['POST'])
+@@ -5047,114 +5043,18 @@ def save_wireless_action():
+         rsp.headers['Content-Type'] = 'application/json'
+         return rsp
+     
+-    json_dict = {"status": "ok"}
+-    p_data = request.get_json()
+-    pcat_logger.logger.info("Get user {} posted wireless info:{}".format(request.remote_addr, str(p_data)))
+-
+-    ssid = str(p_data.get("ssid", ""))
+-    frequency  = str(p_data.get("frequency", ""))
+-    encryption = str(p_data.get("encryption", ""))
+-    ssid_key   = str(p_data.get("password", ""))
+-    device     = str(p_data.get("device", ""))
+-    if not ssid:
+-        json_dict = {"status": "failed", "message": "Missing params."}
+-    elif device != "radio0" and device != "radio1":
+-        json_dict = {"status": "failed", "message": "Params invalid."}
+-    elif frequency not in ("2g", "5g", "5g_ax", "5g_be", "6g_be"):
+-        json_dict = {"status": "failed", "message": "Params invalid."}
+-    elif encryption not in ("none", "psk", "psk2", "sae"):
+-        json_dict = {"status": "failed", "message": "Params invalid."}
+-
+-    if json_dict["status"] == "ok":
+-        toggle_changed = False
+-        if device == "radio0":
+-            radio0_enabled = command_parser.is_wifi_interface_enabled("radio0")
+-            if radio0_enabled != p_data["enabled"]:
+-                toggle_changed = True
+-                pc_app.enable_wifi_interface("radio0", p_data["enabled"])
+-        elif device == "radio1":
+-            radio1_enabled = command_parser.is_wifi_interface_enabled("radio1")
+-            if radio1_enabled != p_data["enabled"]:
+-                toggle_changed = True
+-                pc_app.enable_wifi_interface("radio1", p_data["enabled"])
+-
+-        cmdtool = CmdTool()
+-        
+-        # Always save WiFi configuration, regardless of whether toggle changed
+-        # Get current channel value before setting it
+-        freq_defaults = {
+-            "2g":    {"band": "2g", "htmode": "HT20",   "default_channel": "10"},
+-            "5g":    {"band": "5g", "htmode": "VHT40",  "default_channel": "149"},
+-            "5g_ax": {"band": "5g", "htmode": "HE80",   "default_channel": "149"},
+-            "5g_be": {"band": "5g", "htmode": "EHT80",  "default_channel": "149"},
+-            "6g_be": {"band": "6g", "htmode": "EHT320", "default_channel": "201"},
+-        }
+-        try:
+-            current_channel = _openwrt_uci_get("wireless.{}.channel".format(device))
+-            current_channel_i = int(current_channel)
+-        except:
+-            # Fallback to default channel values based on frequency
+-            if p_data["frequency"] == "2g":
+-                current_channel = "10"
+-            elif p_data["frequency"] in ("5g", "5g_ax", "5g_be"):
+-                current_channel = "149"
+-            elif p_data["frequency"] == "6g_be":
+-                current_channel = "201"
+-            else:
+-                current_channel = "149"
+-            current_channel_i = int(current_channel)
+-            pcat_logger.logger.warning("Failed to get current channel for {}, using default: {}".format(device, current_channel))
+-
+-        fdef = freq_defaults[p_data["frequency"]]
+-
+-        # Preserve current htmode only when the user is re-saving the exact same
+-        # frequency mode (e.g. re-saving 6g_be shouldn't downgrade EHT320 -> EHT80).
+-        # When the user switches modes (e.g. 5g_ax -> 5g_be), always apply the new htmode.
+-        current_band = _openwrt_uci_get("wireless.{}.band".format(device))
+-        current_htmode = _openwrt_uci_get("wireless.{}.htmode".format(device))
+-        current_freq = command_parser._frequency_from_band_htmode(current_band, current_htmode) if current_htmode else ""
+-        if current_freq == p_data["frequency"] and current_htmode:
+-            target_htmode = current_htmode
+-        else:
+-            target_htmode = fdef["htmode"]
+-
+-        # Reuse the user's current channel only if it's plausible for this band.
+-        if fdef["band"] == "2g":
+-            if current_channel_i > 14:
+-                current_channel = fdef["default_channel"]
+-        elif fdef["band"] == "5g":
+-            if current_channel_i < 36 or current_channel_i > 177:
+-                current_channel = fdef["default_channel"]
+-        elif fdef["band"] == "6g":
+-            # 6 GHz uses odd channels 1..233 (plus ch 2); reject anything from 2.4/5 GHz.
+-            # Use default when switching bands or channel doesn't fit 6 GHz spacing.
+-            if current_band != "6g" or current_channel_i < 1 or current_channel_i > 233:
+-                current_channel = fdef["default_channel"]
+-        cmdtool.prepare(["uci", "set", "wireless.{}.band={}".format(device, fdef["band"])])
+-        cmdtool.prepare(["uci", "set", "wireless.{}.htmode={}".format(device, target_htmode)])
+-        cmdtool.prepare(["uci", "set", "wireless.{}.channel={}".format(device, current_channel)])
+-        cmdtool.prepare(["uci", "set", "wireless.{}.country=US".format(device)])
+-        cmdtool.prepare(["uci", "set", "wireless.default_{}.ssid={}".format(device, ssid) ])
+-        # 6 GHz mandates WPA3-SAE with PMF; force it regardless of user selection.
+-        if fdef["band"] == "6g":
+-            encryption = "sae"
+-        cmdtool.prepare(["uci", "set", "wireless.default_{}.encryption={}".format(device, encryption) ])
+-        if p_data.get("password") != "":
+-            cmdtool.prepare(["uci", "set", "wireless.default_{}.key={}".format(device, ssid_key)])
+-        if p_data.get("hide_ssid") == True:
+-            cmdtool.prepare(["uci", "set", "wireless.default_{}.hidden=1".format(device)])
+-        else:
+-            cmdtool.prepare(["uci", "delete", "wireless.default_{}.hidden".format(device)])
+-
+-        cmdtool.prepare(["uci", "commit", "wireless"])
+-        cmdtool.prepare(["luci-reload"])
+-        cmdtool.prepare(["/sbin/wifi", "reload"])
+-        threading.Timer(2.0, lambda: cmdtool.start()).start()
+-    
+-    json_str = json.dumps(json_dict)  
+-    rsp = make_response(json_str)
+-    rsp.headers['Content-Type'] = 'application/json'
+-    return rsp  
++    payload = request.get_json(silent=True) or {}
++    pcat_logger.logger.info("Get user %s posted wireless parameters for %s",
++                            request.remote_addr, payload.get("device", "unknown"))
++    result, status = pcat_wifi.save_wireless(payload)
++    return jsonify(result), status
++
++
++@api_auth_required
++@flask_app.route("/api/v2/wireless/scan.json", methods=['GET'])
++def wireless_scan_action():
++    result, status = pcat_wifi.scan_wireless(request.args.get("device", ""))
++    return jsonify(result), status
+ 
+ _wifi_clients_cache = {'data': None, 'timestamp': 0}
+ _WIFI_CLIENTS_CACHE_DURATION = 60  # seconds
+--- a/app/app.py
++++ b/app/app.py
+@@ -408,18 +408,15 @@ def find_br_lan_device_index():
+       raise Exception("Failed to find br-lan device")
+ 
+ def is_wifi_interface_enabled(dev_name):
+-  if dev_name == "radio0":
+-    return is_onboard_wifi_enabled()
+-  elif dev_name == "radio1":
+-    return is_pcie_wifi_enabled()
+-  else:
+-    return False
++  return _is_radio_enabled(dev_name)
+ 
+ def is_onboard_wifi_enabled():
+-  return _is_radio_enabled("radio0")
++  onboard_radio, _pcie_radio = get_wifi_radio_mapping()
++  return _is_radio_enabled(onboard_radio) if onboard_radio else False
+ 
+ def is_pcie_wifi_enabled():
+-  return _is_radio_enabled("radio1")
++  _onboard_radio, pcie_radio = get_wifi_radio_mapping()
++  return _is_radio_enabled(pcie_radio) if pcie_radio else False
+ 
+ def _is_radio_enabled(radio_name):
+   """Check if a radio is enabled. On OpenWrt 26.04.1+, the 'disabled' UCI key
+@@ -720,8 +718,9 @@ def config_network_toggle(network_mode, wan_flag, wwan_flag, lan_flag, onboard_w
+   changed_wan_flag = enable_wan_interface(wan_flag, restart=False)
+   changed_lan_flag = enable_lan_interface(lan_flag, restart=False)
+   changed_wwan_flag = enable_wwan_interface(wwan_flag)
+-  changed_onboard_wifi_flag = enable_wifi_interface("radio0", onboard_wifi_flag, restart=True)
+-  changed_pcie_wifi_flag = enable_wifi_interface("radio1", pcie_wifi_flag, restart=True)
++  onboard_radio, pcie_radio = get_wifi_radio_mapping()
++  changed_onboard_wifi_flag = enable_wifi_interface(onboard_radio, onboard_wifi_flag, restart=True) if onboard_radio else False
++  changed_pcie_wifi_flag = enable_wifi_interface(pcie_radio, pcie_wifi_flag, restart=True) if pcie_radio else False
+   changed_brlan_flag = ensure_brlan_up(restart=False)
+   if changed_wan_flag or changed_lan_flag or changed_brlan_flag:
+     network_restart()
+@@ -910,6 +909,43 @@ def get_wifi_phy_mapping():
+ 
+   return usb_phy, pcie_phy
+ 
++def get_wifi_radio_mapping():
++  """Return the UCI radio names for (onboard USB, external PCIe).
++
++  The vendor firmware historically assumed radio0 was onboard.  On current
++  NWRT images radio0 is the MT7927 PCIe card and radio1 is the onboard USB
++  radio, so radio numbers must be resolved from their configured PHY/path.
++  """
++  usb_phy, pcie_phy = get_wifi_phy_mapping()
++  usb_radio = None
++  pcie_radio = None
++  for index in range(4):
++    radio = "radio{}".format(index)
++    try:
++      configured_phy = uci_get("wireless.{}.phy".format(radio))
++    except Exception:
++      configured_phy = ""
++    try:
++      configured_path = uci_get("wireless.{}.path".format(radio)).lower()
++    except Exception:
++      configured_path = ""
++
++    if configured_phy and configured_phy == usb_phy:
++      usb_radio = radio
++    elif configured_phy and configured_phy == pcie_phy:
++      pcie_radio = radio
++    elif "usb" in configured_path:
++      usb_radio = radio
++    elif "pcie" in configured_path or "/pci" in configured_path:
++      pcie_radio = radio
++
++  # Match the common radioN == phyN convention only as a final fallback.
++  if usb_phy and not usb_radio and usb_phy.startswith("phy"):
++    usb_radio = "radio{}".format(usb_phy[3:])
++  if pcie_phy and not pcie_radio and pcie_phy.startswith("phy"):
++    pcie_radio = "radio{}".format(pcie_phy[3:])
++  return usb_radio, pcie_radio
++
+ def is_brlan_up():
+   """
+   Check if br-lan interface is up using operstate

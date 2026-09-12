@@ -1,0 +1,71 @@
+--- a/app/app.py
++++ b/app/app.py
+@@ -1110,13 +1110,27 @@ class App (threading.Thread):
+     self.board_info = self.get_board_info()
+     # Patch for displaying kernel build date additionally for kernel version
+     board_info = self.board_info
+-    kernel_ver = subprocess.check_output(["uname", "-r"], encoding="utf-8").strip() 
+-    kernel_date_str = subprocess.check_output(["uname", "-v"], encoding="utf-8").strip() 
+-    #raw = "#0 SMP PREEMPT Wed Jul  2 09:59:17 2025", I want 6.12.28 - Jul 2 2025
+-    parts = kernel_date_str.split()
+-    kernel_date = parts[4] + " " + parts[5] + " " + parts[7]
+-    
+-    board_info["kernel"] = kernel_ver + " - " + kernel_date
++    try:
++      kernel_ver = subprocess.check_output(["uname", "-r"], encoding="utf-8").strip()
++      kernel_date_str = subprocess.check_output(["uname", "-v"], encoding="utf-8").strip()
++      # The vendor kernel uses strings such as "#0 SMP PREEMPT Wed Jul 2
++      # 09:59:17 2025". NWRT can omit PREEMPT or the weekday, so do not
++      # index fixed positions in uname output.
++      date_match = re.search(
++        r"\b([A-Z][a-z]{2})\s+(\d{1,2})\s+\d{2}:\d{2}:\d{2}\s+\S+\s+(\d{4})\b",
++        kernel_date_str,
++      )
++      if date_match:
++        kernel_date = "{} {} {}".format(
++          date_match.group(1), int(date_match.group(2)), date_match.group(3)
++        )
++        board_info["kernel"] = kernel_ver + " - " + kernel_date
++      else:
++        board_info["kernel"] = kernel_ver
++    except (OSError, subprocess.SubprocessError, ValueError):
++      # A missing/unusual uname implementation must not prevent the web UI
++      # from starting; the kernel release alone is still useful to display.
++      board_info["kernel"] = locals().get("kernel_ver", "unknown")
+     self.board_info = board_info
+     self.tick_count = 0
+     self.network_stats = network_stats.NetworkStats(pcat_config.net_stats_db)
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -804,6 +804,17 @@ def request_install_package(message):
+ def tos_action():
+     return render_template(nt.tos_file_name)
+ 
++@flask_app.route("/index")
++@flask_app.route("/index/")
++@flask_app.route("/index.html")
++@flask_app.route("/index.html/")
++@flask_app.route("/cgi-bin/luci")
++@flask_app.route("/cgi-bin/luci/")
++def legacy_home_action():
++    # Older images and bookmarks used these paths.  The vendor UI is served
++    # at / on port 80; native LuCI remains available on port 8080.
++    return redirect("/")
++
+ @flask_app.route("/")
+ def home_action():
+     if 'username' not in session:
+--- a/app/pcat_util/user_auth.py
++++ b/app/pcat_util/user_auth.py
+@@ -4,11 +4,6 @@ import os
+ import pam
+ import pcat_config
+ 
+-try:
+-  from passlib.hosts import host_context
+-except:
+-  print("Failed to: from passlib.hosts import host_context")
+-
+ # https://passlib.readthedocs.io/en/stable/lib/passlib.hosts.html
+ # This function need root permission, so flask app need run as root
+ 

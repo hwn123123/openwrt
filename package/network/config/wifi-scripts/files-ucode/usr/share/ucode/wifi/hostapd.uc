@@ -69,11 +69,21 @@ function device_log_append(config) {
 
 /* setup country code */
 function device_country_code(config) {
-	let status = global.ubus.call('network.wireless', 'status');
-	for (let name, radio in status) {
-		if (!radio.config.country)
-			continue;
-		config.country_code = radio.config.country;
+	/*
+	 * mac80211 validation already maps the current device's UCI `country`
+	 * option to `country_code`.  Do not overwrite it with another radio's
+	 * country while iterating the global status: on dual-radio systems the
+	 * last (even disabled) radio could otherwise force country_code=00 and
+	 * prevent hostapd from starting the active AP.
+	 */
+	if (!exists(config, 'country_code')) {
+		let status = global.ubus.call('network.wireless', 'status');
+		for (let name, radio in status) {
+			if (!radio.config.country || radio.config.country == '00')
+				continue;
+			config.country_code = radio.config.country;
+			break;
+		}
 	}
 
 	if (!exists(config, 'country_code'))

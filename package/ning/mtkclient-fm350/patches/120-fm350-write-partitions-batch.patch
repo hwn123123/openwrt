@@ -1,0 +1,297 @@
+--- a/mtk.py
++++ b/mtk.py
+@@ -24,6 +24,7 @@
+     "wf": "Write flash from filename",
+     "wl": "Write partitions from directory path to flash",
+     "wo": "Write flash starting at offset from filename",
++    "wpxml": "Write a Scatter partition set with the XML V6 download agent",
+     "e": "Erase partition",
+     "es": "Erase partition with sector count",
+     "ess": "Erase sector with sector count",
+@@ -143,7 +144,7 @@
+ 
+     common_cmds = [
+         "printgpt", "gpt", "r", "rl", "rf", "rs", "ro",
+-        "w", "wf", "wl", "wo", "e", "es", "ess", "footer"
++        "w", "wf", "wl", "wo", "wpxml", "e", "es", "ess", "footer"
+     ]
+ 
+     cmd_parsers = {}
+@@ -189,6 +190,10 @@
+         cmd_parsers[cmd].add_argument("length", help="Length")
+         cmd_parsers[cmd].add_argument("filename", help="File")
+ 
++    cmd_parsers["wpxml"].add_argument(
++        "manifest", help="JSON manifest containing Scatter path and partition files"
++    )
++
+ 
+     # Erase
+     cmd_parsers["e"].add_argument("partitionname", help="Partition to erase")
+--- a/mtkclient/Library/DA/mtk_da_handler.py
++++ b/mtkclient/Library/DA/mtk_da_handler.py
+@@ -1,3 +1,4 @@
++import json
+ import os
+ import time
+ import sys
+@@ -1351,6 +1352,21 @@
+                 print(f"Failed to write {filename} to offset {hex(start)} with " +
+                       f"length {hex(length)}.")
+                 self.close()
++        elif cmd == "wpxml":
++            try:
++                with open(args.manifest, "r", encoding="utf-8") as source:
++                    manifest = json.load(source)
++                scatter_file = manifest["scatter"]
++                partitions = manifest["partitions"]
++                transfer_root = manifest["transfer_root"]
++            except (OSError, ValueError, KeyError, TypeError) as error:
++                self.error(f"Invalid FLASH-UPDATE manifest: {error}")
++                raise RuntimeError("FLASH-UPDATE manifest rejected") from error
++            if mtk.daloader.write_partitions(
++                    scatter_file, partitions, transfer_root, display=True):
++                print(f"Wrote partition set from {args.manifest} with signed DA confirmation.")
++            else:
++                raise RuntimeError("Signed DA FLASH-UPDATE failed")
+         elif cmd == "wf":
+             filename = args.filename
+             parttype = args.parttype
+--- a/mtkclient/Library/DA/mtk_daloader.py
++++ b/mtkclient/Library/DA/mtk_daloader.py
+@@ -327,6 +327,14 @@
+         return self.da.writeflash(addr=addr, length=length, filename=filename, offset=offset,
+                                   parttype=parttype, wdata=wdata, display=display)
+ 
++    def write_partitions(self, scatter_file, partitions, display=True):
++        if self.flashmode != DAmodes.XML:
++            self.error("WRITE-PARTITIONS requires an XML V6 download agent")
++            return False
++        return self.da.write_partitions(
++            scatter_file=scatter_file, partitions=partitions, display=display
++        )
++
+     def formatflash(self, addr, length, partitionname, parttype, display=True):
+         return self.da.formatflash(addr=addr, length=length, parttype=parttype, display=display)
+ 
+--- a/mtkclient/Library/DA/xmlflash/xml_cmd.py
++++ b/mtkclient/Library/DA/xmlflash/xml_cmd.py
+@@ -2,6 +2,13 @@
+ from mtkclient.Library.gui_utils import LogBase
+ 
+ 
++def xml_escape(value, attribute=False):
++    value = str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
++    if attribute:
++        value = value.replace('"', "&quot;").replace("'", "&apos;")
++    return value
++
++
+ class BootModes:
+     fastboot = "FASTBOOT"
+     meta = "META"
+@@ -528,13 +535,18 @@
+         cmd = self.create_cmd("FLASH-UPDATE", content)
+         return cmd
+ 
+-    def cmd_write_partitions(self, partitions):
++    def cmd_write_partitions(self, scatter_file, partitions):
+         flashlist = ""
+         for partition in partitions:
+-            flashlist += f"    <pt name={partition}>{partition}.img</pt>\n"
++            name = str(partition["name"])
++            filename = str(partition["file"])
++            flashlist += (
++                f'<pt name="{xml_escape(name, attribute=True)}">'
++                f"{xml_escape(filename)}</pt>"
++            )
+         content = {
+             "arg": [
+-                "<source_file>D:/scatter.xml</source_file>",
++                f"<source_file>{xml_escape(scatter_file)}</source_file>",
+                 f"<flash_list>{flashlist}</flash_list>"
+             ]
+         }
+--- a/mtkclient/Library/DA/xmlflash/xml_lib.py
++++ b/mtkclient/Library/DA/xmlflash/xml_lib.py
+@@ -511,6 +511,180 @@
+             self.error("No upload data received. Aborting.")
+             return False
+ 
++    @staticmethod
++    def _batch_path_key(filename):
++        return os.path.normcase(os.path.normpath(str(filename).replace("\\", "/")))
++
++    def _upload_batch_file(self, request, filename, display=True):
++        length = os.path.getsize(filename)
++        packet_length = request.packet_length
++        pg = progress(total=length, prefix="Upload:", guiprogress=self.mtk.config.guiprogress)
++        self.ack_value(length)
++        response = self.get_response()
++        if response != "OK":
++            self.error(f"DA refused file {filename}: {response!r}")
++            return None, response
++
++        position = 0
++        with open(filename, "rb") as source:
++            while position < length:
++                self.ack_value(0)
++                response = self.get_response()
++                if "OK" not in response:
++                    self.error(
++                        f"DA refused packet for {filename} at {hex(position)}: "
++                        f"{response!r}"
++                    )
++                    return None, response
++                chunk = source.read(min(packet_length, length - position))
++                if not chunk:
++                    self.error(f"Unexpected end of file while sending {filename}")
++                    return None, "unexpected end of file"
++                self.xsend(data=chunk)
++                response = self.get_response()
++                if "OK" not in response:
++                    self.error(
++                        f"DA rejected {filename} at {hex(position)}: {response!r}"
++                    )
++                    return None, response
++                position += len(chunk)
++                if display:
++                    pg.update(len(chunk))
++
++        # Finish this host-side DOWNLOAD-FILE request. WRITE-PARTITIONS may
++        # immediately issue another file request instead of ending the outer
++        # command, so return the next protocol object to the caller.
++        self.ack()
++        command, result = self.get_command_result()
++        if display:
++            pg.done()
++        return command, result
++
++    def write_partitions(self, scatter_file, partitions, display=True):
++        if not os.path.isfile(scatter_file):
++            self.error(f"Scatter file doesn't exist: {scatter_file}")
++            return False
++        if not partitions:
++            self.error("No partitions supplied to WRITE-PARTITIONS")
++            return False
++
++        files = {}
++        roles = {}
++
++        def register_file(filename, role=None):
++            absolute = os.path.realpath(filename)
++            if not os.path.isfile(absolute):
++                raise FileNotFoundError(absolute)
++            keys = {
++                self._batch_path_key(filename),
++                self._batch_path_key(absolute),
++            }
++            for key in keys:
++                files[key] = absolute
++                if role is not None:
++                    roles.setdefault(key, []).append(role)
++            return absolute
++
++        try:
++            scatter_file = register_file(scatter_file)
++            command_partitions = []
++            for index, partition in enumerate(partitions, 1):
++                name = str(partition["name"])
++                filename = register_file(partition["file"], (index, name))
++                command_partitions.append({"name": name, "file": filename})
++        except (KeyError, TypeError, FileNotFoundError) as error:
++            self.error(f"Invalid WRITE-PARTITIONS manifest: {error}")
++            return False
++
++        self.info(
++            f"Using signed DA WRITE-PARTITIONS for {len(command_partitions)} partitions"
++        )
++        command_sent = self.send_command(
++            self.cmd.cmd_write_partitions(scatter_file, command_partitions),
++            noack=True,
++        )
++        if command_sent is not True:
++            self.error(f"WRITE-PARTITIONS command rejected: {command_sent!r}")
++            return False
++        command, result = self.get_command_result()
++        completed = 0
++        request_limit = len(command_partitions) * 16 + 64
++
++        for _ in range(request_limit):
++            if command == "CMD:FILE-SYS-OPERATION":
++                key = getattr(result, "key", "")
++                requested = getattr(result, "file_path", "")
++                filename = files.get(self._batch_path_key(requested))
++                if key == "EXISTS":
++                    self.ack_text("EXISTS" if filename else "NOT-EXISTS")
++                elif key == "FILE-SIZE" and filename:
++                    self.ack_value(os.path.getsize(filename))
++                else:
++                    self.error(
++                        f"Unsupported or unapproved file request: {key} {requested}"
++                    )
++                    return False
++                command, result = self.get_command_result()
++                continue
++
++            if command == "CMD:DOWNLOAD-FILE":
++                requested = getattr(result, "source_file", "")
++                lookup = self._batch_path_key(requested)
++                filename = files.get(lookup)
++                if not filename:
++                    self.error(f"DA requested an unapproved source file: {requested}")
++                    return False
++                role_queue = roles.get(lookup, [])
++                role = role_queue.pop(0) if role_queue else None
++                is_scatter = os.path.samefile(filename, scatter_file)
++                if role:
++                    index, name = role
++                    self.info(
++                        f"BATCH-PARTITION-START {index}/{len(command_partitions)} {name}"
++                    )
++                command, result = self._upload_batch_file(
++                    result, filename, display=display and not is_scatter
++                )
++                if command is None:
++                    return False
++                if role:
++                    index, name = role
++                    completed += 1
++                    self.info(
++                        f"BATCH-PARTITION-DATA {index}/{len(command_partitions)} {name}"
++                    )
++                continue
++
++            if command == "CMD:END":
++                if result != "OK":
++                    self.error(f"WRITE-PARTITIONS failed: {result}")
++                    return False
++                self.ack()
++                command, result = self.get_command_result()
++                if command == "CMD:START":
++                    self.info(
++                        f"WRITE-PARTITIONS completed for {len(command_partitions)} partitions; "
++                        f"received {completed} partition data requests"
++                    )
++                    return True
++                continue
++
++            if command == "CMD:START":
++                self.info(
++                    f"WRITE-PARTITIONS completed for {len(command_partitions)} partitions; "
++                    f"received {completed} partition data requests"
++                )
++                return True
++
++            self.error(
++                f"Unexpected WRITE-PARTITIONS response: command={command!r} "
++                f"result={result!r}"
++            )
++            return False
++
++        self.error("WRITE-PARTITIONS exceeded the protocol request limit")
++        return False
++
+     def download_raw(self, result, filename: str = "", display: bool = False):
+         rq = Queue()
+         if type(result) is UpFile:

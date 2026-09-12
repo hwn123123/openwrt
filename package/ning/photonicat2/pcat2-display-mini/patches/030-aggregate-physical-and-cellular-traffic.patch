@@ -1,0 +1,138 @@
+--- pcat2-display-mini-1.0.0.orig/processData.go
++++ pcat2-display-mini-1.0.0/processData.go
+@@ -84,6 +84,10 @@
+ 	}
+ )
+ 
++// The top speed row sums physical Ethernet ports and cellular virtual
++// interfaces. Bridges and Wi-Fi AP netdevs are excluded to avoid duplicates.
++var trafficInterfacePattern = regexp.MustCompile(`^(?:eth[0-9]+|usb[0-9]+|wwan[0-9]+|rmnet.*|mhi_.*)$`)
++
+ // sanitizeCommandArg validates and sanitizes command arguments
+ func sanitizeCommandArg(arg string) string {
+ 	// Remove any shell metacharacters and limit to alphanumeric, dash, underscore, dot, slash
+@@ -659,27 +663,69 @@
+ 	return "", fmt.Errorf("WAN interface not found")
+ }
+ 
+-func collectWANNetworkSpeed() {
+-	// Delta counter read on the default-route device: the sampler diffs against
+-	// its previous samples, so there is no ~1s sleep here. While page 0 is
+-	// visible the collector runs at 2 Hz, so the row tracks the live cadence.
++// getTrafficInterfaces discovers the independent Ethernet and cellular
++// netdevs whose counters feed the top speed row. A generic target that has no
++// matching name keeps the previous default-route behaviour.
++func getTrafficInterfaces() ([]string, error) {
++	entries, err := os.ReadDir(pdCovSysClassNetDir)
++	if err != nil {
++		return nil, err
++	}
++
++	devices := make([]string, 0, len(entries))
++	for _, entry := range entries {
++		name := entry.Name()
++		if entry.IsDir() || !trafficInterfacePattern.MatchString(name) {
++			continue
++		}
++		if _, err := os.Stat(filepath.Join(pdCovSysClassNetDir, name, "statistics", "rx_bytes")); err != nil {
++			continue
++		}
++		if _, err := os.Stat(filepath.Join(pdCovSysClassNetDir, name, "statistics", "tx_bytes")); err != nil {
++			continue
++		}
++		devices = append(devices, name)
++	}
++	if len(devices) != 0 {
++		return devices, nil
++	}
++
+ 	dev, err := getWANInterface()
+ 	if err != nil {
+-		log.Printf("Could not get WAN interface: %v\n", err)
+-		storeWANSpeed(0, 0)
+-		return
++		return nil, err
+ 	}
+-	// Re-resolved every cycle so a failover moves the measurement to the new
+-	// egress within a tick; also shared with the data-usage readers.
+-	wanInterface = dev
++	return []string{dev}, nil
++}
+ 
+-	netData, ok, err := wanSpeedSampler.sample(wanInterface)
++func collectWANNetworkSpeed() {
++	devices, err := getTrafficInterfaces()
+ 	if err != nil {
+-		log.Printf("Could not get network speed: %v\n", err)
++		log.Printf("Could not get traffic interfaces: %v\n", err)
+ 		storeWANSpeed(0, 0)
+ 		return
+ 	}
+-	if !ok {
++
++	// The separate data-usage collectors retain their default-route source.
++	if wan, routeErr := getWANInterface(); routeErr == nil {
++		wanInterface = wan
++	}
++
++	var totalUp, totalDown float64
++	hasWindow := false
++	for _, dev := range devices {
++		netData, ok, sampleErr := aggregateTrafficSampler.sample(dev)
++		if sampleErr != nil {
++			log.Printf("Could not get network speed for %s: %v\n", dev, sampleErr)
++			continue
++		}
++		if !ok {
++			continue
++		}
++		totalUp += netData.UploadMbps
++		totalDown += netData.DownloadMbps
++		hasWindow = true
++	}
++	if !hasWindow {
+ 		// No window to divide by yet (first tick, or just after a failover).
+ 		// Seed the row with zeros if it has never been filled, otherwise leave
+ 		// the previous number up until the next tick - 0.5s away on page 0.
+@@ -688,7 +734,7 @@
+ 		}
+ 		return
+ 	}
+-	storeWANSpeed(netData.UploadMbps, netData.DownloadMbps)
++	storeWANSpeed(totalUp, totalDown)
+ }
+ 
+ // storeWANSpeed formats and publishes the page-0 speed row.
+@@ -1654,8 +1700,31 @@
+ 	history []netCounterSample
+ }
+ 
++// multiNetSpeedSampler gives every interface its own counter history. A
++// single netSpeedSampler resets its history when its interface changes, which
++// is correct for a failover but wrong when several ports are summed.
++type multiNetSpeedSampler struct {
++	mu       sync.Mutex
++	samplers map[string]*netSpeedSampler
++}
++
++func (s *multiNetSpeedSampler) sample(iface string) (NetworkSpeed, bool, error) {
++	s.mu.Lock()
++	if s.samplers == nil {
++		s.samplers = make(map[string]*netSpeedSampler)
++	}
++	sampler := s.samplers[iface]
++	if sampler == nil {
++		sampler = &netSpeedSampler{}
++		s.samplers[iface] = sampler
++	}
++	s.mu.Unlock()
++	return sampler.sample(iface)
++}
++
+ // wanSpeedSampler tracks the default-route interface for the page-0 speed row.
+ var wanSpeedSampler netSpeedSampler
++var aggregateTrafficSampler multiNetSpeedSampler
+ 
+ // sample reads iface's counters once and returns the speed over the newest
+ // window of at least netSpeedWindow (or the whole history when it is shorter).
+

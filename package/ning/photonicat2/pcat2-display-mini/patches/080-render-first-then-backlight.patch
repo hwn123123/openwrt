@@ -1,0 +1,59 @@
+--- a/main.go
++++ b/main.go
+@@ -1090,8 +1090,6 @@
+ 	go httpServer(addr)                          //listen local for http request
+ 	go monitorKeyboard(&changePageTriggered)     // Start keyboard monitoring in a goroutine
+ 	go monitorConsoleInput(&changePageTriggered) // Start console input monitoring in a goroutine
+-	go idleDimmer()                              //control backlight
+-
+ 	registerExitHandler() //catch sigterm
+ 
+ 	init3FrameBuffers()
+@@ -1099,6 +1097,9 @@
+ 	prepareMainLoop()
+ 
+ 	wg.Wait()
++	// Do not let the idle dimmer turn the panel on before the first frame has
++	// been rendered during boot.  showWelcome owns the initial backlight handoff.
++	go idleDimmer()                              //control backlight
+ 
+ 	// Use optimized main loop if buffer manager is initialized
+ 	if bufferManager != nil {
+--- a/draw.go
++++ b/draw.go
+@@ -3101,13 +3101,17 @@
+ 
+ 	// Prove the animation pipeline works before committing the boot screen
+ 	// to it; fall back to the static welcome otherwise.
+-	first, err := welcomeAnimFrameInto(nil, 0, width, height)
++	// Render a visible first frame while the backlight is still off.  The old
++	// t=0 frame is fully faded out, so users saw a bright blank panel first.
++	const firstFrameTime = 0.35
++	first, err := welcomeAnimFrameInto(nil, firstFrameTime, width, height)
+ 	if err != nil {
+ 		log.Printf("Welcome animation unavailable (%v); showing static welcome", err)
+ 		showWelcomeStatic(display, width, height)
+ 		return
+ 	}
+ 	sendFull(display, first)
++	setBacklight(getEffectiveMaxBrightness())
+ 
+ 	const frameInterval = time.Second / 60 // pace renders; LCD tops out around 60 Hz anyway
+ 
+@@ -3115,7 +3119,7 @@
+ 	go func() {
+ 		defer close(frames)
+ 		var bufs [2]*image.RGBA
+-		start := time.Now()
++		start := time.Now().Add(-time.Duration(firstFrameTime/timeScale*float64(time.Second)))
+ 		for i := 0; ; i++ {
+ 			frameStart := time.Now()
+ 			t := frameStart.Sub(start).Seconds() * timeScale
+@@ -3261,6 +3265,7 @@
+ 	barY := logoY + spaceBetweenLogoAndBar + h
+ 	copyImageToImageAt(frame, bar, barX, barY)
+ 	sendFull(display, frame)
++	setBacklight(getEffectiveMaxBrightness())
+ 
+ 	// Animate the yellow fill by pushing only the bar strip (barWidth x
+ 	// barHeight pixels) per step instead of a full frame, so the sweep is paced

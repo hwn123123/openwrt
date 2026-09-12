@@ -1,0 +1,103 @@
+Index: pcat-manager-web-2.0.0/app/pcat_manager_web.py
+===================================================================
+--- pcat-manager-web-2.0.0.orig/app/pcat_manager_web.py
++++ pcat-manager-web-2.0.0/app/pcat_manager_web.py
+@@ -31,6 +31,7 @@ import battery_history
+ import nt
+ import pc_modem_client
+ import pcat_wifi
++import pcat_dashboard
+ import app as pc_app
+ from cmd_tool import CmdTool
+ from pc_terminal import terminal_manager
+@@ -1080,6 +1081,9 @@ dashboard_cache = {
+ }
+ DASHBOARD_CACHE_DURATION = 5  # seconds - balance between freshness and performance
+ 
++_dashboard_system_sampler = pcat_dashboard.SystemSampler()
++_dashboard_modem_sampler = pcat_dashboard.ModemRuntimeSampler()
++
+ # Cache for expensive operations with longer duration
+ expensive_ops_cache = {
+     'wifi_clients_count': {'value': 0, 'timestamp': 0},
+@@ -1365,6 +1368,17 @@ def get_dashboard_data():
+ 
+         # Main dashboard data collection timing
+         data_start = time.time()
++        board_info = pc_app.main_app.board_info or {}
++        system_metrics = _dashboard_system_sampler.read(board_info)
++        wireless_state = get_cached_expensive_op(
++            'wifi_interfaces', pcat_wifi.get_wireless_state
++        ) or {}
++        wifi_interfaces = (wireless_state.get("interfaces", [])
++                           if isinstance(wireless_state, dict)
++                           else wireless_state)
++        storage_info = get_cached_expensive_op(
++            'dashboard_storage', pcat_dashboard.read_storage
++        ) or {}
+         dashboard = {
+             "connection": pc_app.socket_client.network_route_mode, 
+             "down_speed": pc_app.main_app.net_download_speed,
+@@ -1393,3 +1407,3 @@ def get_dashboard_data():
+             "wifi_clients_count": get_cached_expensive_op('wifi_clients_count', command_parser.get_wifi_clients_count),
+-            "wifi_interfaces": get_cached_expensive_op('wifi_interfaces', lambda: command_parser.parse_uci_show_wireless(False)),
++            "wifi_interfaces": wifi_interfaces,
+             "on_charging": pc_app.socket_client.on_charging,
+@@ -1401,3 +1415,10 @@ def get_dashboard_data():
+             "modem_temperature": pc_app.modem_client.basic.get("qtemp_sensors", ""),
+             "modem_signal_strength": signal_strength_pct,
++            "cpu_usage": system_metrics["cpu_usage"],
++            "cpu_model": system_metrics["cpu_model"],
++            "cpu_cores": system_metrics["cpu_cores"],
++            "load_average": system_metrics["load_average"],
++            "memory_usage": system_metrics["memory_usage"],
++            "memory_used_bytes": system_metrics["memory_used_bytes"],
++            "memory_total_bytes": system_metrics["memory_total_bytes"],
+             "isp_name": pc_app.socket_client.isp_name,
+@@ -1404,3 +1425,6 @@ def get_dashboard_data():
+             "isp_name": pc_app.socket_client.isp_name,
+-            "sd_state": pc_app.sd_card_status(),
++            "sd_state": 1 if storage_info.get("sd", {}).get("present") else 0,
++            "internal_storage": storage_info.get("internal", {"present": False}),
++            "sd_info": storage_info.get("sd", {"present": False}),
++            "nvme": storage_info.get("nvme", {"present": False}),
+             "sim_state": pc_app.modem_client.get_inferred_sim_state(pc_app.socket_client.sim_state),
+@@ -1721,6 +1745,38 @@ def dashboard_json():
+     rsp.headers['Content-Type'] = 'application/json'
+     return rsp
+ 
++@flask_app.route("/api/v1/modem/runtime.json", methods=['GET'])
++@api_auth_required
++def modem_runtime_json():
++    """Read the detected modem's own runtime only while a UI requests it."""
++    runtime = _dashboard_modem_sampler.read()
++    basic = pc_app.modem_client.basic
++    temperature = runtime.get("temperature")
++    if temperature in (None, ""):
++        temperature = basic.get("modem_temperature_decimal")
++    if temperature in (None, ""):
++        sensors = basic.get("qtemp_sensors") or {}
++        if isinstance(sensors, dict):
++            for value in sensors.values():
++                try:
++                    temperature = float(value)
++                    break
++                except (TypeError, ValueError):
++                    continue
++    try:
++        runtime["temperature"] = (None if temperature in (None, "")
++                                  else float(temperature))
++    except (TypeError, ValueError):
++        runtime["temperature"] = None
++    thermal_sensors = (runtime.get("thermal_sensors") or
++                       basic.get("fm350_temperature_sensors") or {})
++    runtime["thermal_sensors"] = (thermal_sensors
++                                  if isinstance(thermal_sensors, dict) else {})
++    runtime["model"] = basic.get("model", "")
++    response = jsonify(runtime)
++    response.headers["Cache-Control"] = "no-store"
++    return response
++
+ @flask_app.route("/api/v1/telemetry/history.json", methods=['GET'])
+ @api_auth_required
+ def telemetry_history_json():
