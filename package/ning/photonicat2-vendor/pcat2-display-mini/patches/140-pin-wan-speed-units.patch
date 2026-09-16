@@ -1,0 +1,49 @@
+--- a/main.go
++++ b/main.go
+@@ -390,6 +390,9 @@
+ 	// drawn centered over the bar; Units is appended if present ("GB" → "3.2/16GB").
+ 	LabelDataKey string `json:"label_data_key,omitempty"`
+ 	UnitsFont    string `json:"units_font,omitempty"`
++	// UnitsX pins trailing units to an absolute horizontal column. When absent,
++	// units continue to follow the rendered value width.
++	UnitsX *int `json:"units_x,omitempty"`
+ 	// UnitsDy nudges the units text vertically off wherever it would otherwise
+ 	// land (negative = up, positive = down). A fine-tuning knob; for stacking
+ 	// the unit under the value use UnitsBelow.
+--- a/draw.go
++++ b/draw.go
+@@ -2692,6 +2692,9 @@
+ 				// Default: trailing, 1px past the value, sharing its baseline.
+ 				unitAscent := unitFace.Metrics().Ascent.Round()
+ 				unitX := xMain + 1
++				if element.UnitsX != nil {
++					unitX = *element.UnitsX
++				}
+ 				unitY := mainBaseline - unitAscent + element.UnitsDy
+ 
+ 				if element.UnitsBelow > 0 {
+--- a/config.json
++++ b/config.json
+@@ -1,5 +1,5 @@
+ {
+-    "config_version": 102,
++    "config_version": 103,
+     "ping_site0": "1.1.1.1",
+     "ping_type0": "icmp",
+     "ping_site1": "photonicat.com",
+@@ -61,6 +61,7 @@
+                     "units": "Mbps",
+                     "data_key": "WanUP",
+                     "units_font": "unit",
++                    "units_x": 117,
+                     "enable": 1
+                 },
+                 {
+@@ -88,6 +89,7 @@
+                     "units": "Mbps",
+                     "data_key": "WanDOWN",
+                     "units_font": "unit",
++                    "units_x": 117,
+                     "enable": 1
+                 },
+                 {

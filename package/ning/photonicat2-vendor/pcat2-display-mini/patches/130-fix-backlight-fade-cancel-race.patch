@@ -1,0 +1,179 @@
+--- a/utils.go
++++ b/utils.go
+@@ -276,12 +276,20 @@
+ 	}
+ 
+ 	if brightness == lastLogical {
+-		return
++		// The logical cache can get out of sync with the PWM node when another
++		// writer or a stale transition changes the physical brightness.  Only
++		// skip the write when both values agree, otherwise repair the hardware.
++		if data, err := os.ReadFile(utilCovBacklightPath); err == nil {
++			if physical, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && physical == brightness {
++				return
++			}
++		}
+ 	}
+ 	lastLogical = brightness
+ 
+-	// cancel any pending off-timer if we're going to >0
+-	if brightness > 0 && offTimer != nil {
++	// Keep at most one delayed confirmation; any new brightness request makes
++	// the previous timer obsolete.
++	if offTimer != nil {
+ 		offTimer.Stop()
+ 		offTimer = nil
+ 	}
+@@ -529,6 +537,26 @@
+ 	return brightness
+ }
+ 
++// setFadeBacklight writes one fade step only while cancelChan is still the
++// active transition.  Keeping fadeMu locked across the validation and write
++// makes cancellation a barrier: once a state transition closes/replaces the
++// channel, the old fade can no longer overwrite the new state's brightness.
++func setFadeBacklight(cancelChan chan struct{}, brightness int) bool {
++	fadeMu.Lock()
++	defer fadeMu.Unlock()
++
++	if cancelChan != fadeCancel {
++		return false
++	}
++	select {
++	case <-cancelChan:
++		return false
++	default:
++		setBacklight(brightness)
++		return true
++	}
++}
++
+ func fadeBacklight(wantValue int, timePeriod time.Duration) {
+ 	// Grab a snapshot of the “current” cancel channel under the fadeMu lock:
+ 	fadeMu.Lock()
+@@ -537,14 +565,14 @@
+ 
+ 	initValue := getBacklight()
+ 	if timePeriod <= 0 || initValue == wantValue {
+-		setBacklight(wantValue)
++		setFadeBacklight(cancelChan, wantValue)
+ 		return
+ 	}
+ 
+ 	const stepDuration = 40 * time.Millisecond
+ 	steps := int(timePeriod / stepDuration)
+ 	if steps < 1 {
+-		setBacklight(wantValue)
++		setFadeBacklight(cancelChan, wantValue)
+ 		return
+ 	}
+ 
+@@ -560,11 +588,13 @@
+ 		case <-ticker.C:
+ 			frac := float64(i) / float64(steps)
+ 			b := initValue + int(math.Round(frac*float64(diff)))
+-			setBacklight(b)
++			if !setFadeBacklight(cancelChan, b) {
++				return
++			}
+ 		}
+ 	}
+ 	// final guarantee
+-	setBacklight(wantValue)
++	setFadeBacklight(cancelChan, wantValue)
+ }
+ 
+ func idleDimmer() {
+@@ -572,6 +602,7 @@
+ 	defer ticker.Stop()
+ 
+ 	prevState := STATE_UNKNOWN
++	lastIdleBacklightCheck := time.Time{}
+ 
+ 	for range ticker.C {
+ 		// 1) Movement/keypress detection
+@@ -629,6 +660,18 @@
+ 			case STATE_IDLE:
+ 				setBacklight(0)
+ 			}
++		}
++
++		// IDLE is a durable hardware state, not just a one-shot transition.
++		// Reconcile it periodically so an external/stale PWM write cannot leave
++		// the panel visibly lit while the state machine believes it is asleep.
++		if newState == STATE_IDLE {
++			if time.Since(lastIdleBacklightCheck) >= time.Second {
++				setBacklight(0)
++				lastIdleBacklightCheck = time.Now()
++			}
++		} else {
++			lastIdleBacklightCheck = time.Time{}
+ 		}
+ 
+ 	}
+--- a/utilsCov_test.go
++++ b/utilsCov_test.go
+@@ -159,6 +159,26 @@
+ 	}
+ }
+ 
++func TestUtilCovSetBacklightRepairsPhysicalDrift(t *testing.T) {
++	p := utilCovSetBacklightFile(t, "100")
++	utilCovSaveBacklightState(t)
++	utilCovSaveCfg(t)
++	cfg.ScreenMinBrightness = 0
++	cfg.ScreenMaxBrightness = 100
++
++	// Reproduce the field failure: the state machine believes the display is
++	// off, while the PWM node has drifted back to full brightness.
++	mu.Lock()
++	lastLogical = 0
++	offTimer = nil
++	mu.Unlock()
++
++	setBacklight(0)
++	if got := utilCovReadFile(t, p); got != "0" {
++		t.Errorf("physical drift was not repaired: brightness = %q, want \"0\"", got)
++	}
++}
++
+ // A failing sysfs write is logged, never fatal — the daemon must survive a
+ // missing backlight node.
+ func TestUtilCovSetBacklightWriteFailureIsNonFatal(t *testing.T) {
+@@ -295,6 +315,36 @@
+ 	mu.Unlock()
+ 	if stopped >= 100 {
+ 		t.Errorf("fade reached %d despite cancel", stopped)
++	}
++}
++
++func TestUtilCovCancelledFadeCannotOverwriteForcedOff(t *testing.T) {
++	p := utilCovFadeSetup(t, "100")
++
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		fadeBacklight(0, 2*time.Second)
++	}()
++
++	time.Sleep(60 * time.Millisecond) // allow the old fade to enter its loop
++	fadeMu.Lock()
++	close(fadeCancel)
++	fadeCancel = make(chan struct{})
++	fadeMu.Unlock()
++
++	// This is the IDLE transition's authoritative write.  No step belonging
++	// to the cancelled fade may land after it.
++	setBacklight(0)
++
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		t.Fatal("cancelled fade did not exit")
++	}
++	time.Sleep(50 * time.Millisecond)
++	if got := utilCovReadFile(t, p); got != "0" {
++		t.Errorf("cancelled fade overwrote forced off: brightness = %q", got)
+ 	}
+ }
+ 
