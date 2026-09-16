@@ -658,8 +658,8 @@ case "$1" in
 		}
 		payload="$(jq -cn --argjson off "$2" --argjson oh "$3" --argjson om "$4" --argjson on "$5" --argjson ih "$6" --argjson im "$7" --argjson days "$8" '
 			{command:"schedule-power-event-set","event-list":[
-				{action:0,enabled:$off,"enable-bits":56,year:0,month:0,day:0,hour:$oh,minute:$om,"dow-bits":$days},
-				{action:1,enabled:$on,"enable-bits":56,year:0,month:0,day:0,hour:$ih,minute:$im,"dow-bits":$days}
+				{action:0,enabled:$off,"enable-bits":40,year:0,month:0,day:0,hour:$oh,minute:$om,"dow-bits":$days},
+				{action:1,enabled:$on,"enable-bits":40,year:0,month:0,day:0,hour:$ih,minute:$im,"dow-bits":$days}
 			]}')"
 		pcat "$payload"
 	;;
