@@ -339,8 +339,13 @@ define U-Boot/generic-rk3576
   $(U-Boot/rk3576/Default)
   NAME:=Generic RK3576
   BUILD_DEVICES:= \
-    ariaboard_photonicat-2 \
     friendlyarm_nanopi-r76s
+endef
+
+define U-Boot/photonicat2-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=Ariaboard Photonicat 2
+  BUILD_DEVICES:=ariaboard_photonicat-2
 endef
 
 define U-Boot/nanopi-m5-rk3576
@@ -475,6 +480,7 @@ UBOOT_TARGETS := \
   rock-3a-rk3568 \
   rock-3b-rk3568 \
   generic-rk3576 \
+  photonicat2-rk3576 \
   nanopi-m5-rk3576 \
   rock-4d-rk3576 \
   generic-rk3588 \

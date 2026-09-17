@@ -1,0 +1,70 @@
+--- a/main.go
++++ b/main.go
+@@ -161,7 +161,9 @@
+ 	lastActivity   = time.Now()
+ 	lastActivityMu sync.Mutex
+ 
+-	numIntermediatePages = 15
++	// One final frame makes a button press complete in one SPI transfer instead
++	// of spending nearly a second sending 14 slide-animation frames.
++	numIntermediatePages = 2
+ 
+ 	// configuration for idle fade
+ 	fadeDuration = 2 * time.Second // how long the fade takes
+@@ -1314,5 +1316,5 @@
+ 
+ 				// Process all frames - use pre-calculated if ready, otherwise calculate on-demand
+ 				for i := 1; i < numIntermediatePages; i++ {
+-					if i == numIntermediatePages/3 { // Update page indices at the halfway point /3 cos we are not linear.
++					if i == max(1, numIntermediatePages/3) { // Commit the page before its first visible frame.
+ 						prevPageIdx := currPageIdx
+--- a/utils.go
++++ b/utils.go
+@@ -242,10 +242,14 @@
+ 
+ // preCalculateEasing pre-computes easing values to avoid math.Pow during transitions
+ func preCalculateEasing(numFrames int, frameWidth int) []int {
+ 	if len(easingLookup) != numFrames {
+ 		easingLookup = make([]int, numFrames)
++		last := numFrames - 1
++		if last < 1 {
++			last = 1
++		}
+ 		for i := 0; i < numFrames; i++ {
+-			t := float64(i) / float64(numFrames)
++			t := float64(i) / float64(last)
+ 			et3 := 1 - math.Pow(1-t, 4) // Quartic easing
+ 			easingLookup[i] = int(et3 * float64(frameWidth))
+ 		}
+@@ -419,9 +423,12 @@
+ 				lastActivity = now
+ 				lastActivityMu.Unlock()
+ 
+-				if idleState == STATE_IDLE || idleState == STATE_OFF || idleState == STATE_FADE_OUT {
++				// A visibly lit panel should change page on this press even if
++				// its idle dimming has already entered FADE_OUT.
++				if idleState == STATE_IDLE || idleState == STATE_OFF ||
++					(idleState == STATE_FADE_OUT && getBacklight() == 0) {
+ 					log.Println("Screen is idle/fading/off, preparing to wake up without changing page")
+ 					wasScreenIdle = true
+-				} else if idleState == STATE_ACTIVE || idleState == STATE_FADE_IN {
++				} else if idleState == STATE_ACTIVE || idleState == STATE_FADE_IN || idleState == STATE_FADE_OUT {
+ 					log.Println("Screen is active, preparing for page change")
+ 					wasScreenIdle = false
+--- a/utils_test.go
++++ b/utils_test.go
+@@ -150,4 +150,14 @@
+ 	}
+ }
+ 
++func TestSingleFramePageChangeReachesNextPage(t *testing.T) {
++	// With only one SPI transfer, the last crop must be the whole next page.
++	easingLookup = nil
++	got := preCalculateEasing(2, 240)
++	if len(got) != 2 || got[0] != 0 || got[1] != 240 {
++		t.Fatalf("one-frame page change positions = %v, want [0 240]", got)
++	}
++	easingLookup = nil
++}
++
+ func TestHasShowSmsInUserConfig(t *testing.T) {

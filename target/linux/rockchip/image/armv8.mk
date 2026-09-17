@@ -57,7 +57,7 @@ define Device/ariaboard_photonicat-2
   DEVICE_VENDOR := Ariaboard
   DEVICE_MODEL := Photonicat 2
   DEVICE_DTS := rk3576-photonicat-2
-  UBOOT_DEVICE_NAME := generic-rk3576
+  UBOOT_DEVICE_NAME := photonicat2-rk3576
   IMAGES := sysupgrade.img.gz emmc.img
   IMAGE/emmc.img = boot-common | boot-script $$(BOOT_SCRIPT) | pine64-img
   DEVICE_PACKAGES := \

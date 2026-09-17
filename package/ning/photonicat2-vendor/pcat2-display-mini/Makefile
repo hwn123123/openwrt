@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat2-display-mini
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=18
+PKG_RELEASE:=20
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/photonicat2_mini_display
