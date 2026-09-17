@@ -1,0 +1,8 @@
+--- a/src/fm350-mm.c
++++ b/src/fm350-mm.c
+@@ -1151 +1151,4 @@
+-    at_cmd(fd, "AT+GTDUALSIM=0", resp, sizeof(resp), 5000);
++    /* +GTDUALSIM is persistent.  The Web UI may have selected the embedded
++     * eSIM (SIM2); forcing SIM1 on each dial attempt would undo that choice
++     * before an eSIM profile can register. */
++    at_cmd(fd, "AT+GTDUALSIM?", resp, sizeof(resp), 5000);

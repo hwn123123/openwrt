@@ -2868,6 +2868,49 @@ body.pcat-modern-settings .pcat-settings-root {
   .pcat-sound-speaker.is-playing > span { animation: none !important; }
 }
 
+/* eSIM management shares the cellular grid and control styling. */
+.pcat-cell-esim-status,
+.pcat-cell-esim-profiles,
+.pcat-cell-esim-notifications { grid-column: span 12; --card-accent: var(--cell-green); }
+.pcat-cell-esim-chip,
+.pcat-cell-esim-download,
+.pcat-cell-esim-discovery { grid-column: span 6; --card-accent: var(--cell-blue); }
+.pcat-cell-esim-danger { grid-column: span 12; --card-accent: #ec7676; }
+.pcat-esim-content { padding: .8rem; }
+.pcat-esim-content .pcat-cell-detail-grid { padding: 0 0 .7rem; }
+.pcat-esim-content [data-esim-eid] { overflow-wrap: anywhere; font-family: "JetBrains Mono", monospace; }
+.pcat-esim-notice,
+.pcat-esim-hint { margin: .55rem 0; color: var(--pcat-muted); font-size: .6rem; line-height: 1.55; }
+.pcat-esim-notice { color: var(--cell-green); }
+.pcat-esim-notice.is-error { color: #ff8787; }
+.pcat-esim-actions,
+.pcat-esim-toolbar,
+.pcat-esim-row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.pcat-esim-actions button,
+.pcat-esim-toolbar button,
+.pcat-esim-row-actions button,
+.pcat-esim-form button { padding: .4rem .62rem; }
+.pcat-esim-actions button.is-active { border-color: rgba(36,228,170,.42); background: rgba(36,228,170,.13); color: var(--cell-green); }
+.pcat-esim-toolbar { justify-content: space-between; margin-bottom: .6rem; color: var(--pcat-muted); font-size: .58rem; }
+.pcat-esim-form { display: grid; gap: .55rem; }
+.pcat-esim-form label { display: grid; gap: .24rem; min-width: 0; color: var(--pcat-muted); font-size: .57rem; }
+.pcat-esim-form input,
+.pcat-esim-row-actions input { box-sizing: border-box; width: 100%; min-width: 0; padding: .48rem .58rem; border: 1px solid var(--pcat-border); border-radius: 7px; background: #050806; color: var(--pcat-text); font-size: .61rem; }
+.pcat-esim-form > button { justify-self: start; }
+.pcat-esim-form > button.is-primary { background: var(--cell-green); color: #04100b; }
+.pcat-esim-list { display: grid; gap: .5rem; }
+.pcat-esim-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .55rem; padding: .65rem; border: 1px solid var(--pcat-border); border-radius: 9px; background: #050806; }
+.pcat-esim-row > div:first-child { display: grid; gap: .18rem; min-width: 160px; overflow-wrap: anywhere; }
+.pcat-esim-row strong { font-size: .64rem; }
+.pcat-esim-row small { color: var(--pcat-muted); font-size: .52rem; }
+.pcat-esim-row-actions input { width: 150px; }
+.pcat-esim-output { max-height: 180px; overflow: auto; padding: .65rem; border: 1px solid var(--pcat-border); border-radius: 7px; background: #050806; color: var(--pcat-muted); font-size: .54rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 1050px) {
+  .pcat-cell-esim-chip,
+  .pcat-cell-esim-download,
+  .pcat-cell-esim-discovery { grid-column: span 12; }
+}
+
 /* The classified cellular rules above intentionally use the desktop 12-column
    grid.  Keep this mobile override last so later per-page column spans cannot
    create implicit columns and push half of a card outside the phone viewport. */

@@ -1,0 +1,16 @@
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -22,5 +22,6 @@
+ import pcat_nas
+ import pcat_radio
++import pcat_esim
+ import pcat_manager_web as web_app
+ import app
+ 
+@@ -31,4 +32,6 @@
+     pcat_radio.register_radio(web_app.flask_app, web_app.api_auth_required,
+                               app)
++    pcat_esim.register_esim(web_app.flask_app, web_app.api_auth_required,
++                            app)
+ 
+     current_working_path = pathlib.Path(__file__).parent.resolve()

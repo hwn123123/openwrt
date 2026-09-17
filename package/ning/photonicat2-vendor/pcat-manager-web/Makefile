@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat-manager-web
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=69
+PKG_RELEASE:=71
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/pcat-manager-web.git
@@ -22,7 +22,7 @@ define Package/pcat-manager-web
   TITLE:=Official Photonicat Web management interface
   URL:=https://github.com/photonicat/pcat-manager-web
   DEPENDS:=@TARGET_rockchip_armv8 \
-	+pcat-manager +pcat2-display-mini +pcat-sidecar +uhttpd +ttyd \
+	+pcat-manager +pcat2-display-mini +pcat-sidecar +lpac-fm350 +uhttpd +ttyd \
 	+python3 +python3-flask +python3-flask-socketio \
 	+python3-pyserial +python3-requests +python3-sqlite3 \
 	+python3-pam \
@@ -97,6 +97,8 @@ define Package/pcat-manager-web/install
 		$(1)/usr/share/pcat-manager-web/pcat_dashboard.py
 	$(INSTALL_DATA) ./files/pcat_radio.py \
 		$(1)/usr/share/pcat-manager-web/pcat_radio.py
+	$(INSTALL_DATA) ./files/pcat_esim.py \
+		$(1)/usr/share/pcat-manager-web/pcat_esim.py
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_CONF) ./files/pcat-radio-control.json \
 		$(1)/etc/pcat-radio-control.json

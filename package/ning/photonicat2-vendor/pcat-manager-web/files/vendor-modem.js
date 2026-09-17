@@ -43,6 +43,9 @@
   let radioDraftDirty = false;
   let dialFilter = "all";
   let lastDialPayload = null;
+  let esimStatus = null;
+  let esimProfiles = [];
+  let esimJobTimer = null;
 
   const views = {
     overview: { label: "概览", nativeTab: "" },
@@ -51,7 +54,8 @@
     temperature: { label: "模组温度", nativeTab: "" },
     "dial-log": { label: "拨号日志", nativeTab: "" },
     settings: { label: "网络设置", nativeTab: "" },
-    automation: { label: "短信转发", nativeTab: "modem_hook" }
+    automation: { label: "短信转发", nativeTab: "modem_hook" },
+    esim: { label: "eSIM 管理", nativeTab: "" }
   };
 
   function finite(input) {
@@ -178,6 +182,7 @@
           '<button type="button" data-cell-view="dial-log">拨号日志</button>' +
           '<button type="button" data-cell-view="settings">网络设置</button>' +
           '<button type="button" data-cell-view="automation">短信转发</button>' +
+          '<button type="button" data-cell-view="esim">eSIM 管理</button>' +
         '</div>' +
         '<button type="button" class="pcat-cell-refresh" data-cell-refresh title="刷新当前数据"><span aria-hidden="true">↻</span><span>刷新</span></button>' +
       '</nav>' +
@@ -242,6 +247,22 @@
           '<section class="pcat-radio-form"><h4>运营商选择</h4><div class="pcat-radio-fields is-operator"><label><span>选择方式</span><select data-radio-operator-mode><option value="auto">自动选择</option><option value="manual">锁定 PLMN</option></select></label><label><span>PLMN（MCC+MNC）</span><input data-radio-plmn inputmode="numeric" autocomplete="off" maxlength="6" placeholder="例如 46000"></label></div><p>运营商锁定只限制 PLMN，不等同于锁定基站或小区。</p><div class="pcat-radio-actions"><span data-radio-operator-status>未操作</span><button type="button" class="is-primary" data-radio-operator-save>应用运营商设置</button></div></section></div>' +
           '<div class="pcat-radio-table-block"><div class="pcat-settings-title"><div><strong>当前与邻近小区</strong><small data-radio-cells-summary>等待扫描</small></div></div><div class="pcat-radio-table-wrap"><table class="pcat-radio-table"><thead><tr><th>状态</th><th>制式</th><th>PLMN</th><th>TAC</th><th>Cell ID</th><th>频段</th><th>频点</th><th>PCI</th><th>RSRP</th><th>RSRQ</th><th>SINR</th><th>操作</th></tr></thead><tbody data-radio-cells><tr><td colspan="12">正在读取小区信息</td></tr></tbody></table></div></div>' +
           '<div class="pcat-radio-ca"><div class="pcat-settings-title"><div><strong>载波聚合详情</strong><small>主载波、辅载波、带宽、MIMO 与调制方式</small></div></div><div data-radio-ca-list><div class="pcat-cell-empty">正在读取载波信息</div></div></div>', "settings") +
+
+        moduleCard("eSIM 与卡槽", "FM350 内置 eUICC 状态和 SIM1 / SIM2 切换", "pcat-cell-esim-status",
+          '<div class="pcat-esim-content"><div class="pcat-cell-detail-grid"><div><span>模组</span><strong data-esim-model>读取中</strong></div><div><span>当前卡槽</span><strong data-esim-slot>读取中</strong></div><div><span>SIM 类型</span><strong data-esim-type>读取中</strong></div><div><span>eUICC 管理器</span><strong data-esim-lpac>检测中</strong></div><div class="is-wide"><span>EID</span><strong data-esim-eid>切换到 SIM2 后读取</strong></div></div>' +
+          '<p class="pcat-esim-notice" data-esim-message>正在查询模组支持情况</p><div class="pcat-esim-actions"><button type="button" data-esim-slot="0">使用实体卡 SIM1</button><button type="button" data-esim-slot="1">使用 eSIM SIM2</button><button type="button" data-esim-refresh>刷新 eSIM 信息</button></div><p class="pcat-esim-hint">切换卡槽或启停套餐会暂时断开蜂窝连接。下载套餐时请确保设备有其他可用的互联网连接。</p></div>', "esim") +
+        moduleCard("eUICC 芯片信息", "芯片版本、存储空间与默认服务器", "pcat-cell-esim-chip",
+          '<div class="pcat-esim-content"><div class="pcat-cell-detail-grid"><div><span>芯片固件</span><strong data-esim-firmware>—</strong></div><div><span>已安装应用</span><strong data-esim-installed>—</strong></div><div><span>剩余非易失存储</span><strong data-esim-memory>—</strong></div><div><span>默认 SM-DP+</span><strong data-esim-smdp>—</strong></div><div class="is-wide"><span>根 SM-DS</span><strong data-esim-smds>—</strong></div></div><div class="pcat-esim-form"><label><span>修改默认 SM-DP+ 地址</span><input data-esim-smdp-input autocomplete="off" placeholder="例如 rsp.example.com"></label><button type="button" data-esim-default-smdp>保存默认地址</button></div></div>', "esim") +
+        moduleCard("eSIM 套餐", "查看、启用、停用、命名与删除已安装套餐", "pcat-cell-esim-profiles",
+          '<div class="pcat-esim-content"><div class="pcat-esim-toolbar"><span data-esim-profile-count>尚未读取套餐</span><button type="button" data-esim-profiles-refresh>刷新套餐</button></div><div class="pcat-esim-list" data-esim-profiles><div class="pcat-cell-empty">切换至 SIM2 后读取套餐</div></div></div>', "esim") +
+        moduleCard("下载新套餐", "粘贴运营商二维码中的 LPA:1$ 激活码", "pcat-cell-esim-download",
+          '<div class="pcat-esim-content"><div class="pcat-esim-form"><label><span>激活码</span><input data-esim-activation autocomplete="off" spellcheck="false" placeholder="LPA:1$服务器$匹配码"></label><label><span>确认码（如运营商要求）</span><input data-esim-confirm-code autocomplete="off" type="password" placeholder="可选"></label><button type="button" class="is-primary" data-esim-download>下载并安装</button></div><p class="pcat-esim-hint">激活码只用于本次下载，不会保存到设备配置。安装后请在上方启用套餐。</p></div>', "esim") +
+        moduleCard("发现待领取套餐", "从 SM-DS 查询运营商分配给本设备的套餐", "pcat-cell-esim-discovery",
+          '<div class="pcat-esim-content"><div class="pcat-esim-form"><label><span>SM-DS 服务器（留空使用默认）</span><input data-esim-discovery-server autocomplete="off" placeholder="lpa.ds.gsma.com"></label><button type="button" data-esim-discovery>查询待领取套餐</button></div><pre class="pcat-esim-output" data-esim-discovery-output>尚未查询</pre></div>', "esim") +
+        moduleCard("运营商通知", "查看、发送和移除 eUICC 待处理通知", "pcat-cell-esim-notifications",
+          '<div class="pcat-esim-content"><div class="pcat-esim-toolbar"><span>套餐操作后应及时发送待处理通知</span><button type="button" data-esim-notifications-refresh>刷新通知</button></div><div class="pcat-esim-list" data-esim-notifications><div class="pcat-cell-empty">尚未读取通知</div></div></div>', "esim") +
+        moduleCard("高级维护", "清空 eUICC 中的全部套餐", "pcat-cell-esim-danger",
+          '<div class="pcat-esim-content"><p class="pcat-esim-hint">清空操作不可撤销，会删除所有已安装套餐；实体 SIM 卡不受影响。</p><div class="pcat-esim-form"><label><span>输入完整 EID 确认</span><input data-esim-purge-eid autocomplete="off" inputmode="numeric" placeholder="32 位 EID"></label><button type="button" class="is-danger" data-esim-purge>清空 eUICC</button></div></div>', "esim") +
       '</div>';
     return section;
   }
@@ -326,6 +347,8 @@
       loadRadio(true);
       loadIdentity(true);
       viewTimer = window.setInterval(() => loadRadio(false), 4000);
+    } else if (currentView === "esim") {
+      loadEsimStatus(true);
     }
     const hardwareInterval = currentView === "temperature" ? 5000 :
       (currentView === "overview" || currentView === "network" ? 10000 : 0);
@@ -1555,6 +1578,218 @@
     }
   }
 
+  function esimText(name, content) {
+    const node = panel.querySelector("[data-esim-" + name + "]");
+    if (node) node.textContent = content === null || content === undefined || content === "" ? "—" : String(content);
+  }
+
+  function esimReady() {
+    return Boolean(esimStatus && esimStatus.euicc_ready && esimStatus.lpac_available);
+  }
+
+  function setEsimMessage(message, error) {
+    const node = panel.querySelector("[data-esim-message]");
+    node.textContent = message;
+    node.classList.toggle("is-error", Boolean(error));
+  }
+
+  async function loadEsimStatus(withDetails) {
+    if (document.hidden) return;
+    try {
+      const data = await fetchJSON("/api/v1/modem/esim/status.json");
+      esimStatus = data;
+      esimText("model", data.model);
+      esimText("slot", data.slot === 0 ? "SIM1 · 实体卡" : data.slot === 1 ? "SIM2 · eSIM" : "未知");
+      esimText("type", data.sim_type === 1 ? "eSIM" : data.sim_type === 0 ? "USIM" : "未知");
+      esimText("eid", data.eid || (data.slot === 1 ? "未检测到 EID" : "切换到 SIM2 后读取"));
+      esimText("lpac", data.lpac_available ? "已安装" : "未安装");
+      setEsimMessage(data.message, false);
+      panel.querySelectorAll("[data-esim-slot]").forEach((button) => {
+        button.classList.toggle("is-active", Number(button.dataset.esimSlot) === data.slot);
+        button.disabled = (Number(button.dataset.esimSlot) === data.slot) ||
+          (button.dataset.esimSlot === "1" && !data.sim2_available);
+      });
+      panel.querySelectorAll(".pcat-cell-esim-chip button,.pcat-cell-esim-download button,.pcat-cell-esim-discovery button,.pcat-cell-esim-danger button").forEach((button) => {
+        button.disabled = !esimReady();
+      });
+      if (withDetails && esimReady()) {
+        await loadEsimRead("chip");
+        await loadEsimRead("profiles");
+        await loadEsimRead("notifications");
+      }
+      if (!esimReady()) {
+        esimProfiles = [];
+        renderEsimProfiles();
+        renderEsimNotifications([]);
+      }
+    } catch (error) {
+      esimStatus = null;
+      setEsimMessage("读取 eSIM 状态失败：" + error.message, true);
+    }
+  }
+
+  function renderEsimChip(data) {
+    const info = data && data.EUICCInfo2 || {};
+    const addresses = data && data.EuiccConfiguredAddresses || {};
+    const resources = info.extCardResource || {};
+    esimText("firmware", info.euiccFirmwareVer || info.profileVersion);
+    esimText("installed", resources.installedApplication);
+    esimText("memory", resources.freeNonVolatileMemory === undefined ? "—" :
+      formatBytes(resources.freeNonVolatileMemory));
+    esimText("smdp", addresses.defaultDpAddress);
+    esimText("smds", addresses.rootDsAddress);
+  }
+
+  function makeEsimButton(label, action, value, danger) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.dataset.esimProfileAction = action;
+    button.dataset.esimValue = value;
+    if (danger) button.classList.add("is-danger");
+    return button;
+  }
+
+  function renderEsimProfiles() {
+    const list = panel.querySelector("[data-esim-profiles]");
+    list.replaceChildren();
+    esimText("profile-count", esimReady() ? esimProfiles.length + " 个已安装套餐" : "切换到 SIM2 后管理套餐");
+    if (!esimProfiles.length) {
+      const empty = document.createElement("div");
+      empty.className = "pcat-cell-empty";
+      empty.textContent = esimReady() ? "尚无已安装套餐" : "当前卡槽无法读取 eSIM 套餐";
+      list.appendChild(empty);
+      return;
+    }
+    esimProfiles.forEach((profile) => {
+      const row = document.createElement("div");
+      row.className = "pcat-esim-row";
+      const heading = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = profile.profileNickname || profile.profileName || profile.serviceProviderName || "未命名套餐";
+      const detail = document.createElement("small");
+      detail.textContent = [profile.serviceProviderName, profile.iccid, profile.profileState].filter(Boolean).join(" · ");
+      heading.append(name, detail);
+      const actions = document.createElement("div");
+      actions.className = "pcat-esim-row-actions";
+      const enabled = String(profile.profileState || "").toLowerCase() === "enabled";
+      actions.appendChild(makeEsimButton(enabled ? "停用" : "启用", enabled ? "disable" : "enable", profile.iccid));
+      const nickname = document.createElement("input");
+      nickname.placeholder = "套餐昵称";
+      nickname.maxLength = 64;
+      nickname.value = profile.profileNickname || "";
+      nickname.dataset.esimNickname = profile.iccid;
+      actions.append(nickname, makeEsimButton("保存昵称", "nickname", profile.iccid));
+      actions.appendChild(makeEsimButton("删除", "delete", profile.iccid, true));
+      row.append(heading, actions);
+      list.appendChild(row);
+    });
+  }
+
+  function renderEsimNotifications(items) {
+    const list = panel.querySelector("[data-esim-notifications]");
+    list.replaceChildren();
+    if (!Array.isArray(items) || !items.length) {
+      const empty = document.createElement("div");
+      empty.className = "pcat-cell-empty";
+      empty.textContent = "没有待处理通知";
+      list.appendChild(empty);
+      return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "pcat-esim-row";
+      const heading = document.createElement("div");
+      const name = document.createElement("strong");
+      name.textContent = "通知 #" + item.seqNumber + " · " + (item.profileManagementOperation || "套餐操作");
+      const detail = document.createElement("small");
+      detail.textContent = [item.iccid, item.notificationAddress].filter(Boolean).join(" · ");
+      heading.append(name, detail);
+      const actions = document.createElement("div");
+      actions.className = "pcat-esim-row-actions";
+      const send = makeEsimButton("发送", "process_notification", String(item.seqNumber));
+      const remove = makeEsimButton("移除", "remove_notification", String(item.seqNumber), true);
+      actions.append(send, remove);
+      row.append(heading, actions);
+      list.appendChild(row);
+    });
+  }
+
+  async function loadEsimRead(kind) {
+    if (!esimReady()) return;
+    try {
+      const payload = await fetchJSON("/api/v1/modem/esim/read.json?kind=" + encodeURIComponent(kind));
+      if (kind === "chip") renderEsimChip(payload.data);
+      if (kind === "profiles") {
+        esimProfiles = Array.isArray(payload.data) ? payload.data : [];
+        renderEsimProfiles();
+      }
+      if (kind === "notifications") renderEsimNotifications(payload.data);
+    } catch (error) {
+      setEsimMessage("读取" + ({ chip: "芯片", profiles: "套餐", notifications: "通知" }[kind] || "eSIM") + "失败：" + error.message, true);
+    }
+  }
+
+  async function pollEsimJob(jobId) {
+    try {
+      const job = await fetchJSON("/api/v1/modem/esim/job.json?id=" + encodeURIComponent(jobId));
+      if (job.state === "running") {
+        setEsimMessage("eSIM 操作正在进行，已运行 " + Math.max(0, Math.floor(Date.now() / 1000 - job.started)) + " 秒", false);
+        return true;
+      }
+      if (esimJobTimer) window.clearInterval(esimJobTimer);
+      esimJobTimer = null;
+      setEsimMessage(job.result && job.result.message || "操作已结束", job.state !== "done");
+      if (job.state === "done") {
+        if (job.action === "discovery") {
+          panel.querySelector("[data-esim-discovery-output]").textContent = JSON.stringify(job.result.data || [], null, 2);
+        }
+        if (job.action === "download") {
+          panel.querySelector("[data-esim-activation]").value = "";
+          panel.querySelector("[data-esim-confirm-code]").value = "";
+        }
+        await loadEsimStatus(true);
+        setEsimMessage(job.result.message || "操作已完成", false);
+      }
+      return false;
+    } catch (error) {
+      if (esimJobTimer) window.clearInterval(esimJobTimer);
+      esimJobTimer = null;
+      setEsimMessage("无法读取操作结果：" + error.message, true);
+      return false;
+    }
+  }
+
+  async function startEsimJob(action, body) {
+    if (!esimReady()) {
+      setEsimMessage("请先切换至 SIM2，并确认 EID 与管理器可用", true);
+      return;
+    }
+    try {
+      const result = await postJSON("/api/v1/modem/esim/action.json", Object.assign({ action: action }, body || {}));
+      setEsimMessage("操作已提交，正在等待模组与 eUICC 响应", false);
+      if (esimJobTimer) window.clearInterval(esimJobTimer);
+      if (await pollEsimJob(result.job_id)) {
+        esimJobTimer = window.setInterval(() => pollEsimJob(result.job_id), 2000);
+      }
+    } catch (error) {
+      setEsimMessage("操作失败：" + error.message, true);
+    }
+  }
+
+  async function switchEsimSlot(slot) {
+    if (esimStatus && esimStatus.slot === slot) return;
+    const label = slot === 1 ? "eSIM SIM2" : "实体卡 SIM1";
+    if (!(await confirmAction("切换到" + label + "会暂时断开蜂窝数据连接。确定继续吗？", "切换 SIM 卡槽"))) return;
+    try {
+      setEsimMessage("正在切换到" + label, false);
+      await postJSON("/api/v1/modem/esim/slot.json", { slot: slot });
+      window.setTimeout(() => loadEsimStatus(true), 1800);
+    } catch (error) {
+      setEsimMessage("切换失败：" + error.message, true);
+    }
+  }
+
   function bind() {
     panel.querySelector("[data-cell-menu-toggle]").addEventListener("click", function () {
       const open = panel.classList.toggle("is-menu-open");
@@ -1568,6 +1803,12 @@
       const label = button.querySelector("span:last-child");
       button.disabled = true;
       if (label) label.textContent = "读取中";
+      if (currentView === "esim") {
+        await loadEsimStatus(true);
+        button.disabled = false;
+        if (label) label.textContent = "刷新";
+        return;
+      }
       try {
         await postJSON("/api/v1/modem/basic.json", {
           refresh: hardwareRefreshType() || "cellular_overview"
@@ -1640,6 +1881,58 @@
       this.value = this.value.replace(/\D/g, "").slice(0, 15);
     });
     panel.querySelector("[data-imei-write]").addEventListener("click", writeImei);
+    panel.querySelector("[data-esim-refresh]").addEventListener("click", () => loadEsimStatus(true));
+    panel.querySelectorAll("[data-esim-slot]").forEach((button) => {
+      button.addEventListener("click", () => switchEsimSlot(Number(button.dataset.esimSlot)));
+    });
+    panel.querySelector("[data-esim-profiles-refresh]").addEventListener("click", () => loadEsimRead("profiles"));
+    panel.querySelector("[data-esim-notifications-refresh]").addEventListener("click", () => loadEsimRead("notifications"));
+    panel.querySelector("[data-esim-default-smdp]").addEventListener("click", () => {
+      startEsimJob("default_smdp", { address: panel.querySelector("[data-esim-smdp-input]").value.trim() });
+    });
+    panel.querySelector("[data-esim-download]").addEventListener("click", () => {
+      const activation = panel.querySelector("[data-esim-activation]").value.trim();
+      if (!/^LPA:1\$\S+/.test(activation)) {
+        setEsimMessage("请填写运营商提供的 LPA:1$ 激活码", true);
+        return;
+      }
+      startEsimJob("download", {
+        activation_code: activation,
+        confirmation_code: panel.querySelector("[data-esim-confirm-code]").value.trim()
+      });
+    });
+    panel.querySelector("[data-esim-discovery]").addEventListener("click", () => {
+      startEsimJob("discovery", { server: panel.querySelector("[data-esim-discovery-server]").value.trim() });
+    });
+    panel.querySelector("[data-esim-purge]").addEventListener("click", async () => {
+      const eid = panel.querySelector("[data-esim-purge-eid]").value.trim();
+      if (!esimStatus || eid !== esimStatus.eid) {
+        setEsimMessage("请先输入页面显示的完整 EID", true);
+        return;
+      }
+      if (!(await confirmAction("将删除 eUICC 中的所有套餐，此操作无法恢复。确定清空吗？", "清空 eUICC"))) return;
+      startEsimJob("purge", { confirm_eid: eid });
+    });
+    panel.querySelector("[data-esim-profiles]").addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-esim-profile-action]");
+      if (!button) return;
+      const action = button.dataset.esimProfileAction;
+      const iccid = button.dataset.esimValue;
+      if (action === "nickname") {
+        const input = button.parentElement.querySelector("input[data-esim-nickname]");
+        startEsimJob("nickname", { iccid: iccid, nickname: input.value.trim() });
+        return;
+      }
+      if (!(await confirmAction("确定" + ({ enable: "启用", disable: "停用", delete: "删除" }[action] || action) + "套餐 " + iccid + " 吗？", "eSIM 套餐操作"))) return;
+      startEsimJob(action, { iccid: iccid });
+    });
+    panel.querySelector("[data-esim-notifications]").addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-esim-profile-action]");
+      if (!button) return;
+      const action = button.dataset.esimProfileAction;
+      if (action === "remove_notification" && !(await confirmAction("确定移除这条待处理通知吗？", "移除运营商通知"))) return;
+      startEsimJob(action, { sequence: button.dataset.esimValue });
+    });
     panel.querySelectorAll("[data-radio-rat],[data-radio-arfcn],[data-radio-pci],[data-radio-reapply],[data-radio-plmn]").forEach((input) => {
       input.addEventListener("input", () => { radioDraftDirty = true; });
       input.addEventListener("change", () => { radioDraftDirty = true; });
@@ -1729,5 +2022,6 @@
     if (viewTimer) window.clearInterval(viewTimer);
     if (hardwareTimer) window.clearInterval(hardwareTimer);
     if (modemOnlineRefreshTimer) window.clearTimeout(modemOnlineRefreshTimer);
+    if (esimJobTimer) window.clearInterval(esimJobTimer);
   });
 }());
