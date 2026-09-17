@@ -191,7 +191,7 @@
     const band = bands["5g"] ? "5g" : bands["2g"] ? "2g" : Object.keys(bands)[0];
     card.querySelector('[data-field="band"]').value = band;
     const modes = (bands[band] || {}).modes || [];
-    const preferred = ["EHT80", "HE80", "VHT80", "EHT40", "HE40", "HT40"].find(function (mode) { return modes.indexOf(mode) >= 0; }) || modes[modes.length - 1];
+    const preferred = ["HE80", "EHT80", "VHT80", "HE40", "EHT40", "HT40"].find(function (mode) { return modes.indexOf(mode) >= 0; }) || modes[modes.length - 1];
     populateModes(card, radio, preferred);
     const desiredChannel = band === "5g" ? "149" : band === "2g" ? "6" : "auto";
     populateChannels(card, radio, desiredChannel);
