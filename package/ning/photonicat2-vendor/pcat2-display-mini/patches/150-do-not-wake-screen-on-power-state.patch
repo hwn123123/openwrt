@@ -1,0 +1,63 @@
+--- a/processData.go
++++ b/processData.go
+@@ -325,24 +325,22 @@
+ 		globalData.Store("BatteryCharging", battChargingStatus)
+ 	}
+ 
+-	//if charging status change, we trigger lastActivity
+-	if battChargingStatus != lastChargingStatus {
+-		log.Println("Battery charging status changed to: ", battChargingStatus)
+-		if idleState == STATE_ACTIVE {
+-			lastActivity = time.Now().Add(-fadeInDur) //reset lastActivity for screen to stay on, - fadeInDur to send state to active
+-		} else {
+-			lastActivity = time.Now() //bring back screen with some fade in
+-		}
+-		lastChargingStatus = battChargingStatus
+-
+-		log.Printf("idleTimeout: %v", idleTimeout)
+-	}
+ 	if battChargingStatus {
+ 		idleTimeout = time.Duration(cfg.ScreenDimmerTimeOnDCSeconds) * time.Second
+ 	} else {
+ 		idleTimeout = time.Duration(cfg.ScreenDimmerTimeOnBatterySeconds) * time.Second
+ 	}
+ 
++	// A charger/status change is background telemetry, not user activity.  The
++	// old code rewrote lastActivity here (without lastActivityMu), which could
++	// both wake a dark panel and leave a torn time.Time that never timed out
++	// until the hardware button replaced it.  Only select the matching timeout;
++	// button, movement and explicit page-change events remain the wake sources.
++	if battChargingStatus != lastChargingStatus {
++		log.Printf("Battery charging status changed to %v; idle timeout is %v", battChargingStatus, idleTimeout)
++		lastChargingStatus = battChargingStatus
++	}
++
+ 	// Battery/DC volts and wattage are drawn on page 0 too, so sample them at
+ 	// this collector's page-0 cadence (2 Hz visible, 1/min otherwise) instead
+ 	// of collectLinuxData's cpu-bars-page cadence, which left the page-0 row
+--- a/processDataCov2_test.go
++++ b/processDataCov2_test.go
+@@ -828,6 +828,10 @@
+ 	idleState = STATE_ACTIVE
+ 	cfg.ScreenDimmerTimeOnDCSeconds = 123
+ 	cfg.ScreenDimmerTimeOnBatterySeconds = 45
++	activityBefore := time.Now().Add(-10 * time.Minute)
++	lastActivityMu.Lock()
++	lastActivity = activityBefore
++	lastActivityMu.Unlock()
+ 
+ 	collectBatteryData()
+ 
+@@ -843,6 +847,12 @@
+ 	if !lastChargingStatus {
+ 		t.Error("lastChargingStatus not updated on transition")
+ 	}
++	lastActivityMu.Lock()
++	activityAfter := lastActivity
++	lastActivityMu.Unlock()
++	if !activityAfter.Equal(activityBefore) {
++		t.Errorf("charging transition changed lastActivity: got %v, want %v", activityAfter, activityBefore)
++	}
+ 	if v := pdCovLoad("RemainingTime"); v != "2:05" {
+ 		t.Errorf("web-provided RemainingTime clobbered: %v", v)
+ 	}
