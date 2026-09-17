@@ -2870,11 +2870,12 @@ body.pcat-modern-settings .pcat-settings-root {
 
 /* eSIM management shares the cellular grid and control styling. */
 .pcat-cell-esim-status,
-.pcat-cell-esim-profiles,
-.pcat-cell-esim-notifications { grid-column: span 12; --card-accent: var(--cell-green); }
+.pcat-cell-esim-profiles { grid-column: span 12; --card-accent: var(--cell-green); }
 .pcat-cell-esim-chip,
 .pcat-cell-esim-download,
-.pcat-cell-esim-discovery { grid-column: span 6; --card-accent: var(--cell-blue); }
+.pcat-cell-esim-discovery,
+.pcat-cell-esim-notifications { grid-column: span 6; --card-accent: var(--cell-blue); }
+.pcat-cell-esim-notifications { --card-accent: var(--cell-green); }
 .pcat-cell-esim-danger { grid-column: span 12; --card-accent: #ec7676; }
 .pcat-esim-content { padding: .8rem; }
 .pcat-esim-content .pcat-cell-detail-grid { padding: 0 0 .7rem; }
@@ -2908,7 +2909,38 @@ body.pcat-modern-settings .pcat-settings-root {
 @media (max-width: 1050px) {
   .pcat-cell-esim-chip,
   .pcat-cell-esim-download,
-  .pcat-cell-esim-discovery { grid-column: span 12; }
+  .pcat-cell-esim-discovery,
+  .pcat-cell-esim-notifications { grid-column: span 12; }
+}
+
+@media (max-width: 760px) {
+  .pcat-esim-content { padding: .7rem; }
+  .pcat-esim-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .pcat-esim-actions button,
+  .pcat-esim-form > button { width: 100%; min-height: 42px; }
+  .pcat-esim-actions [data-esim-refresh] { grid-column: 1 / -1; }
+  .pcat-esim-toolbar { align-items: flex-start; }
+  .pcat-esim-toolbar button { min-height: 40px; }
+  .pcat-esim-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .pcat-esim-row > div:first-child { min-width: 0; }
+  .pcat-esim-row-actions { width: 100%; }
+  .pcat-esim-row-actions input { width: 100%; flex: 1 1 100%; }
+  .pcat-esim-row-actions button { min-height: 40px; flex: 1 1 88px; }
+  .pcat-esim-output { max-height: 240px; }
+}
+
+@media (max-width: 430px) {
+  .pcat-esim-content { padding: .6rem; }
+  .pcat-esim-actions { grid-template-columns: minmax(0, 1fr); }
+  .pcat-esim-actions [data-esim-refresh] { grid-column: auto; }
+  .pcat-esim-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); }
+  .pcat-esim-toolbar button { width: 100%; }
 }
 
 /* The classified cellular rules above intentionally use the desktop 12-column
