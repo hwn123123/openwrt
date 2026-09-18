@@ -1,0 +1,11 @@
+--- a/app/templates/_notification.html
++++ b/app/templates/_notification.html
+@@ -6,7 +6,7 @@
+      x-transition:leave="transition ease-in duration-200"
+      x-transition:leave-start="opacity-100 transform translate-y-0"
+      x-transition:leave-end="opacity-0 transform translate-y-2"
+-     class="fixed top-20 right-4 z-50 max-w-md min-w-80"
++     class="pcat-centered-notification fixed z-50 max-w-md min-w-80"
+      x-cloak
+      :class="notification.type === 'error' ? 'bg-red-50 border-red-200' : notification.type === 'success' ? 'bg-green-50 border-green-200' : notification.type === 'warning' ? 'bg-yellow-50 border-yellow-200' : 'bg-blue-50 border-blue-200'"
+      style="border: 1px solid; border-radius: 0.75rem; padding: 1.25rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);">

@@ -232,10 +232,10 @@ Index: pcat-manager-web-2.0.0/app/templates/_base.html
      </style>
      <script defer src="/static/alpine-3.10.2.js?v={{ cache_bust_version }}"></script>
      <link rel="stylesheet" href="/static/app.css?v={{ cache_bust_version }}" />
-+    <link rel="stylesheet" href="/static/vendor-dark.css?v={{ cache_bust_version }}&ui=pcat-r51" />
-+    <script defer src="/static/vendor-telemetry.js?v={{ cache_bust_version }}&ui=pcat-r51"></script>
++    <link rel="stylesheet" href="/static/vendor-dark.css?v={{ cache_bust_version }}&ui=pcat-r52" />
++    <script defer src="/static/vendor-telemetry.js?v={{ cache_bust_version }}&ui=pcat-r52"></script>
 +    {% if request.path.rstrip('/') == '/modem' %}
-+    <script defer src="/static/vendor-modem.js?v={{ cache_bust_version }}&ui=pcat-r51"></script>
++    <script defer src="/static/vendor-modem.js?v={{ cache_bust_version }}&ui=pcat-r52"></script>
 +    {% elif request.path.rstrip('/') in ['/device_control', '/general_settings', '/settings', '/timer', '/sound_events'] %}
 +    <script defer src="/static/vendor-settings.js?v={{ cache_bust_version }}&ui=pcat-r44"></script>
 +    {% if request.path.rstrip('/') == '/sound_events' %}

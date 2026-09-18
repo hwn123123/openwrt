@@ -15,6 +15,8 @@ import uuid
 
 from flask import jsonify, request
 
+import pcat_modem_usb
+
 
 _LOCK_PATH = "/tmp/pcat-fm350-at.lock"
 _LPAC = "/usr/bin/lpac-fm350"
@@ -118,7 +120,8 @@ def _lpac(args, timeout=45):
         raise EsimError("固件中未安装 lpac-fm350，无法管理 eSIM 套餐", 503)
     env = os.environ.copy()
     env.update({
-        "LPAC_APDU": "at", "LPAC_APDU_AT_DEVICE": "/dev/ttyUSB3",
+        "LPAC_APDU": "at",
+        "LPAC_APDU_AT_DEVICE": pcat_modem_usb.resolve_primary_at_port(),
         "LPAC_HTTP": "curl", "LPAC_APDU_AT_DEBUG": "false",
         "LPAC_HTTP_DEBUG": "false",
     })

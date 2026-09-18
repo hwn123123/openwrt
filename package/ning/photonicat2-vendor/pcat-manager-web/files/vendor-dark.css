@@ -547,12 +547,37 @@ body [style*="background: white"] {
   color: var(--pcat-text) !important;
 }
 
+body .modal {
+  inset: 0 !important;
+  display: grid;
+  width: 100% !important;
+  height: 100% !important;
+  height: 100dvh !important;
+  padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+    max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  place-items: center;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
 body .modal > .modal-main {
-  position: fixed !important;
+  position: relative !important;
+  inset: auto !important;
+  min-width: 0 !important;
+  margin: auto !important;
+  max-height: calc(100vh - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  transform: none !important;
+}
+
+body .pcat-centered-notification {
   top: 50% !important;
+  right: auto !important;
   left: 50% !important;
-  margin: 0 !important;
-  max-height: calc(100vh - 48px);
+  width: min(28rem, calc(100vw - 32px)) !important;
+  min-width: 0 !important;
+  max-width: calc(100vw - 32px) !important;
   transform: translate(-50%, -50%) !important;
 }
 
@@ -2824,8 +2849,8 @@ body.pcat-modern-settings .pcat-settings-root {
 .pcat-sound-threshold-grid input { min-width: 0; width: 100%; padding: .28rem .35rem; font-size: .56rem; text-align: right; }
 .pcat-sound-threshold-grid label b { color: var(--pcat-warning); font-size: .5rem; }
 .pcat-sound-threshold-note { margin: 0; padding: .1rem .72rem .68rem; color: var(--pcat-faint); font-size: .47rem; line-height: 1.55; }
-.pcat-sound-toast { position: fixed; z-index: 80; top: 5rem; right: 1rem; max-width: min(360px,calc(100vw - 2rem)); padding: .65rem .8rem; border: 1px solid rgba(38,214,160,.35); border-radius: 9px; background: #07100c; color: var(--pcat-text); box-shadow: 0 20px 55px rgba(0,0,0,.5); font-size: .59rem; opacity: 0; pointer-events: none; transform: translateY(-8px); transition: opacity .18s, transform .18s; }
-.pcat-sound-toast.is-visible { opacity: 1; transform: translateY(0); }
+.pcat-sound-toast { position: fixed; z-index: 80; top: 50%; left: 50%; width: min(360px,calc(100vw - 2rem)); max-width: calc(100vw - 2rem); padding: .65rem .8rem; border: 1px solid rgba(38,214,160,.35); border-radius: 9px; background: #07100c; color: var(--pcat-text); box-shadow: 0 20px 55px rgba(0,0,0,.5); font-size: .59rem; opacity: 0; pointer-events: none; transform: translate(-50%,calc(-50% - 8px)); transition: opacity .18s, transform .18s; }
+.pcat-sound-toast.is-visible { opacity: 1; transform: translate(-50%,-50%); }
 .pcat-sound-toast.is-error { border-color: rgba(255,111,125,.45); color: #ff9aa4; }
 
 @media (max-width: 980px) {

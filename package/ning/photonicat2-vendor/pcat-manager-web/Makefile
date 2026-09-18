@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat-manager-web
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=72
+PKG_RELEASE:=74
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/pcat-manager-web.git
@@ -95,6 +95,8 @@ define Package/pcat-manager-web/install
 		$(1)/usr/share/pcat-manager-web/pcat_wifi.py
 	$(INSTALL_DATA) ./files/pcat_dashboard.py \
 		$(1)/usr/share/pcat-manager-web/pcat_dashboard.py
+	$(INSTALL_DATA) ./files/pcat_modem_usb.py \
+		$(1)/usr/share/pcat-manager-web/pcat_modem_usb.py
 	$(INSTALL_DATA) ./files/pcat_radio.py \
 		$(1)/usr/share/pcat-manager-web/pcat_radio.py
 	$(INSTALL_DATA) ./files/pcat_esim.py \
@@ -117,6 +119,8 @@ define Package/pcat-manager-web/install
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) ./files/pcat-manager-web.init \
 		$(1)/etc/init.d/pcat-manager-web
+	$(INSTALL_BIN) ./files/pcat-modem-health.init \
+		$(1)/etc/init.d/pcat-modem-health
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/pcat-terminal-shell \
 		$(1)/usr/bin/pcat-terminal-shell
