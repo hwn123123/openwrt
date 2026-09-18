@@ -335,13 +335,6 @@ define U-Boot/rk3576/Default
   TPL:=rk3576_ddr_lp4_2112MHz_lp5_2736MHz_v1.09.bin
 endef
 
-define U-Boot/generic-rk3576
-  $(U-Boot/rk3576/Default)
-  NAME:=Generic RK3576
-  BUILD_DEVICES:= \
-    friendlyarm_nanopi-r76s
-endef
-
 define U-Boot/photonicat2-rk3576
   $(U-Boot/rk3576/Default)
   NAME:=Ariaboard Photonicat 2
@@ -353,6 +346,13 @@ define U-Boot/nanopi-m5-rk3576
   NAME:=NanoPi M5
   BUILD_DEVICES:= \
     friendlyarm_nanopi-m5
+endef
+
+define U-Boot/nanopi-r76s-rk3576
+  $(U-Boot/rk3576/Default)
+  NAME:=NanoPi R76S
+  BUILD_DEVICES:= \
+    friendlyarm_nanopi-r76s
 endef
 
 define U-Boot/rock-4d-rk3576
@@ -479,9 +479,9 @@ UBOOT_TARGETS := \
   radxa-e25-rk3568 \
   rock-3a-rk3568 \
   rock-3b-rk3568 \
-  generic-rk3576 \
   photonicat2-rk3576 \
   nanopi-m5-rk3576 \
+  nanopi-r76s-rk3576 \
   rock-4d-rk3576 \
   generic-rk3588 \
   nanopc-t6-rk3588 \
