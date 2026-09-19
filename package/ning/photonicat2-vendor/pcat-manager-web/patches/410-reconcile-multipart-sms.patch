@@ -1,0 +1,339 @@
+--- a/app/pc_sms_client.py
++++ b/app/pc_sms_client.py
+@@ -63,7 +63,7 @@
+ import app as app_module
+ from pcat_util import isp_dict, pcat_logger
+ from database import init_db, connect_db, get_rows, get_rows_param
+-from pysms_tool import SMSTool
++from pysms_tool import SMSTool, PDUDecoder
+ 
+ INTERVAL_SMS_HOOK = 30
+ SMS_SESSION_CHECK_INTERVAL = 600
+@@ -136,6 +136,7 @@
+         
+         # Ensure hook history table exists (migration for existing databases)
+         self.ensure_hook_history_table(modem_db_path)
++        self._reconcile_sms_mirror()
+         
+         connect_db(modem_db_path)
+     def _on_modem_sms_notification(self, _line):
+@@ -669,59 +670,131 @@
+         return sms_list
+ 
+     def combine_sms_parts(self, sms_list):
+-        # 1. Separate out multipart messages vs. single messages
++        # Keep incomplete multipart messages on the SIM until every part has
++        # arrived. Saving intermediate versions creates duplicate Web bubbles.
+         multipart_groups = {}
+         single_messages = []
+         smss = sms_list["msg"]
+         for sms in smss:
+             index = sms.get('index')
+-            total = sms.get('total', 1)
+-            part  = sms.get('part',  1)
++            try:
++                total = int(sms.get('total') or 1)
++                part = int(sms.get('part') or 1)
++            except (TypeError, ValueError):
++                continue
+             ref   = sms.get('reference')
+             sender= sms.get('sender')
+ 
+-            # If this SMS has multiple parts, group it by (sender, reference)
++            # Storage and part count distinguish messages with the same sender
++            # and reference number; timestamps can differ between parts.
+             if total > 1 and ref is not None:
+-                key = (sender, ref)
+-                multipart_groups.setdefault(key, []).append(sms)
+-            else:
+-                # single-part: just pass through
+-                temp_sms = sms.copy()
+-                temp_sms['indexes'] = [index]
+-                single_messages.append(temp_sms)
+-
+-        # 2. Merge each multipart group
++                if 1 <= part <= total:
++                    key = (sender, sms.get('storage'), ref, total)
++                    multipart_groups.setdefault(key, []).append(sms)
++                continue
++            temp_sms = sms.copy()
++            temp_sms['indexes'] = [index]
++            single_messages.append(temp_sms)
++
+         merged = []
+-        for (sender, ref), parts in multipart_groups.items():
+-            # Sort by part number
+-            parts.sort(key=lambda x: x['part'])
+-            # Start from the first part’s metadata...
+-            first = parts[0].copy()
+-            first['indexes'] = [p['index'] for p in parts]
+-            # ...but rebuild content by concatenating all parts in order
+-            first['content'] = ''.join(p['content'] for p in parts)
+-            # Clean up fields you no longer need (optional)
+-            first.pop('part', None)
+-            first.pop('total', None)
+-            merged.append(first)
+-        
+-        # 3. Combine and re-sort by original index (or timestamp) if you need deterministic order
++        for key, messages in multipart_groups.items():
++            total = key[-1]
++            # Parts can carry slightly different SMSC timestamps. Keep messages
++            # with reused reference numbers separate by a 24-hour window and
++            # by their part number, without imposing any fixed part-count cap.
++            timed_messages = []
++            for sms in messages:
++                try:
++                    received_at = datetime.datetime.strptime(
++                        sms.get('timestamp') or '', '%m/%d/%y %H:%M:%S')
++                    timed_messages.append((received_at, sms))
++                except ValueError:
++                    continue
++            timed_messages.sort(key=lambda item: (item[0], item[1].get('index') or 0))
++            buckets = []
++            for received_at, sms in timed_messages:
++                part = int(sms['part'])
++                bucket = next((bucket for bucket in reversed(buckets)
++                               if part not in bucket['parts'] and
++                               abs(received_at - bucket['started_at']) <=
++                               datetime.timedelta(hours=24)), None)
++                if bucket is None:
++                    bucket = {'started_at': received_at, 'parts': {}}
++                    buckets.append(bucket)
++                bucket['parts'][part] = sms
++            for bucket in buckets:
++                numbered_parts = bucket['parts']
++                if set(numbered_parts) != set(range(1, total + 1)):
++                    continue
++                parts = [numbered_parts[number] for number in range(1, total + 1)]
++                first = parts[0].copy()
++                first['indexes'] = [p['index'] for p in parts]
++                first['content'] = ''.join(p['content'] for p in parts)
++                first.pop('part', None)
++                first.pop('total', None)
++                merged.append(first)
++        
+         combined = single_messages + merged
+         combined.sort(key=lambda x: x.get('index', 0))
+         fmt_combined = {}
+         fmt_combined["msg"] = combined
+         return fmt_combined
+ 
++    def _reconcile_sms_mirror(self):
++        """Remove superseded partial rows and transient PDU decode failures.
++
++        This also repairs mirrors created by earlier firmware without touching
++        any physical SIM/modem message.
++        """
++        try:
++            rows = get_rows(
++                self.modem_db_path,
++                "SELECT id, from_num, storage, sent_at, content, raw_json "
++                "FROM sms WHERE direction = 0 AND raw_json IS NOT NULL")
++            groups = {}
++            superseded = set()
++            for row in rows:
++                try:
++                    if (row['from_num'] == '[Decode error]' and
++                            (row['content'] or '').startswith('[PDU decode failed:')):
++                        superseded.add(row['id'])
++                        continue
++                    raw = json.loads(row['raw_json'])
++                    reference = raw.get('reference')
++                    indexes = raw.get('indexes') or [raw.get('index')]
++                    indexes = frozenset(int(index) for index in indexes if index is not None)
++                    if reference is None or not indexes:
++                        continue
++                    key = (row['from_num'], row['storage'], reference)
++                    groups.setdefault(key, []).append((row['id'], indexes, row['content'] or ''))
++                except (TypeError, ValueError, json.JSONDecodeError):
++                    continue
++
++            for entries in groups.values():
++                for old_id, old_indexes, old_content in entries:
++                    if old_content and any(
++                           old_indexes < new_indexes and old_content in new_content
++                           for new_id, new_indexes, new_content in entries
++                           if old_id != new_id):
++                        superseded.add(old_id)
++            for sms_id in superseded:
++                self.exec_sql_param("DELETE FROM sms WHERE id = ?", [sms_id])
++            if superseded:
++                pcat_logger.logger.info(
++                    "Removed %d stale SMS mirror rows", len(superseded))
++            return len(superseded)
++        except sqlite3.Error as error:
++            pcat_logger.logger.error("Failed to reconcile SMS mirror: %s", error)
++            return 0
++
+     def save_sms_to_db(self, sms_list):
+         """
+-        Insert new SMS messages into the local SQLite DB, ignoring duplicates.
+-        After saving, delete the message from modem/SIM storage to prevent overflow.
++        Mirror complete SMS messages in SQLite without deleting physical copies.
+         """
+         # Define helper function to escape SQL string values
+         def escape_sql_string(value):
+             return str(value).replace("'", "''") if value is not None else ''
+ 
+-        messages_to_delete = []  # Track messages to delete from modem after saving
+         inserted_count = 0
+         
+         for sms in sms_list.get('msg', []):
+@@ -733,11 +806,6 @@
+             from database import get_rows_param
+             rows = get_rows_param(self.modem_db_path, sql, [hash_digest])
+             if len(rows) > 0:
+-                # Still add to delete list if message exists in database but not yet deleted from modem
+-                message_index = sms.get('index')
+-                message_storage = sms.get('storage', 'SM')  # Default to SM if not specified
+-                if message_index:
+-                    messages_to_delete.append((message_index, message_storage))
+                 continue
+                 
+             # Extract fields
+@@ -748,7 +816,6 @@
+             status     = sms.get('status', '')
+             content    = sms.get('content', '')
+             direction  = sms.get('direction', 1)
+-            hook_processed = sms.get('hook_processed', 0)
+             sent_at = sms.get('timestamp', datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+             created_at = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+             raw_json = json.dumps(sms)
+@@ -773,21 +840,15 @@
+             try:
+                 self.exec_sql(complete_sql)
+                 inserted_count += 1
+-                
+-                # Add to delete list only after successful database save
+-                message_index = sms.get('index')
+-                message_storage = sms.get('storage', 'SM')  # Default to SM if not specified
+-                if message_index:
+-                    messages_to_delete.append((message_index, message_storage))
+-                    
+             except Exception as e:
+                 print(f"Failed to save SMS to database: {e}")
+                 pcat_logger.logger.error(f"Failed to save SMS to database: {e}")
+-                continue  # Don't delete from modem if database save failed
++                continue
+         
+         # The SQLite database is only a Web mirror. Keep messages in their
+         # selected SIM/modem storage until the user explicitly deletes them.
+-        if inserted_count:
++        reconciled_count = self._reconcile_sms_mirror()
++        if inserted_count or reconciled_count:
+             self._notify_database_changed()
+         return inserted_count
+ 
+@@ -880,7 +941,7 @@
+                 indexes = [index for index in indexes if index is not None]
+                 storage = str(raw.get("storage") or row["storage"] or "SM").upper()
+                 if indexes and not self._delete_messages_from_modem(
+-                        [(index, storage) for index in indexes]):
++                        [(index, storage) for index in indexes], raw):
+                     return False
+             sql_command = "DELETE FROM sms WHERE id = ?;"
+             self.exec_sql_param(sql_command, [int(sms_id)])
+@@ -1062,6 +1123,13 @@
+             
+             for msg in all_messages:
+                 decoded = msg['decoded']
++                if decoded.get('sender') == '[Decode error]':
++                    # A transient bad PDU read is not a real SMS. Leave the
++                    # physical slot intact so a later poll can decode it.
++                    pcat_logger.logger.debug(
++                        "Skipping undecodable SMS at %s:%s",
++                        msg.get('storage', 'SM'), msg.get('index'))
++                    continue
+                 
+                 # Convert timestamp format from "2025/01/15 12:34:56 GMT+08:00" to "01/15/25 12:34:56"
+                 timestamp = decoded.get('timestamp', '')
+@@ -1116,10 +1184,10 @@
+             pcat_logger.logger.error("Failed to parse sms list from pysms_tool")
+             return None
+     
+-    def _delete_messages_from_modem(self, messages_to_delete):
+-        """
+-        Delete messages from modem using pysms_tool instead of subprocess.
+-        messages_to_delete: list of tuples (index, storage)
++    def _delete_messages_from_modem(self, messages_to_delete, expected_sms):
++        """
++        Delete matching physical SMS parts, leaving reused modem indexes alone.
++        An absent index is already deleted and must not trap its Web mirror.
+         """
+         if not messages_to_delete:
+             return True
+@@ -1138,15 +1206,66 @@
+                     if serial_obj is None:
+                         return False
+                     sms_tool = SMSTool(serial_port=serial_obj, debug=SMS_DEBUG_BOOL)
+-                    selected, _ = self._sms_command(
+-                        sms_tool, 'AT+CPMS="{0}"'.format(storage), 5)
+-                    if not selected:
+-                        return False
+-                    for index in indexes:
+-                        deleted, _ = self._sms_command(
+-                            sms_tool, "AT+CMGD={0}".format(int(index)), 5)
+-                        if not deleted:
++                    try:
++                        selected, _ = self._sms_command(
++                            sms_tool, 'AT+CPMS="{0}"'.format(storage), 5)
++                        pdu_mode, _ = self._sms_command(sms_tool, "AT+CMGF=0", 5)
++                        if not selected or not pdu_mode:
+                             return False
++                        listed, responses = self._sms_command(sms_tool, "AT+CMGL=4", 15)
++                        if not listed:
++                            return False
++                        physical = {}
++                        for position, line in enumerate(responses[:-1]):
++                            if not line.startswith('+CMGL:'):
++                                continue
++                            try:
++                                index = int(line.split(':', 1)[1].split(',', 1)[0].strip())
++                            except ValueError:
++                                continue
++                            physical[index] = responses[position + 1]
++
++                        for index in indexes:
++                            index = int(index)
++                            if index not in physical:
++                                continue
++                            decoded = PDUDecoder.decode_pdu(physical[index])
++                            if decoded.get('sender') == '[Decode error]':
++                                return False
++                            sender_matches = decoded.get('sender') == expected_sms.get('sender')
++                            timestamp = decoded.get('timestamp', '').split(' GMT', 1)[0].replace('/', '-')
++                            try:
++                                physical_at = datetime.datetime.strptime(
++                                    timestamp, '%Y-%m-%d %H:%M:%S')
++                                mirrored_at = datetime.datetime.strptime(
++                                    expected_sms.get('timestamp') or '', '%Y-%m-%d %H:%M:%S')
++                                time_matches = abs(physical_at - mirrored_at) <= datetime.timedelta(hours=24)
++                            except ValueError:
++                                time_matches = timestamp == expected_sms.get('timestamp')
++                            reference = expected_sms.get('reference')
++                            if reference is None:
++                                content_matches = decoded.get('message') == expected_sms.get('content')
++                            else:
++                                segment = decoded.get('message') or ''
++                                content_matches = (decoded.get('reference') == reference and
++                                                   bool(segment) and
++                                                   segment in (expected_sms.get('content') or ''))
++                            if not (sender_matches and time_matches and content_matches):
++                                pcat_logger.logger.warning(
++                                    "SMS storage %s index %s no longer matches its Web mirror",
++                                    storage, index)
++                                continue
++                            deleted, delete_responses = self._sms_command(
++                                sms_tool, "AT+CMGD={0}".format(index), 5)
++                            if not deleted and not any(
++                                    line.startswith(('+CMS ERROR: 321', '+CME ERROR: 321'))
++                                    for line in delete_responses):
++                                return False
++                    finally:
++                        preferred = pcat_config.get_sms_storage()
++                        self._sms_command(
++                            sms_tool,
++                            'AT+CPMS="{0}","{0}","{0}"'.format(preferred), 5)
+             except Exception as error:
+                 pcat_logger.logger.error("Failed to delete modem SMS: %s", error)
+                 return False
