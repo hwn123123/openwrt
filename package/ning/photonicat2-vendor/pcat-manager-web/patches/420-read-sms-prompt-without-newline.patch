@@ -1,0 +1,52 @@
+--- a/app/pysms_tool.py
++++ b/app/pysms_tool.py
+@@ -85,6 +85,7 @@
+ 
+ import argparse
+ import serial
++import select
+ import time
+ import sys
+ import json
+@@ -805,17 +806,33 @@
+         self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+         self.serial_port.flush()
+ 
+-        # Wait for '>' prompt from modem before sending PDU data (FM350-GL requirement)
++        # The FM350 prompt is not newline-terminated. readline() waits for the
++        # serial port's 15-second timeout even when '>' arrives immediately.
++        # Read one available byte at a time while keeping a real deadline.
+         prompt_received = False
+-        prompt_timeout = time.time() + 10  # 10 second timeout for prompt
+-        while time.time() < prompt_timeout:
+-            line = self.serial_port.readline().decode(errors='ignore').strip()
++        prompt_timeout = time.monotonic() + 10
++        response_line = bytearray()
++        while time.monotonic() < prompt_timeout:
++            remaining = prompt_timeout - time.monotonic()
++            readable, _, _ = select.select([self.serial_port], [], [], remaining)
++            if not readable:
++                break
++            char = self.serial_port.read(1)
++            if not char:
++                continue
++            if char == b'>':
++                prompt_received = True
++                break
++            if char not in (b'\r', b'\n'):
++                response_line.extend(char)
++                if len(response_line) > 1024:
++                    del response_line[:-1024]
++                continue
++            line = response_line.decode(errors='ignore').strip()
++            response_line.clear()
+             if self.debug and line:
+                 print(f"\033[43m[RECV] {line}\033[0m", file=sys.stderr)
+-            if line == '>':
+-                prompt_received = True
+-                break
+-            elif '+CMS ERROR:' in line or line == 'ERROR':
++            if line == 'ERROR' or line.startswith(('+CMS ERROR:', '+CME ERROR:')):
+                 status_info["error"] = f"Modem rejected CMGS command: {line}"
+                 if not json_output:
+                     print(f"\033[31mModem rejected CMGS command: {line}\033[0m", file=sys.stderr)
