@@ -43,6 +43,25 @@ class BootGuardTest(unittest.TestCase):
         self.assertEqual(MODULE.boot_guard(wait_seconds=40), 0)
         self.assertEqual(hub_resets, [True])
 
+    def test_missing_hub_retries_until_platform_driver_is_bound(self):
+        hub_reset_calls = []
+        hub_recovered = []
+        MODULE._onboard_hub_present = lambda: bool(hub_recovered)
+
+        def reset_hub():
+            hub_reset_calls.append(self.clock.now)
+            if len(hub_reset_calls) < 3:
+                raise RuntimeError("onboard USB hub driver is not bound")
+            hub_recovered.append(True)
+
+        MODULE._reset_onboard_hub = reset_hub
+        MODULE._fm350_usb_device = lambda: (
+            "/dev/bus/usb/002/003" if hub_recovered else "")
+        MODULE.adb_runtime_available = lambda timeout=4: True
+
+        self.assertEqual(MODULE.boot_guard(wait_seconds=40), 0)
+        self.assertEqual(hub_reset_calls, [0, 2, 4])
+
     def test_usb_disappearance_returns_to_discovery(self):
         resets = []
         adb_checks = []

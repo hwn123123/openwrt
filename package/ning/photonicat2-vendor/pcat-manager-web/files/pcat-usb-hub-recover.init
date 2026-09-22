@@ -20,10 +20,26 @@ hub_present() {
 }
 
 start() {
-	hub_present && return 0
-	[ -L "$DRIVER/$DEVICE" ] || return 0
-	logger -t pcat-usb-hub "onboard USB hub absent; re-running reset sequence"
-	echo "$DEVICE" > "$DRIVER/unbind" || return 1
-	sleep 2
-	echo "$DEVICE" > "$DRIVER/bind"
+	local attempt=0
+
+	# On the first boot after flashing, rc can reach START=10 before the
+	# onboard-usb-dev platform driver has created its bind link.  Wait for that
+	# link instead of silently giving up the only early recovery attempt.
+	while [ "$attempt" -lt 20 ]; do
+		hub_present && return 0
+		if [ -L "$DRIVER/$DEVICE" ]; then
+			logger -t pcat-usb-hub \
+				"onboard USB hub absent; re-running reset sequence"
+			echo "$DEVICE" > "$DRIVER/unbind" || return 1
+			sleep 2
+			echo "$DEVICE" > "$DRIVER/bind"
+			return $?
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+
+	logger -t pcat-usb-hub \
+		"onboard USB hub driver did not bind during the early recovery window"
+	return 0
 }

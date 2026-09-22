@@ -19,6 +19,8 @@ ONBOARD_HUB_DEVICE = "23000000.usb:hub@1"
 ONBOARD_HUB_VENDOR = "05e3"
 ONBOARD_HUB_PRODUCT = "0610"
 FM350_USB_SETTLE_SECONDS = 5
+HUB_RESET_RETRY_SECONDS = 15
+HUB_RESET_MAX_ATTEMPTS = 3
 
 
 def _read(path):
@@ -177,14 +179,18 @@ def boot_guard(wait_seconds=180, force_reset=False):
     offline_checks = 0
     reset_attempted = False
     services_need_restart = False
-    hub_reset_attempted = False
+    hub_reset_attempts = 0
+    next_hub_reset_at = 0
     usb_present_since = None
 
     while time.monotonic() < deadline:
         if not _fm350_usb_device():
             usb_present_since = None
-            if not hub_reset_attempted and not _onboard_hub_present():
-                hub_reset_attempted = True
+            now = time.monotonic()
+            if (
+                    hub_reset_attempts < HUB_RESET_MAX_ATTEMPTS
+                    and now >= next_hub_reset_at
+                    and not _onboard_hub_present()):
                 print(
                     "pcat-modem-health: onboard USB hub is absent; resetting it",
                     flush=True,
@@ -192,10 +198,22 @@ def boot_guard(wait_seconds=180, force_reset=False):
                 try:
                     _reset_onboard_hub()
                 except (OSError, RuntimeError) as error:
+                    # During a first cold boot this guard can run before the
+                    # platform driver has bound the hub node.  Do not consume
+                    # the only recovery attempt; follow the driver until it is
+                    # ready and try again.
                     print(
                         "pcat-modem-health: onboard USB hub reset failed: {}".format(error),
                         flush=True,
                     )
+                    next_hub_reset_at = time.monotonic() + 2
+                else:
+                    hub_reset_attempts += 1
+                    # Enumeration takes several seconds.  If a reset completed
+                    # but the hub still did not return, allow two later tries
+                    # rather than leaving all onboard USB devices absent.
+                    next_hub_reset_at = (
+                        time.monotonic() + HUB_RESET_RETRY_SECONDS)
             offline_checks = 0
             time.sleep(2)
             continue
