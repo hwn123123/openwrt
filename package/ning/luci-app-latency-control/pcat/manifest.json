@@ -1,0 +1,1 @@
+{"id":"latency-control","title":"Latency Control","title_zh":"游戏 / 视频低延迟","description":"CAKE queue control for stable latency","description_zh":"用 CAKE 抑制缓冲膨胀，稳定游戏、视频和会议延迟","icon":"latency","order":20}

@@ -1,0 +1,20 @@
+#!/bin/sh
+
+if ! uci -q show sqm | grep -q '=queue'; then
+	uci -q batch <<-'EOF'
+		add sqm queue
+		set sqm.@queue[-1].interface=''
+		set sqm.@queue[-1].enabled='0'
+		set sqm.@queue[-1].download='100000'
+		set sqm.@queue[-1].upload='30000'
+		set sqm.@queue[-1].qdisc='cake'
+		set sqm.@queue[-1].script='layer_cake.qos'
+		set sqm.@queue[-1].linklayer='none'
+		set sqm.@queue[-1].qdisc_advanced='1'
+		set sqm.@queue[-1].iqdisc_opts='diffserv4 nat dual-dsthost ingress'
+		set sqm.@queue[-1].eqdisc_opts='diffserv4 nat dual-srchost ack-filter'
+		set sqm.@queue[-1].latency_preset='balanced'
+		commit sqm
+	EOF
+fi
+exit 0

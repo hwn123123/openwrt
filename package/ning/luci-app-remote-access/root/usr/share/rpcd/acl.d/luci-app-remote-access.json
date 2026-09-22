@@ -1,0 +1,1 @@
+{"luci-app-remote-access":{"description":"Manage secure remote access","read":{"uci":["remote_access"],"file":{"/usr/libexec/remote-access status":["exec"]},"ubus":{"file":["exec"]}},"write":{"uci":["remote_access","network","firewall"],"file":{"/usr/libexec/remote-access *":["exec"]},"ubus":{"file":["exec"],"uci":["commit"]}}}}

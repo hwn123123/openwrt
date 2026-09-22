@@ -1,0 +1,111 @@
+#!/bin/sh
+
+. /lib/functions.sh
+. /usr/share/libubox/jshn.sh
+
+uci_get() { uci -q get "remote_access.main.$1" 2>/dev/null || echo "$2"; }
+bool_word() { [ "$1" = 1 ] && echo true || echo false; }
+
+json_reply() {
+	json_init
+	json_add_boolean ok "${1:-0}"
+	json_add_string message "$2"
+	[ -n "$3" ] && json_add_string login_url "$3"
+	json_dump
+}
+
+status() {
+	local raw backend ipv4 dns health url running enabled
+	enabled="$(uci_get enabled 0)"
+	raw="$(tailscale status --json 2>/dev/null)"
+	backend="$(jsonfilter -s "$raw" -e '@.BackendState' 2>/dev/null)"
+	ipv4="$(jsonfilter -s "$raw" -e '@.Self.TailscaleIPs[0]' 2>/dev/null)"
+	dns="$(jsonfilter -s "$raw" -e '@.Self.DNSName' 2>/dev/null | sed 's/\.$//')"
+	health="$(jsonfilter -s "$raw" -e '@.Health[0]' 2>/dev/null)"
+	url="$(tailscale status 2>&1 | sed -n 's/.*\(https:\/\/[^ ]*\).*/\1/p' | head -n1)"
+	pidof tailscaled >/dev/null 2>&1 && running=1 || running=0
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean enabled "$enabled"
+	json_add_boolean daemon_running "$running"
+	json_add_string state "${backend:-Stopped}"
+	json_add_string ipv4 "$ipv4"
+	json_add_string dns_name "$dns"
+	json_add_string health "$health"
+	json_add_string login_url "$url"
+	json_dump
+}
+
+ensure_network() {
+	uci -q batch <<-'EOF'
+		set network.tailscale=interface
+		set network.tailscale.proto='none'
+		set network.tailscale.device='tailscale0'
+		set firewall.tailscale=zone
+		set firewall.tailscale.name='tailscale'
+		set firewall.tailscale.input='ACCEPT'
+		set firewall.tailscale.output='ACCEPT'
+		set firewall.tailscale.forward='ACCEPT'
+		set firewall.tailscale.network='tailscale'
+		set firewall.remote_access_lan=forwarding
+		set firewall.remote_access_lan.src='tailscale'
+		set firewall.remote_access_lan.dest='lan'
+		set firewall.lan_remote_access=forwarding
+		set firewall.lan_remote_access.src='lan'
+		set firewall.lan_remote_access.dest='tailscale'
+	EOF
+	changes="$(uci -q changes network; uci -q changes firewall)"
+	uci -q commit network
+	uci -q commit firewall
+	if [ -n "$changes" ]; then
+		/etc/init.d/network reload >/dev/null 2>&1
+		/etc/init.d/firewall reload >/dev/null 2>&1
+	fi
+}
+
+args_run() {
+	local verb="$1" accept_dns accept_routes advertise_exit advertise_routes exit_node allow_lan ssh hostname login_server
+	accept_dns="$(bool_word "$(uci_get accept_dns 0)")"
+	accept_routes="$(bool_word "$(uci_get accept_routes 0)")"
+	advertise_exit="$(bool_word "$(uci_get advertise_exit_node 0)")"
+	allow_lan="$(bool_word "$(uci_get exit_node_allow_lan_access 0)")"
+	ssh="$(bool_word "$(uci_get tailscale_ssh 0)")"
+	advertise_routes="$(uci_get advertise_routes '')"
+	exit_node="$(uci_get exit_node '')"
+	hostname="$(uci_get hostname '')"
+	login_server="$(uci_get login_server '')"
+	if [ "$verb" = up ]; then
+		tailscale up --timeout=12s "--accept-dns=$accept_dns" "--accept-routes=$accept_routes" \
+			"--advertise-exit-node=$advertise_exit" "--advertise-routes=$advertise_routes" \
+			"--exit-node=$exit_node" "--exit-node-allow-lan-access=$allow_lan" "--ssh=$ssh" \
+			${hostname:+"--hostname=$hostname"} ${login_server:+"--login-server=$login_server"}
+	else
+		tailscale set "--accept-dns=$accept_dns" "--accept-routes=$accept_routes" \
+			"--advertise-exit-node=$advertise_exit" "--advertise-routes=$advertise_routes" \
+			"--exit-node=$exit_node" "--exit-node-allow-lan-access=$allow_lan" "--ssh=$ssh" \
+			${hostname:+"--hostname=$hostname"}
+	fi
+}
+
+case "$1" in
+	status) status ;;
+	apply|connect)
+		ensure_network
+		/etc/init.d/tailscale enable >/dev/null 2>&1
+		/etc/init.d/tailscale start >/dev/null 2>&1
+		i=0; while [ "$i" -lt 20 ] && ! pidof tailscaled >/dev/null 2>&1; do sleep 1; i=$((i+1)); done
+		if [ "$1" = connect ]; then verb=up; else verb=set; fi
+		output="$(args_run "$verb" 2>&1)"; rc=$?
+		url="$(printf '%s\n' "$output" | sed -n 's/.*\(https:\/\/[^ ]*\).*/\1/p' | head -n1)"
+		if [ -n "$url" ]; then
+			json_reply 1 "请打开登录地址完成授权" "$url"
+		elif [ "$rc" -eq 0 ]; then
+			json_reply 1 "设置已应用"
+		else
+			json_reply 0 "${output:-应用失败}"
+		fi
+		;;
+	down) tailscale down >/dev/null 2>&1; json_reply 1 "远程连接已暂停" ;;
+	logout) output="$(tailscale logout 2>&1)"; rc=$?; [ "$rc" -eq 0 ] && json_reply 1 "已退出网络" || json_reply 0 "$output" ;;
+	*) json_reply 0 "未知操作"; exit 2 ;;
+esac

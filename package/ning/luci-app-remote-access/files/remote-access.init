@@ -1,0 +1,16 @@
+#!/bin/sh /etc/rc.common
+
+START=81
+STOP=19
+
+start() {
+	local enabled
+	config_load remote_access
+	config_get_bool enabled main enabled 0
+	[ "$enabled" = 1 ] || return 0
+	/usr/libexec/remote-access apply >/dev/null 2>&1 &
+}
+
+stop() {
+	/usr/libexec/remote-access down >/dev/null 2>&1 || true
+}

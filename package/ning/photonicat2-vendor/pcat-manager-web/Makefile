@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat-manager-web
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=80
+PKG_RELEASE:=81
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/pcat-manager-web.git
@@ -70,6 +70,10 @@ define Package/pcat-manager-web/install
 		$(1)/usr/share/pcat-manager-web/static/vendor-dark.css
 	$(INSTALL_DATA) ./files/vendor-telemetry.js \
 		$(1)/usr/share/pcat-manager-web/static/vendor-telemetry.js
+	$(INSTALL_DATA) ./files/vendor-extensions.js ./files/vendor-extensions.css \
+		$(1)/usr/share/pcat-manager-web/static/
+	$(INSTALL_DATA) ./files/apps.svg \
+		$(1)/usr/share/pcat-manager-web/static/apps.svg
 	$(INSTALL_DATA) ./files/vendor-modem.js \
 		$(1)/usr/share/pcat-manager-web/static/vendor-modem.js
 	$(INSTALL_DATA) ./files/vendor-settings.js \
@@ -87,6 +91,8 @@ define Package/pcat-manager-web/install
 	$(RM) $(1)/usr/share/pcat-manager-web/templates/*.orig
 	$(INSTALL_DATA) ./files/sound_events.html \
 		$(1)/usr/share/pcat-manager-web/templates/sound_events.html
+	$(INSTALL_DATA) ./files/extensions.html \
+		$(1)/usr/share/pcat-manager-web/templates/extensions.html
 	$(INSTALL_DATA) ./files/settings.html \
 		$(1)/usr/share/pcat-manager-web/templates/settings.html
 	$(INSTALL_DATA) ./files/terminal.html \
@@ -101,6 +107,8 @@ define Package/pcat-manager-web/install
 		$(1)/usr/share/pcat-manager-web/pcat_radio.py
 	$(INSTALL_DATA) ./files/pcat_esim.py \
 		$(1)/usr/share/pcat-manager-web/pcat_esim.py
+	$(INSTALL_DATA) ./files/pcat_extensions.py \
+		$(1)/usr/share/pcat-manager-web/pcat_extensions.py
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_CONF) ./files/pcat-radio-control.json \
 		$(1)/etc/pcat-radio-control.json

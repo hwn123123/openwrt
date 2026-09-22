@@ -1,0 +1,10 @@
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+start() {
+	[ "$(uci -q get push_center.main.enabled)" = 1 ] || return 0
+	[ "$(uci -q get push_center.main.event_boot)" = 1 ] || return 0
+	(sleep 15; /usr/libexec/push-center event boot "设备已启动，网络服务正在就绪") >/dev/null 2>&1 &
+}

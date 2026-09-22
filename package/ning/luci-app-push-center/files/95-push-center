@@ -1,0 +1,18 @@
+#!/bin/sh
+
+[ "$(uci -q get push_center.main.enabled)" = 1 ] || exit 0
+[ "$(uci -q get push_center.main.event_wan)" = 1 ] || exit 0
+interfaces="$(uci -q get push_center.main.wan_interfaces)"
+case " $interfaces " in *" $INTERFACE "*) ;; *) exit 0 ;; esac
+case "$ACTION" in
+	ifup) text="上行接口 $INTERFACE 已连接" ;;
+	ifdown) text="上行接口 $INTERFACE 已断开" ;;
+	*) exit 0 ;;
+esac
+(
+	stamp="/tmp/push-center-${INTERFACE}-${ACTION}"
+	now="$(date +%s)"; old="$(cat "$stamp" 2>/dev/null || echo 0)"
+	[ $((now-old)) -lt 30 ] && exit 0
+	echo "$now" >"$stamp"
+	/usr/libexec/push-center event network "$text"
+) >/dev/null 2>&1 &

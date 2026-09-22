@@ -1,0 +1,1 @@
+{"admin/network/latency-control":{"title":"游戏 / 视频低延迟","order":58,"action":{"type":"view","path":"latency-control/overview"},"depends":{"acl":["luci-app-latency-control"]}}}

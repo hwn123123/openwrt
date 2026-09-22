@@ -1,0 +1,23 @@
+{% extends '_base.html' %}
+{% block page_title %}应用中心{% endblock %}
+{% block html_head %}<link rel="stylesheet" href="/static/vendor-extensions.css?v={{ cache_bust_version }}">{% endblock %}
+{% block content %}
+<main class="pcat-ext-shell">
+  <header class="pcat-ext-heading">
+    <div><span class="pcat-ext-kicker">PHOTONICAT EXTENSIONS</span><h1>应用中心</h1></div>
+    <span class="pcat-ext-count">{{ extensions|length }} 个已安装应用</span>
+  </header>
+  <section class="pcat-ext-grid">
+  {% for item in extensions %}
+    <a class="pcat-ext-card" href="{{ item.path }}">
+      <span class="pcat-ext-icon" data-icon="{{ item.icon }}"></span>
+      <span class="pcat-ext-copy"><strong>{{ item.title_zh }}</strong><small>{{ item.description_zh }}</small></span>
+      <span class="pcat-ext-arrow">›</span>
+    </a>
+  {% else %}
+    <div class="pcat-ext-empty">尚未安装可选应用。请在固件配置中选择所需的 LuCI 应用包。</div>
+  {% endfor %}
+  </section>
+</main>
+{% endblock %}
+{% block bottom %}<script>document.addEventListener('alpine:init',()=>Alpine.store('app').set_page('extensions'));</script>{% endblock %}

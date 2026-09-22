@@ -1,0 +1,26 @@
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -24,5 +24,6 @@ import pcat_nas
+ import pcat_radio
+ import pcat_esim
++import pcat_extensions
+ import pcat_manager_web as web_app
+ import app
+ 
+@@ -34,4 +35,6 @@ if __name__ == "__main__":
+     pcat_esim.register_esim(web_app.flask_app, web_app.api_auth_required,
+                             app)
++    pcat_extensions.register_extensions(web_app.flask_app,
++                                         web_app.api_auth_required, web_app.base_locales)
+ 
+     current_working_path = pathlib.Path(__file__).parent.resolve()
+--- a/app/templates/_base.html
++++ b/app/templates/_base.html
+@@ -18,6 +18,7 @@
+     <link rel="stylesheet" href="/static/app.css?v={{ cache_bust_version }}" />
+     <link rel="stylesheet" href="/static/vendor-dark.css?v={{ cache_bust_version }}&ui=pcat-r52" />
+     <script defer src="/static/vendor-telemetry.js?v={{ cache_bust_version }}&ui=pcat-r52"></script>
++    <script defer src="/static/vendor-extensions.js?v={{ cache_bust_version }}&ui=pcat-r1"></script>
+     {% if request.path.rstrip('/') == '/modem' %}
+     <script defer src="/static/vendor-modem.js?v={{ cache_bust_version }}&ui=pcat-r52"></script>
+     {% elif request.path.rstrip('/') in ['/device_control', '/general_settings', '/settings', '/timer', '/sound_events'] %}

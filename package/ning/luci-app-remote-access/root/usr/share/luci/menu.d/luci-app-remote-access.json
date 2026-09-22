@@ -1,0 +1,1 @@
+{"admin/vpn/remote-access":{"title":"远程访问","order":75,"action":{"type":"view","path":"remote-access/overview"},"depends":{"acl":["luci-app-remote-access"]}}}

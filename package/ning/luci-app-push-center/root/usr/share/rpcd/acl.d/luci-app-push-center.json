@@ -1,0 +1,1 @@
+{"luci-app-push-center":{"description":"Configure mobile notifications","read":{"uci":["push_center"],"file":{"/usr/libexec/push-center status":["exec"]},"ubus":{"file":["exec"]}},"write":{"uci":["push_center"],"file":{"/usr/libexec/push-center test":["exec"],"/usr/libexec/push-center send *":["exec"]},"ubus":{"file":["exec"],"uci":["commit"]}}}}

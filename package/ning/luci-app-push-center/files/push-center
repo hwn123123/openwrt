@@ -1,0 +1,61 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+get() { uci -q get "push_center.main.$1" 2>/dev/null || echo "$2"; }
+reply() { json_init; json_add_boolean ok "$1"; json_add_string message "$2"; json_dump; }
+valid_url() { case "$1" in https://*|http://*) return 0;; *) return 1;; esac; }
+
+send_message() {
+	local title body provider output rc server topic token url bot chat
+	title="$(printf '%s' "$1" | tr '\r\n' ' ' | cut -c1-160)"
+	body="$(printf '%s' "$2" | cut -c1-4000)"
+	provider="$(get provider ntfy)"
+	case "$provider" in
+		ntfy)
+			server="$(get ntfy_server https://ntfy.sh)"; topic="$(get ntfy_topic)"; token="$(get ntfy_token)"
+			valid_url "$server" || { reply 0 "ntfy 服务器地址无效"; return 2; }
+			printf '%s' "$topic" | grep -Eq '^[A-Za-z0-9_-]{1,128}$' || { reply 0 "请填写只含字母、数字、下划线或短横线的 ntfy 主题"; return 2; }
+			url="${server%/}/$topic"
+			if [ -n "$token" ]; then
+				output="$(curl -fsS --connect-timeout 5 --max-time 15 -H "Authorization: Bearer $token" -H "Title: $title" -H 'Tags: satellite' --data-binary "$body" "$url" 2>&1)"; rc=$?
+			else
+				output="$(curl -fsS --connect-timeout 5 --max-time 15 -H "Title: $title" -H 'Tags: satellite' --data-binary "$body" "$url" 2>&1)"; rc=$?
+			fi
+			;;
+		telegram)
+			bot="$(get telegram_bot_token)"; chat="$(get telegram_chat_id)"
+			[ -n "$bot" ] && [ -n "$chat" ] || { reply 0 "请填写 Telegram Bot Token 和 Chat ID"; return 2; }
+			output="$(curl -fsS --connect-timeout 5 --max-time 15 --data-urlencode "chat_id=$chat" --data-urlencode "text=$title
+
+$body" "https://api.telegram.org/bot${bot}/sendMessage" 2>&1)"; rc=$?
+			;;
+		webhook)
+			url="$(get webhook_url)"; valid_url "$url" || { reply 0 "Webhook 地址无效"; return 2; }
+			output="$(curl -fsS --connect-timeout 5 --max-time 15 --data-urlencode "title=$title" --data-urlencode "message=$body" "$url" 2>&1)"; rc=$?
+			;;
+		*) reply 0 "未知推送服务"; return 2 ;;
+	esac
+	if [ "$rc" -eq 0 ]; then
+		logger -t push-center -- "sent provider=$provider title=$title"
+		printf '%s | %s | %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$provider" "$title" >>/tmp/push-center.log
+		tail -n 50 /tmp/push-center.log >/tmp/push-center.log.tmp 2>/dev/null && mv /tmp/push-center.log.tmp /tmp/push-center.log
+		reply 1 "推送已发送"
+	else
+		logger -t push-center -- "failed provider=$provider rc=$rc"
+		reply 0 "${output:-推送失败}"
+	fi
+	return "$rc"
+}
+
+case "$1" in
+	status)
+		provider="$(get provider ntfy)"; configured=0
+		case "$provider" in ntfy) [ -n "$(get ntfy_topic)" ] && configured=1;; telegram) [ -n "$(get telegram_bot_token)" ] && [ -n "$(get telegram_chat_id)" ] && configured=1;; webhook) [ -n "$(get webhook_url)" ] && configured=1;; esac
+		json_init; json_add_boolean ok 1; json_add_boolean enabled "$(get enabled 0)"; json_add_boolean configured "$configured"; json_add_string provider "$provider"; json_add_string history "$(tail -n 10 /tmp/push-center.log 2>/dev/null)"; json_dump
+		;;
+	test) send_message "OpenWrt 推送测试" "如果你看到这条消息，手机推送中心已经配置成功。" ;;
+	send) send_message "${2:-OpenWrt}" "${3:-通知}" ;;
+	event) send_message "OpenWrt · ${2:-系统事件}" "${3:-状态发生变化}" ;;
+	*) reply 0 "未知操作"; exit 2 ;;
+esac
