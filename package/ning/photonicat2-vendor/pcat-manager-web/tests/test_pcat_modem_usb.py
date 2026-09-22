@@ -45,6 +45,7 @@ class BootGuardTest(unittest.TestCase):
 
     def test_usb_disappearance_returns_to_discovery(self):
         resets = []
+        adb_checks = []
 
         def device():
             now = self.clock.now
@@ -53,11 +54,16 @@ class BootGuardTest(unittest.TestCase):
             return "/dev/bus/usb/002/003"
 
         MODULE._fm350_usb_device = device
-        MODULE.adb_runtime_available = lambda timeout=4: self.clock.now >= 15
+        def adb_available(timeout=4):
+            adb_checks.append(self.clock.now)
+            return self.clock.now >= 15
+
+        MODULE.adb_runtime_available = adb_available
         MODULE.reset_fm350_usb = lambda: resets.append(True)
 
         self.assertEqual(MODULE.boot_guard(wait_seconds=40), 0)
         self.assertEqual(resets, [])
+        self.assertGreaterEqual(min(adb_checks), 20)
 
     def test_one_reset_restarts_at_consumers_after_port_returns(self):
         reset_done = []

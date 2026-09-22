@@ -1,0 +1,76 @@
+--- a/src/modem-manager.c
++++ b/src/modem-manager.c
+@@ -63,6 +63,7 @@
+     guint scanning_timeout_id;
+     guint modem_power_usage;
+     gboolean modem_iface_enabled;
++    gint64 fm350_usb_first_seen_timestamp;
+ 
+     /* In-memory modem dial log ring: everything the external control helper
+      * (fm350-mm / quectel-cm) prints, capped at
+@@ -758,6 +759,8 @@
+     const PCatModemManagerUSBData *usb_data;
+     guint uc;
+     gboolean detected;
++    gboolean modem_ready = TRUE;
++    gboolean fm350_seen = FALSE;
+     PCatModemManagerDeviceType device_type = PCAT_MODEM_MANAGER_DEVICE_NONE;
+     gboolean modem_exist = FALSE;
+ 
+@@ -808,6 +811,27 @@
+             continue;
+         }
+ 
++        /* FM350 briefly exposes its final USB profile before the firmware is
++         * ready for AT traffic on some cold boots. Starting fm350-mm in that
++         * window can make the modem fall back through its preloader. Require
++         * five continuous seconds of the final profile, while the outer loop
++         * still scans once per second. */
++        if(desc.idVendor==0x0E8D && desc.idProduct==0x7127)
++        {
++            gint64 now = g_get_monotonic_time();
++
++            fm350_seen = TRUE;
++            if(mm_data->fm350_usb_first_seen_timestamp==0)
++            {
++                mm_data->fm350_usb_first_seen_timestamp = now;
++            }
++            if(now - mm_data->fm350_usb_first_seen_timestamp <
++               5 * G_USEC_PER_SEC)
++            {
++                modem_ready = FALSE;
++            }
++        }
++
+         switch(usb_data->device_type)
+         {
+             case PCAT_MODEM_MANAGER_DEVICE_5G:
+@@ -824,7 +848,7 @@
+             }
+         }
+ 
+-        if(mm_data->modem_iface_enabled)
++        if(mm_data->modem_iface_enabled && modem_ready)
+         {
+             if(usb_data->external_control_exec!=NULL)
+             {
+@@ -853,13 +877,18 @@
+ 
+     libusb_free_device_list(devs, 1);
+ 
++    if(!fm350_seen)
++    {
++        mm_data->fm350_usb_first_seen_timestamp = 0;
++    }
++
+     if(mm_data->device_type < device_type)
+     {
+         mm_data->device_type = device_type;
+     }
+     mm_data->modem_exist = modem_exist;
+ 
+-    return modem_exist;
++    return modem_exist && modem_ready;
+ }
+ 
+ static gpointer pcat_modem_manager_modem_work_thread_func(

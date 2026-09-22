@@ -18,6 +18,7 @@ ONBOARD_HUB_DRIVER = "/sys/bus/platform/drivers/onboard-usb-dev"
 ONBOARD_HUB_DEVICE = "23000000.usb:hub@1"
 ONBOARD_HUB_VENDOR = "05e3"
 ONBOARD_HUB_PRODUCT = "0610"
+FM350_USB_SETTLE_SECONDS = 5
 
 
 def _read(path):
@@ -177,9 +178,11 @@ def boot_guard(wait_seconds=180, force_reset=False):
     reset_attempted = False
     services_need_restart = False
     hub_reset_attempted = False
+    usb_present_since = None
 
     while time.monotonic() < deadline:
         if not _fm350_usb_device():
+            usb_present_since = None
             if not hub_reset_attempted and not _onboard_hub_present():
                 hub_reset_attempted = True
                 print(
@@ -195,6 +198,17 @@ def boot_guard(wait_seconds=180, force_reset=False):
                     )
             offline_checks = 0
             time.sleep(2)
+            continue
+
+        now = time.monotonic()
+        if usb_present_since is None:
+            usb_present_since = now
+        if now - usb_present_since < FM350_USB_SETTLE_SECONDS:
+            # Some cold boots expose 0e8d:7127 for about four seconds before
+            # returning through the preloader. Do not probe ADB or reset USB
+            # until the final runtime has remained continuously present.
+            offline_checks = 0
+            time.sleep(1)
             continue
 
         # A successful USB reset invalidates the AT file descriptors held by
