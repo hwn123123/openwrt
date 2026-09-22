@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat-manager
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=11
+PKG_RELEASE:=12
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/rockchip_rk3568_pcat_manager.git
@@ -39,6 +39,7 @@ define Package/pcat-manager/conffiles
 /etc/pcat-manager.conf
 /etc/pcat-manager-userdata.conf
 /etc/pcat-apn.conf
+/etc/pcat-fm350-device.json
 endef
 
 define Package/pcat-manager/install

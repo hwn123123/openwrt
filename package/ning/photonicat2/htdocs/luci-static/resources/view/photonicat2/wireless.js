@@ -3,6 +3,7 @@
 'require form';
 'require uci';
 'require poll';
+'require ui';
 'require photonicat2.common as pcat';
 
 function text(value, empty) {
@@ -97,9 +98,10 @@ return view.extend({
 
 	makeDashboard: function(data) {
 		var hw = data.hardware || {}, driver = data.driver || {};
-		var runtime = data.runtime || {};
+		var runtime = data.runtime || {}, power = data.power || {};
 		var stateGood = !!runtime.running;
-		var stateText = stateGood ? '板载热点运行中' : (data.usable ? '板载无线已关闭' : stageLabel(hw.stage));
+		var stateText = stateGood ? '板载热点运行中' : (!power.requested ? '板载无线已断电' : (data.usable ? '板载无线已关闭' : stageLabel(hw.stage)));
+		var hardwareText = !power.enabled ? '板载芯片已断电' : (hw.present ? '板载芯片在线' : '板载芯片启动中');
 
 		return E('div', { 'class': 'pcat-page pcat-dashboard pcat-wireless-dashboard' }, [
 			E('div', { 'class': 'pcat-dashboard-header' }, [
@@ -108,7 +110,7 @@ return view.extend({
 					E('p', { 'class': 'pcat-subtitle' }, 'AIC8800 内置 USB 无线的实时状态与专属设置')
 				]),
 				E('div', { 'class': 'pcat-header-status' }, [
-					E('span', { 'class': 'pcat-status-chip ' + (hw.present ? 'is-ok' : 'is-off'), 'data-wifi-chip': 'hardware' }, [ E('i'), hw.present ? '板载芯片在线' : '板载芯片离线' ]),
+					E('span', { 'class': 'pcat-status-chip ' + (hw.present ? 'is-ok' : 'is-off'), 'data-wifi-chip': 'hardware' }, [ E('i'), hardwareText ]),
 					E('span', { 'class': 'pcat-status-chip ' + (stateGood ? 'is-ok' : 'is-off'), 'data-wifi-chip': 'runtime' }, [ E('i'), stateText ]),
 					E('span', { 'class': 'pcat-update-time', 'data-wifi-field': 'time' }, '更新 --:--:--')
 				])
@@ -182,13 +184,15 @@ return view.extend({
 	},
 
 	makeForm: function(data) {
-		var config = data.config || {}, radio = config.radio, ifaces = config.ifaces || [];
+		var self = this, config = data.config || {}, power = data.power || {};
+		var radio = config.radio, ifaces = config.ifaces || [];
 		if (!radio)
 			return null;
 
 		var m = new form.Map('wireless');
 		var s, o;
 		this.map = m;
+		this.onboardPowerRequested = power.requested ? '1' : '0';
 
 		s = m.section(form.TypedSection, 'wifi-device', '板载 AIC8800 射频');
 		s.anonymous = true;
@@ -202,6 +206,8 @@ return view.extend({
 		o.default = '0';
 		o.rmempty = false;
 		o.cfgvalue = function(section_id) {
+			if (!power.requested)
+				return '0';
 			if (uci.get('wireless', section_id, 'disabled') === '1')
 				return '0';
 			for (var i = 0; i < ifaces.length; i++)
@@ -210,6 +216,7 @@ return view.extend({
 			return '1';
 		};
 		o.write = function(section_id, value) {
+			self.onboardPowerRequested = value;
 			var disabled = value === '1' ? '0' : '1';
 			uci.set('wireless', section_id, 'disabled', disabled);
 			for (var i = 0; i < ifaces.length; i++)
@@ -275,10 +282,10 @@ return view.extend({
 		if (!this.root)
 			return;
 		var root = this.root, hw = data.hardware || {}, driver = data.driver || {}, phy = data.phy || {};
-		var config = data.config || {}, runtime = data.runtime || {};
+		var config = data.config || {}, runtime = data.runtime || {}, power = data.power || {};
 		var now = new Date((data.timestamp || Date.now() / 1000) * 1000);
 		var running = !!runtime.running;
-		var state = running ? '板载热点运行中' : (data.usable ? '板载无线已关闭' : stageLabel(hw.stage));
+		var state = running ? '板载热点运行中' : (!power.requested ? '板载无线已断电' : (data.usable ? '板载无线已关闭' : stageLabel(hw.stage)));
 
 		setNode(root, 'time', '更新 ' + now.toLocaleTimeString());
 		setNode(root, 'hero', running ? 'ON' : 'OFF');
@@ -333,7 +340,7 @@ return view.extend({
 		var hardwareChip = root.querySelector('[data-wifi-chip="hardware"]');
 		if (hardwareChip) {
 			hardwareChip.className = 'pcat-status-chip ' + (hw.present ? 'is-ok' : 'is-off');
-			hardwareChip.lastChild.data = hw.present ? '板载芯片在线' : '板载芯片离线';
+			hardwareChip.lastChild.data = !power.enabled ? '板载芯片已断电' : (hw.present ? '板载芯片在线' : '板载芯片启动中');
 		}
 		var runtimeChip = root.querySelector('[data-wifi-chip="runtime"]');
 		if (runtimeChip) {
@@ -379,5 +386,15 @@ return view.extend({
 		}, 3);
 
 		return done;
+	},
+
+	handleSaveApply: function(ev, mode) {
+		var self = this;
+		return this.map.save().then(function() {
+			return pcat.call('onboard-wifi-set', [ self.onboardPowerRequested ]);
+		}).then(function(result) {
+			pcat.notify(result.enabled ? '板载 Wi-Fi 已上电并启动' : '板载 Wi-Fi 已关闭并断电');
+			return ui.changes.apply(mode == '0');
+		});
 	}
 });

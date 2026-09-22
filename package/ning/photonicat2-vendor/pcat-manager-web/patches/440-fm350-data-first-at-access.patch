@@ -1,0 +1,206 @@
+--- a/app/pc_modem_client.py
++++ b/app/pc_modem_client.py
+@@ -43,38 +43,65 @@
+ 
+ 
+ class SharedSerialLock:
+-    """Serialize FM350 AT traffic across the Web UI and fm350-mm.
+-
+-    The modem has one primary application AT endpoint.  A normal threading
+-    lock protects the Web UI's own workers, while flock on the shared lock file
+-    prevents the separate dialer process from sending a command at the same
+-    time and having either process consume the other's response.
+-    """
++    """Serialize FM350 AT traffic and give the data dialer first access."""
+ 
+     def __init__(self, path="/tmp/pcat-fm350-at.lock"):
+         self._thread_lock = threading.Lock()
+         self._lock_fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+ 
+     def acquire(self, blocking=True, timeout=-1):
+-        if timeout == -1:
+-            acquired = self._thread_lock.acquire(blocking)
+-        else:
+-            acquired = self._thread_lock.acquire(blocking, timeout)
+-        if not acquired:
+-            return False
++        deadline = (
++            time.monotonic() + timeout
++            if blocking and timeout is not None and timeout >= 0 else None)
++        while True:
++            if not pcat_modem_usb.web_at_allowed():
++                if not blocking:
++                    return False
++                if deadline is not None and time.monotonic() >= deadline:
++                    return False
++                time.sleep(0.2)
++                continue
+ 
+-        operation = fcntl.LOCK_EX
+-        if not blocking:
+-            operation |= fcntl.LOCK_NB
+-        try:
+-            fcntl.flock(self._lock_fd, operation)
+-        except BlockingIOError:
+-            self._thread_lock.release()
+-            return False
+-        except Exception:
++            remaining = (
++                max(0.0, deadline - time.monotonic())
++                if deadline is not None else None)
++            if remaining is None:
++                acquired = self._thread_lock.acquire(blocking)
++            else:
++                acquired = self._thread_lock.acquire(True, remaining)
++            if not acquired:
++                return False
++
++            operation = fcntl.LOCK_EX
++            # A timed Python lock must not be followed by an unbounded flock.
++            if not blocking or deadline is not None:
++                operation |= fcntl.LOCK_NB
++            try:
++                fcntl.flock(self._lock_fd, operation)
++            except BlockingIOError:
++                self._thread_lock.release()
++                if not blocking:
++                    return False
++                if deadline is not None and time.monotonic() >= deadline:
++                    return False
++                time.sleep(0.05)
++                continue
++            except Exception:
++                self._thread_lock.release()
++                raise
++
++            # The dialer may have entered a recovery phase while flock was
++            # blocked. Yield immediately instead of slipping a Web command
++            # between its registration and PDP activation commands.
++            if pcat_modem_usb.web_at_allowed():
++                return True
++            fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+             self._thread_lock.release()
+-            raise
+-        return True
++            if not blocking:
++                return False
++            if deadline is not None and time.monotonic() >= deadline:
++                return False
++            time.sleep(0.2)
+ 
+     def release(self):
+         fcntl.flock(self._lock_fd, fcntl.LOCK_UN)
+@@ -412,6 +439,13 @@
+                 time.sleep(0.5)
+                 continue
+             else:
++                # The data session owns startup. Keep queued telemetry intact
++                # until dialing has either succeeded or reached a final error.
++                if not pcat_modem_usb.web_at_allowed():
++                    self.querying = False
++                    time.sleep(0.5)
++                    continue
++
+                 #TODO fix when no modem is installed. (home/mobile version)
+                 if not self.open_modem_uart():
+                     self.modem_tty_failed_count += 1
+@@ -455,7 +489,6 @@
+                             
+                             # Ensure proper line ending and send command
+                             self.serial_obj.write(cmd_str.encode())
+-                            self.serial_obj.flush()  # Force send immediately
+                             print("[MODEM SEND]:" + cmd_str)
+                             
+                             
+@@ -3015,7 +3048,8 @@
+                                     self.modem_tty_path, resolved_path)
+             self.modem_tty_path = resolved_path
+         try:
+-            self.serial_obj = serial.Serial(self.modem_tty_path, 115200, timeout=15)
++            self.serial_obj = serial.Serial(
++                self.modem_tty_path, 115200, timeout=15, write_timeout=5)
+         except Exception as e:
+             self.modem_uart_connected = False
+             with self.mutex:
+--- a/app/pysms_tool.py
++++ b/app/pysms_tool.py
+@@ -551,7 +551,6 @@
+             print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
+         
+         self.serial_port.write((command + '\r\n').encode('utf-8'))
+-        self.serial_port.flush()  # Force send immediately
+         
+         responses = self._wait_for_response(timeout)
+         
+@@ -579,6 +578,7 @@
+                 parity=serial.PARITY_NONE,
+                 stopbits=serial.STOPBITS_ONE,
+                 timeout=15,
++                write_timeout=5,
+                 xonxoff=False,
+                 rtscts=False,
+                 dsrdtr=False
+@@ -616,7 +616,6 @@
+             print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
+         
+         self.serial_port.write((command + '\r\n').encode('utf-8'))
+-        self.serial_port.flush()  # Force send immediately
+ 
+         response_lines = []
+         while True:
+@@ -804,7 +803,6 @@
+         if self.debug:
+             print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+         self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+-        self.serial_port.flush()
+ 
+         # The FM350 prompt is not newline-terminated. readline() waits for the
+         # serial port's 15-second timeout even when '>' arrives immediately.
+@@ -848,7 +846,6 @@
+         if self.debug:
+             print(f"\033[44m[SEND] {pdu_hex}<CTRL-Z>\033[0m", file=sys.stderr)
+         self.serial_port.write((pdu_hex + '\x1A').encode('utf-8'))
+-        self.serial_port.flush()  # Ensure PDU data is transmitted immediately
+ 
+         # Wait for response with longer timeout for SMS sending (can take time on network)
+         responses = self._wait_for_response(timeout=30)
+@@ -940,7 +937,6 @@
+             if self.debug:
+                 print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+             self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+-            self.serial_port.flush()
+ 
+             # Wait for '>' prompt from modem before sending message data (FM350-GL requirement)
+             prompt_received = False
+@@ -968,7 +964,6 @@
+             if self.debug:
+                 print(f"\033[44m[SEND] {message}<CTRL-Z>\033[0m", file=sys.stderr)
+             self.serial_port.write((message + '\x1A').encode('utf-8'))
+-            self.serial_port.flush()  # Ensure message data is transmitted immediately
+         else:
+             # Set character set to UCS2
+             self._send_command('AT+CSCS="UCS2"')
+@@ -984,7 +979,6 @@
+             if self.debug:
+                 print(f"\033[44m[SEND] {cmd}\033[0m", file=sys.stderr)
+             self.serial_port.write((cmd + '\r\n').encode('utf-8'))
+-            self.serial_port.flush()
+ 
+             # Wait for '>' prompt from modem before sending message data (FM350-GL requirement)
+             prompt_received = False
+@@ -1023,7 +1017,6 @@
+             if self.debug:
+                 print(f"\033[44m[SEND] {message_ucs2}<CTRL-Z>\033[0m", file=sys.stderr)
+             self.serial_port.write((message_ucs2 + '\x1A').encode('utf-8'))
+-            self.serial_port.flush()  # Ensure message data is transmitted immediately
+ 
+         # Wait for response with longer timeout for SMS sending (can take time on network)
+         responses = self._wait_for_response(timeout=30)
+@@ -1500,7 +1493,6 @@
+             if self.debug:
+                 print(f"\033[44m[SEND] {command}\033[0m", file=sys.stderr)
+             self.serial_port.write((command + '\r\n').encode('utf-8'))
+-            self.serial_port.flush()  # Force send immediately
+             
+   
+             responses = self._wait_for_response()

@@ -2,12 +2,13 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=photonicat2-native-core
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=1
+PKG_RELEASE:=2
 PKG_LICENSE:=GPL-3.0-only
 PKG_MAINTAINER:=ning
 PKG_FILE_DEPENDS += $(TOPDIR)/package/ning/photonicat2/src/pcat-socket.c \
 	$(TOPDIR)/package/ning/photonicat2/root/etc/config/photonicat2 \
 	$(TOPDIR)/package/ning/photonicat2/root/etc/init.d/photonicat2 \
+	$(TOPDIR)/package/ning/photonicat2/root/etc/uci-defaults/95-photonicat2-onboard-wifi \
 	$(TOPDIR)/package/ning/photonicat2/root/usr/libexec/photonicat2ctl \
 	$(TOPDIR)/package/ning/photonicat2/root/usr/sbin/photonicat2d \
 	$(TOPDIR)/package/ning/photonicat2/htdocs/luci-static/resources/photonicat2/common.js \
@@ -52,6 +53,9 @@ define Package/photonicat2-native-core/install
 	$(INSTALL_CONF) $(TOPDIR)/package/ning/photonicat2/root/etc/config/photonicat2 $(1)/etc/config/photonicat2
 	$(INSTALL_DIR) $(1)/etc/init.d
 	$(INSTALL_BIN) $(TOPDIR)/package/ning/photonicat2/root/etc/init.d/photonicat2 $(1)/etc/init.d/photonicat2
+	$(INSTALL_DIR) $(1)/etc/uci-defaults
+	$(INSTALL_BIN) $(TOPDIR)/package/ning/photonicat2/root/etc/uci-defaults/95-photonicat2-onboard-wifi \
+		$(1)/etc/uci-defaults/95-photonicat2-onboard-wifi
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/photonicat2-socket $(1)/usr/libexec/photonicat2-socket
 	$(INSTALL_BIN) $(TOPDIR)/package/ning/photonicat2/root/usr/libexec/photonicat2ctl $(1)/usr/libexec/photonicat2ctl

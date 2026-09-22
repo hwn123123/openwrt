@@ -1,0 +1,48 @@
+#!/bin/sh
+
+# Keep a stable, disabled UCI entry for the optional onboard AIC8800.  The
+# radio can therefore be configured and enabled from Web even while its GPIO
+# rfkill keeps the USB chip physically off.
+radio=''
+for section in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+	path="$(uci -q get "wireless.$section.path")"
+	case "$path" in
+		*/usb1/1-1/1-1.3) radio="$section"; break ;;
+	esac
+done
+
+if [ -z "$radio" ]; then
+	for candidate in radio1 radio2 radio3 radio0; do
+		if ! uci -q get "wireless.$candidate" >/dev/null; then
+			radio="$candidate"
+			break
+		fi
+	done
+fi
+
+if [ -n "$radio" ] && ! uci -q get "wireless.$radio" >/dev/null; then
+	iface="default_$radio"
+	uci -q batch <<-EOF
+		set wireless.$radio=wifi-device
+		set wireless.$radio.type='mac80211'
+		set wireless.$radio.path='platform/23000000.usb/usb1/1-1/1-1.3'
+		set wireless.$radio.band='2g'
+		set wireless.$radio.channel='auto'
+		set wireless.$radio.htmode='HE40'
+		set wireless.$radio.country='CN'
+		set wireless.$radio.disabled='1'
+		set wireless.$iface=wifi-iface
+		set wireless.$iface.device='$radio'
+		set wireless.$iface.network='lan'
+		set wireless.$iface.mode='ap'
+		set wireless.$iface.ssid='Photonicat2-Onboard'
+		set wireless.$iface.encryption='sae-mixed'
+		set wireless.$iface.key='1234567890'
+		set wireless.$iface.disabled='1'
+	EOF
+	uci -q commit wireless
+fi
+
+uci -q set photonicat2.main.onboard_wifi_enabled='0'
+uci -q commit photonicat2
+exit 0

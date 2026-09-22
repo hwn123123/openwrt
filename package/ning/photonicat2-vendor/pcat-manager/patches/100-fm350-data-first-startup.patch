@@ -1,0 +1,248 @@
+--- a/src/fm350-mm.c
++++ b/src/fm350-mm.c
+@@ -40,6 +40,8 @@
+ 
+ #define USB_SYSFS_ROOT "/sys/bus/usb/devices"
+ #define AT_LOCK_PATH "/tmp/pcat-fm350-at.lock"
++#define DIAL_STATE_PATH "/tmp/pcat-fm350-dial.state"
++#define DEVICE_CACHE_PATH "/etc/pcat-fm350-device.json"
+ 
+ #define AT_RESP_MAX 8192
+ #define MAX_SERIAL_PORTS 8
+@@ -74,6 +76,8 @@
+ static int g_at_lock_fd = -1;
+ static modem_pref_t g_modem_pref = PREF_AUTO;
+ static int g_radio_recovery_done = 0;
++static int g_dial_attempt = 0;
++static char g_dial_state[32] = "";
+ 
+ static int64_t now_ms(void)
+ {
+@@ -96,6 +100,86 @@
+     fflush(stdout);
+ }
+ 
++/* Publish the data-plane lifecycle for secondary AT consumers.  The Web/SMS
++ * process waits while this file reports an active dial phase, so the first
++ * network session cannot be starved by telemetry. */
++static void dial_state_write(const char *state, int code)
++{
++    char tmp_path[sizeof(DIAL_STATE_PATH) + 32];
++    FILE *fp;
++
++    if(strcmp(g_dial_state, state)==0)
++    {
++        return;
++    }
++
++    snprintf(tmp_path, sizeof(tmp_path), "%s.%ld", DIAL_STATE_PATH,
++        (long)getpid());
++    fp = fopen(tmp_path, "w");
++    if(fp==NULL)
++    {
++        fprintf(stderr, "Cannot publish dial state %s: %s\n", state,
++            strerror(errno));
++        return;
++    }
++
++    fprintf(fp,
++        "{\"state\":\"%s\",\"attempt\":%d,\"code\":%d,"
++        "\"pid\":%ld,\"updated\":%ld}\n",
++        state, g_dial_attempt, code, (long)getpid(), (long)time(NULL));
++    if(fflush(fp)!=0 || fsync(fileno(fp))!=0 || fclose(fp)!=0 ||
++       rename(tmp_path, DIAL_STATE_PATH)!=0)
++    {
++        fprintf(stderr, "Cannot install dial state %s: %s\n", state,
++            strerror(errno));
++        unlink(tmp_path);
++        return;
++    }
++
++    snprintf(g_dial_state, sizeof(g_dial_state), "%s", state);
++}
++
++static int device_cache_valid(void)
++{
++    FILE *fp;
++    char buf[256];
++    size_t n;
++
++    fp = fopen(DEVICE_CACHE_PATH, "r");
++    if(fp==NULL)
++    {
++        return 0;
++    }
++    n = fread(buf, 1, sizeof(buf) - 1, fp);
++    fclose(fp);
++    buf[n] = '\0';
++
++    return strstr(buf, "\"model\":\"FM350")!=NULL &&
++        strstr(buf, "\"usb_id\":\"0e8d:7127\"")!=NULL &&
++        strstr(buf, "\"at_interface\":\"06\"")!=NULL;
++}
++
++static void device_cache_write(void)
++{
++    char tmp_path[sizeof(DEVICE_CACHE_PATH) + 32];
++    FILE *fp;
++
++    snprintf(tmp_path, sizeof(tmp_path), "%s.%ld", DEVICE_CACHE_PATH,
++        (long)getpid());
++    fp = fopen(tmp_path, "w");
++    if(fp==NULL)
++    {
++        return;
++    }
++    fputs("{\"model\":\"FM350\",\"usb_id\":\"0e8d:7127\","
++        "\"at_interface\":\"06\"}\n", fp);
++    if(fflush(fp)!=0 || fsync(fileno(fp))!=0 || fclose(fp)!=0 ||
++       rename(tmp_path, DEVICE_CACHE_PATH)!=0)
++    {
++        unlink(tmp_path);
++    }
++}
++
+ /* ---------------------------------------------------------------------- */
+ /* User RAT preference (shared with the web UI)                           */
+ /* ---------------------------------------------------------------------- */
+@@ -1740,6 +1824,7 @@
+     snprintf(dnslist[dns_count++], 64, "119.29.29.29");
+ 
+     configure_network(iface, ipaddr, netmask, gateway, dnslist, dns_count);
++    dial_state_write("online", 0);
+ 
+     return 1;
+ }
+@@ -1882,6 +1967,7 @@
+     char selected_apn[APN_MAX_LEN + 1];
+     int port_count, i, fd = -1;
+     int active_pdp;
++    int cached_device;
+     int64_t dial_time;
+ 
+     *connected_duration_ms = 0;
+@@ -1893,6 +1979,7 @@
+         return 1;
+     }
+ 
++    dial_state_write("identifying", 0);
+     fprintf(stderr,
+         "FM350 modem detected, searching interface and serial port...\n");
+ 
+@@ -1907,22 +1994,48 @@
+         return 2;
+     }
+ 
+-    for(i=0;i<port_count;i++)
++    cached_device = device_cache_valid();
++    i = 0;
++
++    /* QModem's fast restart path persists the discovered model and AT port.
++     * This appliance always launches this helper for USB ID 0e8d:7127, so a
++     * cached FM350 can be validated with one quick AT on interface 06. A
++     * changed composition or failed validation falls back to the complete
++     * model scan and refreshes the cache. */
++    if(cached_device && port_interface_number(ports[0])==0x06)
+     {
+-        fd = serial_open(ports[i]);
+-        if(fd < 0)
++        fd = serial_open(ports[0]);
++        if(fd >= 0 && at_cmd(fd, "AT", resp, sizeof(resp), 1500)!=1)
+         {
+-            continue;
++            close(fd);
++            fd = -1;
+         }
+-
+-        if(at_cmd(fd, "AT+CGMM", resp, sizeof(resp), 3000)==1 &&
+-           strstr(resp, "FM350")!=NULL)
++        if(fd >= 0)
+         {
+-            break;
++            fprintf(stderr, "Using cached FM350 profile on USB interface 06.\n");
+         }
++    }
+ 
+-        close(fd);
+-        fd = -1;
++    if(fd < 0)
++    {
++        for(i=0;i<port_count;i++)
++        {
++            fd = serial_open(ports[i]);
++            if(fd < 0)
++            {
++                continue;
++            }
++
++            if(at_cmd(fd, "AT+CGMM", resp, sizeof(resp), 3000)==1 &&
++               strstr(resp, "FM350")!=NULL)
++            {
++                device_cache_write();
++                break;
++            }
++
++            close(fd);
++            fd = -1;
++        }
+     }
+ 
+     if(fd < 0)
+@@ -1936,6 +2049,7 @@
+     fprintf(stderr, "Interface %s and serial port %s detected.\n",
+         iface, ports[i]);
+ 
++    dial_state_write("preparing", 0);
+     if(dial_prepare(fd)!=0)
+     {
+         fprintf(stderr, "Failed to do preparation for dialout!\n");
+@@ -1950,6 +2064,7 @@
+         return 4;
+     }
+ 
++    dial_state_write("registering", 0);
+     active_pdp = at_dial(fd, 0, selected_apn);
+     if(active_pdp < 0)
+     {
+@@ -1958,6 +2073,8 @@
+         return 6;
+     }
+ 
++    dial_state_write("addressing", 0);
++
+     /* Subscribe to modem detach/deactivation events for normal reconnection.
+      * If unsupported, an explicit CGACT inactive state can also trigger it. */
+     {
+@@ -2011,6 +2128,7 @@
+      * dialer would ignore it and whose web UI would then report a RAT nobody
+      * asserted. */
+     ensure_modem_pref_file();
++    dial_state_write("starting", 0);
+ 
+     if(proc_name_running("ModemManager"))
+     {
+@@ -2033,6 +2151,8 @@
+      * fresh set of retries. */
+     while(attempt <= MAX_ATTEMPTS)
+     {
++        g_dial_attempt = attempt;
++        dial_state_write("detecting", 0);
+         ret = run_once(apn, &connected_ms);
+ 
+         if(connected_ms > (int64_t)ATTEMPT_RESET_UPTIME * 1000)
+@@ -2052,6 +2172,7 @@
+         {
+             if(attempt >= MAX_ATTEMPTS)
+             {
++                dial_state_write("failed", ret);
+                 break;
+             }
+ 
+@@ -2060,6 +2181,7 @@
+                 ret, ATTEMPT_RETRY_DELAY);
+         }
+ 
++        dial_state_write("retrying", ret);
+         attempt++;
+         sleep(ATTEMPT_RETRY_DELAY);
+     }

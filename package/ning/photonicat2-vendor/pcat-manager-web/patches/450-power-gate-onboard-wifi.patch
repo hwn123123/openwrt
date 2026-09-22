@@ -1,0 +1,36 @@
+--- a/app/app.py
++++ b/app/app.py
+@@ -672,7 +672,33 @@
+     pass
+   return preferred
+ 
++def _is_onboard_wifi_radio(dev_name):
++  try:
++    configured_path = uci_get("wireless.{}.path".format(dev_name))
++  except Exception:
++    configured_path = ""
++  return configured_path.rstrip("/").endswith("/usb1/1-1/1-1.3")
++
+ def enable_wifi_interface(dev_name, enable_flag, restart=True):
++  # The AIC8800 UCI switch alone does not stop the driver from probing the
++  # internal USB device.  Route its switch through the board rfkill GPIO so
++  # disabled means physically powered off and cannot disturb the MT7927.
++  if _is_onboard_wifi_radio(dev_name):
++    try:
++      result = subprocess.run(
++        ["/usr/libexec/photonicat2ctl", "onboard-wifi-set", "1" if enable_flag else "0"],
++        capture_output=True, text=True, timeout=40
++      )
++      if result.returncode != 0:
++        pcat_logger.logger.error(
++          "Failed to switch onboard WiFi power: %s", result.stderr.strip() or result.stdout.strip()
++        )
++        return False
++      return True
++    except Exception as error:
++      pcat_logger.logger.error("Failed to switch onboard WiFi power: %s", error)
++      return False
++
+   old_flag = is_wifi_interface_enabled(dev_name)
+   iface_section = _primary_wifi_iface_section(dev_name)
+   try:

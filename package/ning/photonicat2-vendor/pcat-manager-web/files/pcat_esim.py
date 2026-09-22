@@ -52,7 +52,6 @@ def _at_locked(client, command, timeout=8):
     if serial_obj is None or not serial_obj.is_open:
         raise EsimError("AT 端口尚未就绪，请稍后重试", 503)
     serial_obj.write((command + "\r").encode("ascii"))
-    serial_obj.flush()
     lines = []
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

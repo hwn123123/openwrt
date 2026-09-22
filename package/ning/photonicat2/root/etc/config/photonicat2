@@ -1,5 +1,6 @@
 config core 'main'
 	option enabled '1'
+	option onboard_wifi_enabled '0'
 	option cpu_powersave '0'
 	option fan_mode 'smart_quiet'
 	option fan_max '5'

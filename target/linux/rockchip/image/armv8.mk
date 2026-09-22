@@ -63,7 +63,10 @@ define Device/ariaboard_photonicat-2
   DEVICE_PACKAGES := \
     blkdiscard block-mount mkf2fs kmod-nvme kmod-rfkill-gpio \
     kmod-mt7925e mt7927-firmware wpad-basic-mbedtls \
-    pcat-manager-web pcat2-display-mini
+    kmod-aic8800-usb aic8800-usb-firmware \
+    pcat-manager-web pcat2-display-mini luci-app-photonicat2 \
+    luci-app-remote-access luci-app-latency-control \
+    luci-app-push-center luci-app-portable-sync
 endef
 TARGET_DEVICES += ariaboard_photonicat-2
 

@@ -31,6 +31,7 @@ class BootGuardTest(unittest.TestCase):
         MODULE.time.sleep = self.clock.sleep
         MODULE._kill_adb_server = lambda: None
         MODULE._onboard_hub_present = lambda: True
+        MODULE.web_at_allowed = lambda: True
 
     def test_missing_onboard_hub_is_reset_before_modem_discovery(self):
         hub_resets = []
@@ -84,7 +85,16 @@ class BootGuardTest(unittest.TestCase):
         self.assertEqual(resets, [])
         self.assertGreaterEqual(min(adb_checks), 20)
 
-    def test_one_reset_restarts_at_consumers_after_port_returns(self):
+    def test_offline_adb_never_resets_data_session_automatically(self):
+        resets = []
+        MODULE._fm350_usb_device = lambda: "/dev/bus/usb/002/003"
+        MODULE.adb_runtime_available = lambda timeout=4: False
+        MODULE.reset_fm350_usb = lambda: resets.append(True)
+
+        self.assertEqual(MODULE.boot_guard(wait_seconds=60), 0)
+        self.assertEqual(resets, [])
+
+    def test_manual_reset_restarts_at_consumers_after_port_returns(self):
         reset_done = []
         services = []
         original_exists = MODULE.os.path.exists
@@ -97,7 +107,8 @@ class BootGuardTest(unittest.TestCase):
         MODULE._run_service = lambda name, action: services.append((name, action))
 
         try:
-            self.assertEqual(MODULE.boot_guard(wait_seconds=60), 0)
+            self.assertEqual(
+                MODULE.boot_guard(wait_seconds=60, force_reset=True), 0)
             self.assertEqual(len(reset_done), 1)
             self.assertGreaterEqual(self.clock.now, 19)
             self.assertEqual(services, [

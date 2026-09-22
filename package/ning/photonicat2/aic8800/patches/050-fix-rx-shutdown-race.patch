@@ -1,0 +1,46 @@
+--- a/src/USB/driver_fw/drivers/aic8800/aic_load_fw/aic_txrxif.c
++++ b/src/USB/driver_fw/drivers/aic8800/aic_load_fw/aic_txrxif.c
+@@ -188,6 +188,8 @@
+     u8 *data = NULL;
+ 
+     while (1) {
++        /* Do not retain an skb from the preceding aggregate. */
++        skb_inblock = NULL;
+         spin_lock_irqsave(&rx_priv->rxqlock, flags);
+         if(aicwf_is_framequeue_empty(&rx_priv->rxq)) {
+             spin_unlock_irqrestore(&rx_priv->rxqlock,flags);
+@@ -246,6 +248,7 @@
+         }
+ 
+ 		dev_kfree_skb(skb_inblock);
++        skb_inblock = NULL;
+         dev_kfree_skb(skb);
+         atomic_dec(&rx_priv->rx_cnt);
+     }
+@@ -312,11 +315,9 @@
+ void aicwf_rx_deinit(struct aicwf_rx_priv* rx_priv)
+ {
+     //struct reord_ctrl_info *reord_info, *tmp;
+-    aicwf_frame_queue_flush(&rx_priv->rxq);
+-    aicwf_recvframe_queue_deinit(&rx_priv->rxframes_freequeue);
+-    if (rx_priv->recv_frames)
+-        vfree(rx_priv->recv_frames);
+-
++    /* The loader disconnects after changing the USB product ID.  Stop the RX
++     * consumer before flushing its queue or both paths can free the same skb.
++     */
+     if (rx_priv->usbdev->bus_if->busrx_thread) {
+         complete_all(&rx_priv->usbdev->bus_if->busrx_trgg);
+         send_sig(SIGTERM, rx_priv->usbdev->bus_if->busrx_thread, 1);
+@@ -324,6 +325,11 @@
+         rx_priv->usbdev->bus_if->busrx_thread = NULL;
+     }
+ 
++    aicwf_frame_queue_flush(&rx_priv->rxq);
++    aicwf_recvframe_queue_deinit(&rx_priv->rxframes_freequeue);
++    if (rx_priv->recv_frames)
++        vfree(rx_priv->recv_frames);
++
+     kfree(rx_priv);
+     rx_priv = NULL;
+ }

@@ -19,6 +19,8 @@ ONBOARD_HUB_DEVICE = "23000000.usb:hub@1"
 ONBOARD_HUB_VENDOR = "05e3"
 ONBOARD_HUB_PRODUCT = "0610"
 FM350_USB_SETTLE_SECONDS = 5
+DIAL_STATE_PATH = "/tmp/pcat-fm350-dial.state"
+DIAL_WEB_STATES = frozenset(("online", "failed"))
 HUB_RESET_RETRY_SECONDS = 15
 HUB_RESET_MAX_ATTEMPTS = 3
 
@@ -68,6 +70,29 @@ def resolve_primary_at_port(default="/dev/ttyUSB3"):
     return default
 
 
+def fm350_present():
+    """Return True when the final FM350 USB composition is enumerated."""
+    return bool(_fm350_usb_device())
+
+
+def dial_state():
+    """Read the data dialer's atomic lifecycle record."""
+    try:
+        import json
+        with open(DIAL_STATE_PATH, "r", encoding="ascii") as handle:
+            value = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def web_at_allowed():
+    """Keep Web, telemetry, SMS and eSIM AT work behind data dialing."""
+    if not fm350_present():
+        return True
+    return dial_state().get("state") in DIAL_WEB_STATES
+
+
 def _fm350_usb_device():
     for vendor_path in glob.glob("/sys/bus/usb/devices/*/idVendor"):
         usb_path = os.path.dirname(vendor_path)
@@ -78,17 +103,6 @@ def _fm350_usb_device():
         product_id = _read(os.path.join(usb_path, "idProduct")).lower()
         product_name = _read(os.path.join(usb_path, "product")).upper()
         if product_id != FM350_PRODUCT and "FM350" not in product_name:
-            continue
-        has_adb = False
-        for interface in glob.glob(usb_path + ":*"):
-            has_adb = (
-                _read(os.path.join(interface, "bInterfaceClass")).lower() == "ff"
-                and _read(os.path.join(interface, "bInterfaceSubClass")).lower() == "42"
-                and _read(os.path.join(interface, "bInterfaceProtocol")).lower() == "01"
-            )
-            if has_adb:
-                break
-        if not has_adb:
             continue
         bus = _read(os.path.join(usb_path, "busnum"))
         device = _read(os.path.join(usb_path, "devnum"))
@@ -167,13 +181,11 @@ def _run_service(name, action):
 
 
 def boot_guard(wait_seconds=180, force_reset=False):
-    """Wait through FM350 re-enumeration and recover a persistently offline ADB.
+    """Recover a missing onboard hub, then check auxiliary ADB after dialing.
 
-    The modem may appear, disappear and return several times during a cold
-    boot.  Treating the first disappearance as a terminal reset failure leaves
-    ADB offline until the next system reboot.  Keep following the USB device
-    for the whole guard window, and count ADB failures only while the modem is
-    continuously present.
+    Automatic boot checks never reset an enumerated FM350: a whole-device USB
+    reset tears down RNDIS, AT and SIM state together.  A deliberate
+    --force-reset remains available for manual recovery.
     """
     deadline = time.monotonic() + max(30, wait_seconds)
     offline_checks = 0
@@ -229,8 +241,15 @@ def boot_guard(wait_seconds=180, force_reset=False):
             time.sleep(1)
             continue
 
-        # A successful USB reset invalidates the AT file descriptors held by
-        # both consumers.  Restart them once interface 06 has actually returned.
+        # Data service has priority over ADB and all Web-side AT traffic.
+        # During a normal boot, do not even probe ADB until the dialer has
+        # reached either a usable session or a final failure.
+        if not force_reset and not web_at_allowed():
+            time.sleep(2)
+            continue
+
+        # A successful manual USB reset invalidates the AT file descriptors
+        # held by both consumers. Restart them once interface 06 has returned.
         if services_need_restart and os.path.exists(
                 resolve_primary_at_port(default="")):
             _run_service("pcat-manager", "restart")
@@ -255,13 +274,20 @@ def boot_guard(wait_seconds=180, force_reset=False):
         if offline_checks in (2, 4):
             _kill_adb_server()
 
-        should_reset = force_reset or offline_checks >= 6
-        if not should_reset or reset_attempted:
+        if not force_reset and offline_checks >= 6:
+            print(
+                "pcat-modem-health: FM350 ADB is offline; leaving the active "
+                "USB data and AT session untouched",
+                flush=True,
+            )
+            return 0
+
+        if not force_reset or reset_attempted:
             time.sleep(3)
             continue
 
         print(
-            "pcat-modem-health: FM350 ADB stayed offline; resetting its USB device",
+            "pcat-modem-health: manual FM350 USB reset requested",
             flush=True,
         )
         try:
@@ -288,10 +314,10 @@ def boot_guard(wait_seconds=180, force_reset=False):
         _run_service("pcat-manager", "restart")
         _run_service("pcat-manager-web", "restart")
     print(
-        "pcat-modem-health: timed out waiting for a stable FM350 ADB runtime",
+        "pcat-modem-health: boot guard ended without touching the FM350 data session",
         flush=True,
     )
-    return 1
+    return 0
 
 
 def main():

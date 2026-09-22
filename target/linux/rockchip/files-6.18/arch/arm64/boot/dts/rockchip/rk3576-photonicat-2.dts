@@ -91,6 +91,7 @@
 		compatible = "rfkill-gpio";
 		label = "rfkill-usb-wlan";
 		radio-type = "wlan";
+		default-blocked;
 		shutdown-gpios = <&gpio1 RK_PC6 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&rfkill_usb_wlan>;
