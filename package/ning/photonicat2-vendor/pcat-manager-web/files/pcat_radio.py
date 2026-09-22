@@ -391,14 +391,19 @@ def _state(app_module):
 def _identity_state(app_module):
     client = getattr(app_module, "modem_client", None)
     basic = client.basic if client is not None else {}
+    imei = str(basic.get("imei_num", ""))
+    message = str(basic.get("imei_write_message", ""))
+    if not message:
+        message = (
+            "已从模组读取 IMEI" if imei else
+            "当前模组尚未返回 IMEI")
     return {
         "status": "ok",
         "supported": bool(client is not None and _is_fm350(client)),
         "online": _modem_ready(app_module),
-        "imei": str(basic.get("imei_num", "")),
+        "imei": imei,
         "write_status": str(basic.get("imei_write_status", "idle")),
-        "message": str(basic.get(
-            "imei_write_message", "当前模组尚未返回 IMEI")),
+        "message": message,
         "updated": _int(basic.get("imei_write_updated"), 0) or 0,
     }
 

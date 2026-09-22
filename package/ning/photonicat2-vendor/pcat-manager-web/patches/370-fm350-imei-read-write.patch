@@ -33,7 +33,7 @@
 +
              self.cmd_mark_success("ATI")
              print(f"ATI: model={model}, firmware_version={firmware_version}")
-@@ -2690,6 +2696,45 @@
+@@ -2690,6 +2696,59 @@
          else:
              self.cmd_mark_failure("AT+CNUM")
  
@@ -54,6 +54,20 @@
 +        text = response.decode("utf-8", errors="ignore")
 +        match = re.search(r'\+EGMREXT:\s*"(\d{15})"', text)
 +        target = str(self.basic.get("imei_write_target", ""))
++        if re.search(r'\+EGMREXT:\s*""', text):
++            self.basic["imei_num"] = ""
++            self.cmd_mark_success("AT+EGMREXT=0,7")
++            if target and self.basic.get("imei_write_status") in (
++                    "pending", "written"):
++                self.basic["imei_write_status"] = "verification_failed"
++                self.basic["imei_write_message"] = "写入后回读仍为空，请核对模组标签号码"
++            else:
++                self.basic["imei_write_status"] = "empty"
++                self.basic["imei_write_message"] = (
++                    "模组已明确返回空 IMEI，请填写模组标签上的原始 15 位号码")
++            self.basic["imei_write_updated"] = int(time.time())
++            return
++
 +        if match:
 +            imei = match.group(1)
 +            self.basic["imei_num"] = imei

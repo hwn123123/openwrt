@@ -137,48 +137,88 @@ def _run_service(name, action):
         pass
 
 
-def boot_guard(wait_seconds=90, force_reset=False):
-    deadline = time.monotonic() + max(10, wait_seconds)
-    while time.monotonic() < deadline and not _fm350_usb_device():
-        time.sleep(2)
-    if not _fm350_usb_device():
-        print("pcat-modem-health: FM350 did not enumerate; leaving dialer in control", flush=True)
-        return 1
+def boot_guard(wait_seconds=180, force_reset=False):
+    """Wait through FM350 re-enumeration and recover a persistently offline ADB.
 
-    if not force_reset:
-        for attempt in range(6):
-            if adb_runtime_available():
-                print("pcat-modem-health: FM350 ADB runtime is ready", flush=True)
-                return 0
-            if attempt in (1, 3):
-                _kill_adb_server()
-            time.sleep(3)
+    The modem may appear, disappear and return several times during a cold
+    boot.  Treating the first disappearance as a terminal reset failure leaves
+    ADB offline until the next system reboot.  Keep following the USB device
+    for the whole guard window, and count ADB failures only while the modem is
+    continuously present.
+    """
+    deadline = time.monotonic() + max(30, wait_seconds)
+    offline_checks = 0
+    reset_attempted = False
+    services_need_restart = False
 
-    print("pcat-modem-health: FM350 ADB stayed offline; resetting its USB device", flush=True)
-    try:
-        reset_fm350_usb()
-    except (OSError, RuntimeError) as error:
-        print("pcat-modem-health: USB reset failed: {}".format(error), flush=True)
-        return 1
+    while time.monotonic() < deadline:
+        if not _fm350_usb_device():
+            offline_checks = 0
+            time.sleep(2)
+            continue
 
-    # The dialer can retain a deleted tty file descriptor across USB reset.
-    # Wait for interface 06 to return, then restart both AT consumers so they
-    # resolve the new ttyUSB ordinal from sysfs.
-    at_deadline = time.monotonic() + 30
-    while time.monotonic() < at_deadline:
-        if os.path.exists(resolve_primary_at_port(default="")):
-            break
-        time.sleep(1)
-    _run_service("pcat-manager", "restart")
-    _run_service("pcat-manager-web", "restart")
+        # A successful USB reset invalidates the AT file descriptors held by
+        # both consumers.  Restart them once interface 06 has actually returned.
+        if services_need_restart and os.path.exists(
+                resolve_primary_at_port(default="")):
+            _run_service("pcat-manager", "restart")
+            _run_service("pcat-manager-web", "restart")
+            services_need_restart = False
 
-    adb_deadline = time.monotonic() + 30
-    while time.monotonic() < adb_deadline:
         if adb_runtime_available():
-            print("pcat-modem-health: FM350 ADB recovered after USB reset", flush=True)
+            # ADB can answer slightly before the option driver has created the
+            # primary AT tty.  Do not leave the dialer holding a deleted file
+            # descriptor after our reset; wait for the promised restart first.
+            if services_need_restart:
+                time.sleep(1)
+                continue
+            message = (
+                "pcat-modem-health: FM350 ADB recovered after USB reset"
+                if reset_attempted else
+                "pcat-modem-health: FM350 ADB runtime is ready")
+            print(message, flush=True)
             return 0
+
+        offline_checks += 1
+        if offline_checks in (2, 4):
+            _kill_adb_server()
+
+        should_reset = force_reset or offline_checks >= 6
+        if not should_reset or reset_attempted:
+            time.sleep(3)
+            continue
+
+        print(
+            "pcat-modem-health: FM350 ADB stayed offline; resetting its USB device",
+            flush=True,
+        )
+        try:
+            reset_fm350_usb()
+        except (OSError, RuntimeError) as error:
+            # The modem can vanish between discovery and open().  Return to the
+            # discovery loop instead of abandoning the remainder of this boot.
+            print(
+                "pcat-modem-health: USB reset deferred; waiting for FM350 to "
+                "reappear: {}".format(error),
+                flush=True,
+            )
+            offline_checks = 0
+            time.sleep(2)
+            continue
+
+        reset_attempted = True
+        services_need_restart = True
+        offline_checks = 0
         time.sleep(2)
-    print("pcat-modem-health: FM350 ADB did not recover after one USB reset", flush=True)
+
+    if services_need_restart and os.path.exists(
+            resolve_primary_at_port(default="")):
+        _run_service("pcat-manager", "restart")
+        _run_service("pcat-manager-web", "restart")
+    print(
+        "pcat-modem-health: timed out waiting for a stable FM350 ADB runtime",
+        flush=True,
+    )
     return 1
 
 

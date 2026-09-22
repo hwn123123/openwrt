@@ -1,0 +1,29 @@
+--- a/src/modem-manager.c
++++ b/src/modem-manager.c
+@@ -918,13 +918,21 @@ static gpointer pcat_modem_manager_modem
+                     break;
+                 }
+ 
+-                /* A full USB enumeration every second is wasteful once
+-                 * the modem is up; rescanning every 10s is enough to
+-                 * respawn the dial process or notice removal. */
++                /* During a cold boot the FM350 commonly appears 20-40 seconds
++                 * after pcat-manager starts. Scan once per second until it is
++                 * present so the dialer starts as soon as USB is usable. Once
++                 * detected, return to the low-overhead ten-second cadence used
++                 * to respawn the helper or notice removal. */
+                 if(run_scan_countdown==0)
+                 {
+-                    pcat_modem_manager_scan_usb_devs(mm_data);
+-                    run_scan_countdown = 10;
++                    if(pcat_modem_manager_scan_usb_devs(mm_data))
++                    {
++                        run_scan_countdown = 10;
++                    }
++                    else
++                    {
++                        run_scan_countdown = 1;
++                    }
+                 }
+                 run_scan_countdown--;
+ 
