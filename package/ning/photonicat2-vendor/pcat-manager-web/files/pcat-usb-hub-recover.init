@@ -1,0 +1,29 @@
+#!/bin/sh /etc/rc.common
+
+# The onboard Genesys hub can retain a bad state across a warm reboot.  Recover
+# it before modem discovery starts, using the reset sequence already owned by
+# the kernel's onboard-usb-dev driver.
+START=10
+
+DRIVER=/sys/bus/platform/drivers/onboard-usb-dev
+DEVICE=23000000.usb:hub@1
+
+hub_present() {
+	local vendor product
+	for vendor in /sys/bus/usb/devices/*/idVendor; do
+		[ -f "$vendor" ] || continue
+		[ "$(cat "$vendor" 2>/dev/null)" = "05e3" ] || continue
+		product="${vendor%/idVendor}/idProduct"
+		[ "$(cat "$product" 2>/dev/null)" = "0610" ] && return 0
+	done
+	return 1
+}
+
+start() {
+	hub_present && return 0
+	[ -L "$DRIVER/$DEVICE" ] || return 0
+	logger -t pcat-usb-hub "onboard USB hub absent; re-running reset sequence"
+	echo "$DEVICE" > "$DRIVER/unbind" || return 1
+	sleep 2
+	echo "$DEVICE" > "$DRIVER/bind"
+}

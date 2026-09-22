@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat-manager-web
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=77
+PKG_RELEASE:=78
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/pcat-manager-web.git
@@ -121,6 +121,8 @@ define Package/pcat-manager-web/install
 		$(1)/etc/init.d/pcat-manager-web
 	$(INSTALL_BIN) ./files/pcat-modem-health.init \
 		$(1)/etc/init.d/pcat-modem-health
+	$(INSTALL_BIN) ./files/pcat-usb-hub-recover.init \
+		$(1)/etc/init.d/pcat-usb-hub-recover
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/pcat-terminal-shell \
 		$(1)/usr/bin/pcat-terminal-shell

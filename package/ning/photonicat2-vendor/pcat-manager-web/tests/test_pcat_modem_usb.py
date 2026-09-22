@@ -30,6 +30,18 @@ class BootGuardTest(unittest.TestCase):
         MODULE.time.monotonic = self.clock.monotonic
         MODULE.time.sleep = self.clock.sleep
         MODULE._kill_adb_server = lambda: None
+        MODULE._onboard_hub_present = lambda: True
+
+    def test_missing_onboard_hub_is_reset_before_modem_discovery(self):
+        hub_resets = []
+        MODULE._onboard_hub_present = lambda: bool(hub_resets)
+        MODULE._reset_onboard_hub = lambda: hub_resets.append(True)
+        MODULE._fm350_usb_device = lambda: (
+            "/dev/bus/usb/002/003" if self.clock.now >= 4 else "")
+        MODULE.adb_runtime_available = lambda timeout=4: self.clock.now >= 4
+
+        self.assertEqual(MODULE.boot_guard(wait_seconds=40), 0)
+        self.assertEqual(hub_resets, [True])
 
     def test_usb_disappearance_returns_to_discovery(self):
         resets = []

@@ -14,6 +14,10 @@ USBDEVFS_RESET = 0x5514
 FM350_VENDOR = "0e8d"
 FM350_PRODUCT = "7127"
 PRIMARY_AT_INTERFACE = 0x06
+ONBOARD_HUB_DRIVER = "/sys/bus/platform/drivers/onboard-usb-dev"
+ONBOARD_HUB_DEVICE = "23000000.usb:hub@1"
+ONBOARD_HUB_VENDOR = "05e3"
+ONBOARD_HUB_PRODUCT = "0610"
 
 
 def _read(path):
@@ -90,6 +94,28 @@ def _fm350_usb_device():
     return ""
 
 
+def _onboard_hub_present():
+    for vendor_path in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+        usb_path = os.path.dirname(vendor_path)
+        if _read(vendor_path).lower() != ONBOARD_HUB_VENDOR:
+            continue
+        if _read(os.path.join(usb_path, "idProduct")).lower() == ONBOARD_HUB_PRODUCT:
+            return True
+    return False
+
+
+def _reset_onboard_hub():
+    """Re-run the kernel hub power/reset sequence after a failed warm boot."""
+    device_path = os.path.join(ONBOARD_HUB_DRIVER, ONBOARD_HUB_DEVICE)
+    if not os.path.islink(device_path):
+        raise RuntimeError("onboard USB hub driver is not bound")
+    with open(os.path.join(ONBOARD_HUB_DRIVER, "unbind"), "w", encoding="ascii") as handle:
+        handle.write(ONBOARD_HUB_DEVICE)
+    time.sleep(2)
+    with open(os.path.join(ONBOARD_HUB_DRIVER, "bind"), "w", encoding="ascii") as handle:
+        handle.write(ONBOARD_HUB_DEVICE)
+
+
 def adb_runtime_available(timeout=4):
     try:
         result = subprocess.run(
@@ -150,9 +176,23 @@ def boot_guard(wait_seconds=180, force_reset=False):
     offline_checks = 0
     reset_attempted = False
     services_need_restart = False
+    hub_reset_attempted = False
 
     while time.monotonic() < deadline:
         if not _fm350_usb_device():
+            if not hub_reset_attempted and not _onboard_hub_present():
+                hub_reset_attempted = True
+                print(
+                    "pcat-modem-health: onboard USB hub is absent; resetting it",
+                    flush=True,
+                )
+                try:
+                    _reset_onboard_hub()
+                except (OSError, RuntimeError) as error:
+                    print(
+                        "pcat-modem-health: onboard USB hub reset failed: {}".format(error),
+                        flush=True,
+                    )
             offline_checks = 0
             time.sleep(2)
             continue
