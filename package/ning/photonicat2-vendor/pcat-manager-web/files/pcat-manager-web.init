@@ -15,7 +15,7 @@ start_service() {
 	procd_open_instance
 	procd_set_param command /usr/bin/python3 \
 		${APP_DIR}/pcat-manager-web-main.py -p 80
-	procd_set_param env PYTHONPATH=${APP_DIR} PYTHONDONTWRITEBYTECODE=1
+	procd_set_param env PYTHONPATH=${APP_DIR} PYTHONDONTWRITEBYTECODE=1 HOME=/root
 	procd_set_param respawn 3600 5 0
 	procd_set_param stdout 1
 	procd_set_param stderr 1

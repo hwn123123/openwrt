@@ -5,11 +5,16 @@ import argparse
 import fcntl
 import glob
 import os
+import shutil
 import subprocess
 import time
 
 
 ADB = "/usr/bin/adb"
+ADB_HOME = "/root"
+ADB_KEY_DIR = os.path.join(ADB_HOME, ".android")
+ADB_KEY = os.path.join(ADB_KEY_DIR, "adbkey")
+LEGACY_ADB_KEY_DIR = "/.android"
 USBDEVFS_RESET = 0x5514
 FM350_VENDOR = "0e8d"
 FM350_PRODUCT = "7127"
@@ -31,6 +36,90 @@ def _read(path):
             return handle.read().strip()
     except OSError:
         return ""
+
+
+def _adb_env():
+    env = os.environ.copy()
+    env["HOME"] = ADB_HOME
+    return env
+
+
+def _adb_usb_interfaces():
+    """Return only FM350 interfaces carrying the standard ADB protocol."""
+    found = []
+    for interface in glob.glob("/sys/bus/usb/devices/*:*"):
+        if _read(os.path.join(interface, "bInterfaceClass")).lower() != "ff":
+            continue
+        if _read(os.path.join(interface, "bInterfaceSubClass")).lower() != "42":
+            continue
+        if _read(os.path.join(interface, "bInterfaceProtocol")).lower() != "01":
+            continue
+        usb_path = _usb_parent(interface)
+        if _read(os.path.join(usb_path, "idVendor")).lower() != FM350_VENDOR:
+            continue
+        found.append(os.path.realpath(interface))
+    return found
+
+
+def prepare_adb_host_key():
+    """Create one persistent ADB identity before the FM350 sees the host.
+
+    OpenWrt procd services otherwise inherit HOME=/ while an interactive root
+    shell uses HOME=/root.  Two different ADB keys can then race for the same
+    global server and leave the FM350 transport permanently offline until a
+    module reboot.  When a key must be created, temporarily deauthorize only
+    the ADB interface; RNDIS and all AT serial interfaces stay connected.
+    """
+    os.makedirs(ADB_KEY_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(ADB_KEY_DIR, 0o700)
+    except OSError:
+        pass
+
+    if not os.path.isfile(ADB_KEY):
+        legacy_key = os.path.join(LEGACY_ADB_KEY_DIR, "adbkey")
+        legacy_public = legacy_key + ".pub"
+        if os.path.isfile(legacy_key) and os.path.isfile(legacy_public):
+            shutil.copyfile(legacy_key, ADB_KEY)
+            shutil.copyfile(legacy_public, ADB_KEY + ".pub")
+
+    if os.path.isfile(ADB_KEY) and os.path.isfile(ADB_KEY + ".pub"):
+        os.chmod(ADB_KEY, 0o600)
+        os.chmod(ADB_KEY + ".pub", 0o644)
+        return True
+
+    interfaces = _adb_usb_interfaces()
+    disabled = []
+    _kill_adb_server()
+    try:
+        for interface in interfaces:
+            authorized = os.path.join(interface, "authorized")
+            try:
+                with open(authorized, "w", encoding="ascii") as handle:
+                    handle.write("0")
+                disabled.append(authorized)
+            except OSError:
+                continue
+        subprocess.run(
+            [ADB, "start-server"], stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, timeout=8, check=False, env=_adb_env(),
+        )
+        _kill_adb_server()
+    except (OSError, subprocess.SubprocessError):
+        pass
+    finally:
+        for authorized in disabled:
+            try:
+                with open(authorized, "w", encoding="ascii") as handle:
+                    handle.write("1")
+            except OSError:
+                pass
+
+    if os.path.isfile(ADB_KEY) and os.path.isfile(ADB_KEY + ".pub"):
+        os.chmod(ADB_KEY, 0o600)
+        os.chmod(ADB_KEY + ".pub", 0o644)
+        return True
+    return False
 
 
 def _usb_parent(path):
@@ -142,6 +231,7 @@ def adb_runtime_available(timeout=4):
             text=True,
             timeout=timeout,
             check=False,
+            env=_adb_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return False
@@ -152,7 +242,7 @@ def _kill_adb_server():
     try:
         subprocess.run(
             [ADB, "kill-server"], stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, timeout=5, check=False,
+            stderr=subprocess.DEVNULL, timeout=5, check=False, env=_adb_env(),
         )
     except (OSError, subprocess.SubprocessError):
         pass
@@ -187,6 +277,7 @@ def boot_guard(wait_seconds=180, force_reset=False):
     reset tears down RNDIS, AT and SIM state together.  A deliberate
     --force-reset remains available for manual recovery.
     """
+    prepare_adb_host_key()
     deadline = time.monotonic() + max(30, wait_seconds)
     offline_checks = 0
     reset_attempted = False
@@ -324,7 +415,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--boot-guard", action="store_true")
     parser.add_argument("--force-reset", action="store_true")
+    parser.add_argument("--prepare-adb-key", action="store_true")
     args = parser.parse_args()
+    if args.prepare_adb_key:
+        raise SystemExit(0 if prepare_adb_host_key() else 1)
     if args.boot_guard or args.force_reset:
         raise SystemExit(boot_guard(force_reset=args.force_reset))
     print(resolve_primary_at_port())
