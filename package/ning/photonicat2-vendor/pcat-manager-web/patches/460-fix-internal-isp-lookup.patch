@@ -1,0 +1,8 @@
+--- a/app/pcat_manager_web.py
++++ b/app/pcat_manager_web.py
+@@ -1033,7 +1033,6 @@ isp_lookup_cache = {}
+ 
+-@api_auth_required
+ def get_isp_info_from_mccmnc(mccmnc):
+     """
+     Get ISP information from MCC/MNC using cellular_constants mapping with caching
