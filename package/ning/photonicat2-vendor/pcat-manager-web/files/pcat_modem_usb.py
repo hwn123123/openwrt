@@ -28,6 +28,9 @@ DIAL_STATE_PATH = "/tmp/pcat-fm350-dial.state"
 DIAL_WEB_STATES = frozenset(("online", "failed"))
 HUB_RESET_RETRY_SECONDS = 15
 HUB_RESET_MAX_ATTEMPTS = 3
+ADB_RECOVERY_LOCK_PATH = "/var/lock/pcat-fm350-adb-recovery.lock"
+ADB_RECOVERY_STAMP_PATH = "/tmp/pcat-fm350-adb-recovery.stamp"
+ADB_RECOVERY_COOLDOWN_SECONDS = 300
 
 
 def _read(path):
@@ -273,9 +276,10 @@ def _run_service(name, action):
 def boot_guard(wait_seconds=180, force_reset=False):
     """Recover a missing onboard hub, then check auxiliary ADB after dialing.
 
-    Automatic boot checks never reset an enumerated FM350: a whole-device USB
-    reset tears down RNDIS, AT and SIM state together.  A deliberate
-    --force-reset remains available for manual recovery.
+    Automatic boot checks never reset an enumerated FM350: ADB only supplies
+    optional Web telemetry, while RNDIS and AT carry the data session.  A
+    deliberate on-demand recovery can request one composite USB reset after a
+    visible dashboard has actually tried and failed to read ADB telemetry.
     """
     prepare_adb_host_key()
     deadline = time.monotonic() + max(30, wait_seconds)
@@ -378,7 +382,7 @@ def boot_guard(wait_seconds=180, force_reset=False):
             continue
 
         print(
-            "pcat-modem-health: manual FM350 USB reset requested",
+            "pcat-modem-health: on-demand FM350 ADB USB reset requested",
             flush=True,
         )
         try:
@@ -411,14 +415,49 @@ def boot_guard(wait_seconds=180, force_reset=False):
     return 0
 
 
+def recover_adb_on_demand():
+    """Run at most one dashboard-requested ADB recovery per cooldown window."""
+    descriptor = os.open(
+        ADB_RECOVERY_LOCK_PATH, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0
+
+        if adb_runtime_available():
+            return 0
+
+        now = time.monotonic()
+        try:
+            with open(ADB_RECOVERY_STAMP_PATH, "r", encoding="ascii") as handle:
+                previous = float(handle.read().strip())
+        except (OSError, ValueError):
+            previous = -ADB_RECOVERY_COOLDOWN_SECONDS
+        if now - previous < ADB_RECOVERY_COOLDOWN_SECONDS:
+            print(
+                "pcat-modem-health: on-demand ADB recovery is cooling down",
+                flush=True,
+            )
+            return 0
+        with open(ADB_RECOVERY_STAMP_PATH, "w", encoding="ascii") as handle:
+            handle.write(str(now))
+        return boot_guard(wait_seconds=120, force_reset=True)
+    finally:
+        os.close(descriptor)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--boot-guard", action="store_true")
     parser.add_argument("--force-reset", action="store_true")
+    parser.add_argument("--recover-adb", action="store_true")
     parser.add_argument("--prepare-adb-key", action="store_true")
     args = parser.parse_args()
     if args.prepare_adb_key:
         raise SystemExit(0 if prepare_adb_host_key() else 1)
+    if args.recover_adb:
+        raise SystemExit(recover_adb_on_demand())
     if args.boot_guard or args.force_reset:
         raise SystemExit(boot_guard(force_reset=args.force_reset))
     print(resolve_primary_at_port())

@@ -29,6 +29,7 @@ class BootGuardTest(unittest.TestCase):
         self.clock = FakeClock()
         MODULE.time.monotonic = self.clock.monotonic
         MODULE.time.sleep = self.clock.sleep
+        MODULE.prepare_adb_host_key = lambda: True
         MODULE._kill_adb_server = lambda: None
         MODULE._onboard_hub_present = lambda: True
         MODULE.web_at_allowed = lambda: True
@@ -85,7 +86,7 @@ class BootGuardTest(unittest.TestCase):
         self.assertEqual(resets, [])
         self.assertGreaterEqual(min(adb_checks), 20)
 
-    def test_offline_adb_never_resets_data_session_automatically(self):
+    def test_offline_adb_does_not_reset_data_session_during_boot(self):
         resets = []
         MODULE._fm350_usb_device = lambda: "/dev/bus/usb/002/003"
         MODULE.adb_runtime_available = lambda timeout=4: False
