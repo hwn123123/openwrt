@@ -21,7 +21,7 @@
              "wwan_powered": pc_app.is_wwan_powered(),
              "wan_interface_enabled": pc_app.is_wan_interface_enabled(),         
              "wan_carrier": pc_app.does_wan_have_carrier(),
-@@ -1702,6 +1710,32 @@ def get_dashboard_data():
+@@ -1702,6 +1710,33 @@ def get_dashboard_data():
              elif cell_isp_long_name:
                  dashboard["isp_name"] = cell_isp_long_name
          timing_breakdown['enhanced_operator'] = (time.time() - timing_start) * 1000
@@ -33,7 +33,7 @@
 +        if not modem_present:
 +            for key in (
 +                    "modem_model", "modem_temperature",
-+                    "modem_signal_strength", "carrier", "modem_mode",
++                    "carrier", "modem_mode",
 +                    "isp_name", "sim_state", "sim_ccid", "sim_cimi",
 +                    "sim_number", "imei_number", "cell_tech",
 +                    "cell_signal_percent_qrsrp",
@@ -48,6 +48,7 @@
 +                    "enhanced_isp_mcc", "enhanced_isp_mnc"):
 +                dashboard[key] = ""
 +            dashboard.update({
++                "modem_signal_strength": 0,
 +                "enhanced_isp_available": False,
 +                "enhanced_isp_bilingual": False,
 +            })

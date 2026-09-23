@@ -1,6 +1,6 @@
 --- a/app/app.py
 +++ b/app/app.py
-@@ -672,7 +672,33 @@
+@@ -672,7 +672,67 @@
      pass
    return preferred
  
@@ -10,6 +10,21 @@
 +  except Exception:
 +    configured_path = ""
 +  return configured_path.rstrip("/").endswith("/usb1/1-1/1-1.3")
++
++def _is_pcie_wifi_radio(dev_name):
++  try:
++    configured_path = uci_get("wireless.{}.path".format(dev_name)).lower()
++  except Exception:
++    configured_path = ""
++  if "pcie" in configured_path or "/pci" in configured_path:
++    return True
++  try:
++    configured_phy = uci_get("wireless.{}.phy".format(dev_name))
++  except Exception:
++    configured_phy = ""
++  if not configured_phy:
++    return False
++  return "/pci" in os.path.realpath("/sys/class/ieee80211/{}/device".format(configured_phy))
 +
  def enable_wifi_interface(dev_name, enable_flag, restart=True):
 +  # The AIC8800 UCI switch alone does not stop the driver from probing the
@@ -29,6 +44,25 @@
 +      return True
 +    except Exception as error:
 +      pcat_logger.logger.error("Failed to switch onboard WiFi power: %s", error)
++      return False
++
++  # The default-off AIC rfkill gate can propagate its global WLAN state to
++  # the PCIe radio.  Use the board helper so a UI toggle always synchronizes
++  # both the MT7927 rfkill nodes and its UCI/netifd state.
++  if _is_pcie_wifi_radio(dev_name):
++    try:
++      result = subprocess.run(
++        ["/usr/libexec/photonicat2ctl", "pcie-wifi-set", "1" if enable_flag else "0"],
++        capture_output=True, text=True, timeout=20
++      )
++      if result.returncode != 0:
++        pcat_logger.logger.error(
++          "Failed to switch PCIe WiFi: %s", result.stderr.strip() or result.stdout.strip()
++        )
++        return False
++      return True
++    except Exception as error:
++      pcat_logger.logger.error("Failed to switch PCIe WiFi: %s", error)
 +      return False
 +
    old_flag = is_wifi_interface_enabled(dev_name)

@@ -157,6 +157,101 @@ onboard_wifi_set() {
 		'{ok:true,enabled:$enabled,radio:$radio,ready:$ready}'
 }
 
+# Linux rfkill treats a persistent default state as global for every device of
+# the same type.  The AIC8800 power gate is intentionally default-blocked, but
+# registering it can therefore soft-block the independent PCIe MT7927 too.
+# Restore only the PCIe radio before netifd starts; never unblock the AIC gate.
+pcie_wifi_rfkill_nodes() {
+	local node name device
+	for node in /sys/class/rfkill/rfkill*; do
+		[ -r "$node/name" ] && [ -r "$node/type" ] || continue
+		read -r name < "$node/name"
+		[ "$name" = rfkill-usb-wlan ] && continue
+		if [ "$name" = rfkill-pcie-wlan ]; then
+			printf '%s\n' "$node"
+			continue
+		fi
+		[ "$(sysval "$node/type")" = wlan ] || continue
+		device="$(readlink -f "$node/device" 2>/dev/null)"
+		case "$device" in
+			*/pci*|*/pcie*) printf '%s\n' "$node" ;;
+		esac
+	done
+}
+
+pcie_wifi_power_set() {
+	local requested="$1" node found=0 failed=0
+	bool_arg "$requested" || return 2
+	for node in $(pcie_wifi_rfkill_nodes); do
+		[ -w "$node/state" ] || { failed=1; continue; }
+		found=1
+		# rfkill state: 0 = software blocked, 1 = unblocked.
+		printf '%s\n' "$requested" > "$node/state" || failed=1
+	done
+	[ "$found" -eq 1 ] && [ "$failed" -eq 0 ]
+}
+
+pcie_wifi_radio() {
+	local section path phy phy_path
+	for section in $(uci -q show wireless 2>/dev/null | sed -n 's/^wireless\.\([^.=]*\)=wifi-device$/\1/p'); do
+		path="$(uci -q get "wireless.$section.path")"
+		case "$path" in
+			*pcie*|*/pci*) printf '%s' "$section"; return 0 ;;
+		esac
+		phy="$(uci -q get "wireless.$section.phy")"
+		[ -n "$phy" ] || continue
+		phy_path="$(readlink -f "/sys/class/ieee80211/$phy/device" 2>/dev/null)"
+		case "$phy_path" in
+			*/pci*|*/pcie*) printf '%s' "$section"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+pcie_wifi_set() {
+	local requested="$1" radio iface
+	bool_arg "$requested" || { error_json "PCIe Wi-Fi 开关值无效"; return 2; }
+	radio="$(pcie_wifi_radio)" || {
+		error_json "未找到 PCIe Wi-Fi 配置"
+		return 1
+	}
+	iface="$(uci -q show wireless 2>/dev/null | sed -n "s/^wireless\.\([^.=]*\)\.device='$radio'$/\1/p" | head -n 1)"
+	[ -n "$iface" ] || iface="default_$radio"
+
+	if [ "$requested" = 1 ]; then
+		pcie_wifi_power_set 1 || {
+			error_json "无法解除 PCIe Wi-Fi 射频阻塞"
+			return 1
+		}
+		uci -q set "wireless.$radio.disabled=0"
+		uci -q set "wireless.$iface.disabled=0"
+		uci -q commit wireless
+		# netifd may still cache the failed boot attempt as up.  A full down/up
+		# forces hostapd to recreate the AP after clearing rfkill.
+		/sbin/wifi down "$radio" >/dev/null 2>&1 || true
+		/sbin/wifi up "$radio" >/dev/null 2>&1 || true
+	else
+		uci -q set "wireless.$radio.disabled=1"
+		uci -q set "wireless.$iface.disabled=1"
+		uci -q commit wireless
+		/sbin/wifi down "$radio" >/dev/null 2>&1 || true
+		pcie_wifi_power_set 0 || {
+			error_json "无法阻塞 PCIe Wi-Fi 射频"
+			return 1
+		}
+	fi
+
+	jq -cn --argjson enabled "$requested" --arg radio "$radio" \
+		'{ok:true,enabled:$enabled,radio:$radio}'
+}
+
+pcie_wifi_boot_sync() {
+	local radio requested=1
+	radio="$(pcie_wifi_radio)" || return 0
+	[ "$(uci -q get "wireless.$radio.disabled")" = 1 ] && requested=0
+	pcie_wifi_power_set "$requested"
+}
+
 first_glob_value() {
 	local path
 	for path in $1; do
@@ -736,6 +831,12 @@ case "$1" in
 	onboard-wifi-boot-sync)
 		bool_arg "$2" || { error_json "板载 Wi-Fi 开关值无效"; exit 2; }
 		onboard_wifi_set "$2" 0
+	;;
+	pcie-wifi-set)
+		pcie_wifi_set "$2"
+	;;
+	pcie-wifi-boot-sync)
+		pcie_wifi_boot_sync
 	;;
 	io-get)
 		pcat '{"command":"pmu-io-get"}'
