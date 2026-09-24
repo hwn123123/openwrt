@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=pcat-manager-web
 PKG_VERSION:=2.0.0
-PKG_RELEASE:=86
+PKG_RELEASE:=88
 
 PKG_SOURCE_PROTO:=git
 PKG_SOURCE_URL:=https://github.com/photonicat/pcat-manager-web.git
@@ -74,6 +74,10 @@ define Package/pcat-manager-web/install
 		$(1)/usr/share/pcat-manager-web/static/
 	$(INSTALL_DATA) ./files/apps.svg \
 		$(1)/usr/share/pcat-manager-web/static/apps.svg
+	$(INSTALL_DATA) ./files/vendor-thermal.js ./files/vendor-thermal.css \
+		$(1)/usr/share/pcat-manager-web/static/
+	$(INSTALL_DATA) ./files/temperature.svg \
+		$(1)/usr/share/pcat-manager-web/static/temperature.svg
 	$(INSTALL_DATA) ./files/vendor-modem.js \
 		$(1)/usr/share/pcat-manager-web/static/vendor-modem.js
 	$(INSTALL_DATA) ./files/vendor-settings.js \
@@ -109,6 +113,10 @@ define Package/pcat-manager-web/install
 		$(1)/usr/share/pcat-manager-web/pcat_esim.py
 	$(INSTALL_DATA) ./files/pcat_extensions.py \
 		$(1)/usr/share/pcat-manager-web/pcat_extensions.py
+	$(INSTALL_DATA) ./files/pcat_thermal.py \
+		$(1)/usr/share/pcat-manager-web/pcat_thermal.py
+	$(INSTALL_DATA) ./files/thermal.html \
+		$(1)/usr/share/pcat-manager-web/templates/thermal.html
 	$(INSTALL_DIR) $(1)/etc
 	$(INSTALL_CONF) ./files/pcat-radio-control.json \
 		$(1)/etc/pcat-radio-control.json

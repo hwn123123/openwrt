@@ -1,0 +1,344 @@
+.pcat-thermal-shell {
+  width: min(100% - 2rem, 1180px);
+  margin: 0 auto;
+  padding: 7.25rem 0 4.5rem;
+  color: var(--pcat-text, #f0f7f4);
+}
+
+.pcat-thermal-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.15rem;
+}
+
+.pcat-thermal-kicker {
+  color: var(--pcat-accent, #26d6a0);
+  font-size: .65rem;
+  font-weight: 750;
+  letter-spacing: .18em;
+}
+
+.pcat-thermal-heading h1 {
+  margin: .16rem 0 .1rem;
+  color: #f5fbf8;
+  font-size: clamp(1.35rem, 2vw, 1.85rem);
+  font-weight: 720;
+}
+
+.pcat-thermal-heading p {
+  margin: 0;
+  color: var(--pcat-muted, #91a09a);
+  font-size: .78rem;
+}
+
+.pcat-thermal-live {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  column-gap: .45rem;
+  min-width: 8.5rem;
+  padding: .55rem .75rem;
+  border: 1px solid var(--pcat-border, rgba(224,255,244,.12));
+  border-radius: 10px;
+  background: #080c0a;
+}
+
+.pcat-thermal-live > span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--pcat-accent, #26d6a0);
+  box-shadow: 0 0 8px rgba(38, 214, 160, .8);
+}
+
+.pcat-thermal-live strong { font-size: .72rem; font-weight: 650; }
+.pcat-thermal-live small {
+  grid-column: 2;
+  color: var(--pcat-faint, #64716c);
+  font-size: .61rem;
+}
+
+.pcat-thermal-live.is-error > span {
+  background: var(--pcat-danger, #ff6f7d);
+  box-shadow: 0 0 8px rgba(255, 111, 125, .7);
+}
+
+.pcat-thermal-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: .75rem;
+  margin-bottom: .75rem;
+}
+
+.pcat-thermal-hero,
+.pcat-thermal-panel {
+  border: 1px solid var(--pcat-border, rgba(224,255,244,.12));
+  border-radius: 14px;
+  background: linear-gradient(145deg, rgba(13, 18, 16, .98), rgba(7, 10, 9, .98));
+  box-shadow: inset 0 1px rgba(255,255,255,.025), 0 12px 36px rgba(0,0,0,.18);
+}
+
+.pcat-thermal-hero {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: .85rem;
+  min-height: 8.5rem;
+  padding: .9rem;
+  overflow: hidden;
+}
+
+.pcat-thermal-hero::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: var(--hero-color, var(--pcat-accent, #26d6a0));
+  content: "";
+}
+
+.pcat-thermal-hero.is-cpu { --hero-color: #55a9ff; }
+.pcat-thermal-hero.is-temp { --hero-color: #f1b84b; }
+.pcat-thermal-hero.is-power { --hero-color: #26d6a0; }
+
+.pcat-thermal-ring {
+  --meter: 0;
+  --ring-color: var(--hero-color);
+  position: relative;
+  display: flex;
+  width: 6.25rem;
+  height: 6.25rem;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: conic-gradient(var(--ring-color) calc(var(--meter) * 1%), #16201c 0);
+}
+
+.pcat-thermal-ring::after {
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(255,255,255,.035);
+  border-radius: 50%;
+  background: #050806;
+  content: "";
+}
+
+.pcat-thermal-ring strong,
+.pcat-thermal-ring small { position: relative; z-index: 1; }
+.pcat-thermal-ring strong { color: #fff; font-size: 1.35rem; font-weight: 720; }
+.pcat-thermal-ring small { color: var(--pcat-muted, #91a09a); font-size: .58rem; }
+
+.pcat-thermal-hero > div:last-child { min-width: 0; }
+.pcat-thermal-hero > div:last-child > span {
+  color: var(--pcat-faint, #64716c);
+  font-size: .65rem;
+}
+.pcat-thermal-hero > div:last-child > strong {
+  display: block;
+  margin: .2rem 0;
+  color: #eaf3ef;
+  font-size: 1rem;
+}
+.pcat-thermal-hero > div:last-child > small {
+  display: block;
+  color: var(--pcat-muted, #91a09a);
+  font-size: .65rem;
+  line-height: 1.35;
+}
+
+.pcat-thermal-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .75rem;
+  margin-top: .75rem;
+}
+
+.pcat-thermal-panel { padding: .9rem; }
+.pcat-thermal-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  margin: -.15rem 0 .75rem;
+  padding-bottom: .7rem;
+  border-bottom: 1px solid var(--pcat-border, rgba(224,255,244,.12));
+}
+.pcat-thermal-panel > header > div { display: flex; align-items: center; gap: .55rem; }
+.pcat-thermal-panel h2 { margin: 0; color: #eef7f3; font-size: .86rem; font-weight: 680; }
+.pcat-thermal-panel header small { color: var(--pcat-faint, #64716c); font-size: .58rem; }
+
+.pcat-panel-icon {
+  display: inline-flex;
+  width: 1.8rem;
+  height: 1.8rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(38,214,160,.32);
+  border-radius: 8px;
+  background: rgba(38,214,160,.08);
+  color: var(--pcat-accent, #26d6a0);
+  font-size: .64rem;
+  font-weight: 750;
+}
+.pcat-panel-icon.is-cpu { border-color: rgba(85,169,255,.34); background: rgba(85,169,255,.08); color: #74baff; }
+.pcat-panel-icon.is-frequency { border-color: rgba(169,139,255,.34); background: rgba(169,139,255,.08); color: #b69dff; }
+.pcat-panel-icon.is-power { border-color: rgba(241,184,75,.35); background: rgba(241,184,75,.08); color: #f1c160; }
+.pcat-panel-icon.is-fan { border-color: rgba(83,220,222,.35); background: rgba(83,220,222,.08); color: #66dcde; }
+.pcat-panel-icon.is-temperature { border-color: rgba(255,111,125,.35); background: rgba(255,111,125,.08); color: #ff8793; }
+
+.pcat-temperature-groups { display: grid; gap: .65rem; }
+.pcat-temperature-group {
+  padding: .7rem;
+  border: 1px solid rgba(224,255,244,.08);
+  border-radius: 11px;
+  background: rgba(3, 6, 5, .55);
+}
+.pcat-temperature-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: .55rem;
+}
+.pcat-temperature-group > header strong { color: #b9c7c1; font-size: .68rem; }
+.pcat-temperature-group > header small { color: var(--pcat-faint, #64716c); font-size: .56rem; }
+.pcat-temperature-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: .5rem;
+}
+
+.pcat-temperature-list > .pcat-thermal-empty {
+  grid-column: 1 / -1;
+}
+
+.pcat-sensor-card,
+.pcat-core-card,
+.pcat-policy-card,
+.pcat-metric-card {
+  min-width: 0;
+  border: 1px solid rgba(224,255,244,.09);
+  border-radius: 9px;
+  background: #080c0a;
+}
+.pcat-sensor-card { padding: .65rem; }
+.pcat-sensor-card > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: .4rem; }
+.pcat-sensor-card strong { color: #f4f8f6; font-size: 1.02rem; }
+.pcat-sensor-card strong small { color: var(--pcat-muted, #91a09a); font-size: .55rem; }
+.pcat-sensor-card .pcat-sensor-label {
+  display: block;
+  margin-top: .28rem;
+  overflow: hidden;
+  color: #b5c1bc;
+  font-size: .64rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pcat-sensor-card .pcat-sensor-source {
+  display: block;
+  margin-top: .1rem;
+  overflow: hidden;
+  color: var(--pcat-faint, #64716c);
+  font-size: .53rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pcat-sensor-state {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--pcat-accent, #26d6a0);
+  box-shadow: 0 0 6px rgba(38,214,160,.5);
+}
+.pcat-sensor-card.is-warning { border-color: rgba(241,184,75,.32); }
+.pcat-sensor-card.is-warning .pcat-sensor-state { background: #f1b84b; box-shadow: 0 0 6px rgba(241,184,75,.55); }
+.pcat-sensor-card.is-critical { border-color: rgba(255,111,125,.38); }
+.pcat-sensor-card.is-critical .pcat-sensor-state { background: #ff6f7d; box-shadow: 0 0 7px rgba(255,111,125,.6); }
+.pcat-sensor-card.is-unavailable { opacity: .55; }
+.pcat-sensor-card.is-unavailable .pcat-sensor-state { background: #64716c; box-shadow: none; }
+
+.pcat-core-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
+.pcat-core-card { padding: .55rem; }
+.pcat-core-card > div { display: flex; justify-content: space-between; color: #b9c5c0; font-size: .62rem; }
+.pcat-core-card strong { color: #eef7f3; font-size: .7rem; }
+.pcat-meter {
+  height: 4px;
+  margin-top: .45rem;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #18201d;
+}
+.pcat-meter > span {
+  display: block;
+  width: var(--value, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #26d6a0, #55a9ff);
+  transition: width .35s ease;
+}
+
+.pcat-policy-list { display: grid; gap: .5rem; }
+.pcat-policy-card { display: grid; grid-template-columns: 1fr auto; gap: .3rem .7rem; padding: .62rem; }
+.pcat-policy-card span { color: var(--pcat-muted, #91a09a); font-size: .6rem; }
+.pcat-policy-card strong { color: #f1f7f4; font-size: .82rem; text-align: right; }
+.pcat-policy-card small { color: var(--pcat-faint, #64716c); font-size: .54rem; }
+.pcat-policy-card small:last-child { text-align: right; }
+
+.pcat-metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .5rem; }
+.pcat-metric-card { padding: .65rem; }
+.pcat-metric-card span { display: block; color: var(--pcat-faint, #64716c); font-size: .57rem; }
+.pcat-metric-card strong { display: block; margin-top: .2rem; color: #f1f7f4; font-size: .84rem; }
+.pcat-metric-card small { display: block; margin-top: .12rem; color: var(--pcat-muted, #91a09a); font-size: .53rem; }
+
+.pcat-thermal-loading,
+.pcat-thermal-empty {
+  padding: 1.2rem;
+  color: var(--pcat-faint, #64716c);
+  font-size: .66rem;
+  text-align: center;
+}
+.pcat-thermal-error {
+  margin-bottom: .75rem;
+  padding: .65rem .8rem;
+  border: 1px solid rgba(255,111,125,.32);
+  border-radius: 10px;
+  background: rgba(255,111,125,.07);
+  color: #ff9aa4;
+  font-size: .68rem;
+}
+.pcat-thermal-note {
+  margin-top: .75rem;
+  color: var(--pcat-faint, #64716c);
+  font-size: .58rem;
+  text-align: right;
+}
+
+@media (max-width: 900px) {
+  .pcat-thermal-overview { grid-template-columns: 1fr; }
+  .pcat-thermal-hero { min-height: 7.2rem; }
+  .pcat-temperature-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcat-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 640px) {
+  .pcat-thermal-shell { width: min(100% - 1rem, 1180px); padding: 3.6rem 0 5rem; }
+  .pcat-thermal-heading { align-items: flex-start; }
+  .pcat-thermal-heading p { max-width: 16rem; }
+  .pcat-thermal-live { min-width: 0; padding: .45rem .55rem; }
+  .pcat-thermal-grid { grid-template-columns: 1fr; }
+  .pcat-thermal-panel { padding: .7rem; }
+  .pcat-thermal-panel > header { align-items: flex-start; }
+  .pcat-thermal-panel > header > small { max-width: 8rem; text-align: right; }
+  .pcat-temperature-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcat-core-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .pcat-thermal-note { text-align: left; }
+}
+
+@media (max-width: 390px) {
+  .pcat-temperature-list,
+  .pcat-metric-grid { grid-template-columns: 1fr; }
+  .pcat-core-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

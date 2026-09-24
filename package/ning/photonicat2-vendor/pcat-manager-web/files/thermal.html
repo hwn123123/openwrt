@@ -1,0 +1,73 @@
+{% extends '_base.html' %}
+{% block page_title %}温度与性能{% endblock %}
+{% block html_head %}
+<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-r1" />
+<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-r1"></script>
+{% endblock %}
+{% block content %}
+<main id="pcat-thermal-page" class="pcat-thermal-shell" aria-live="polite">
+  <header class="pcat-thermal-heading">
+    <div>
+      <span class="pcat-thermal-kicker">SYSTEM TELEMETRY</span>
+      <h1>温度与性能</h1>
+      <p>汇总主控、计算单元、内存、网络、蜂窝模组及供电系统的实时状态。</p>
+    </div>
+    <div class="pcat-thermal-live"><span></span><strong id="thermal-live-text">正在读取</strong><small id="thermal-updated">—</small></div>
+  </header>
+
+  <section class="pcat-thermal-overview" aria-label="实时摘要">
+    <article class="pcat-thermal-hero is-cpu">
+      <div class="pcat-thermal-ring" id="thermal-cpu-ring"><strong id="thermal-cpu">—</strong><small>CPU 占用</small></div>
+      <div><span>处理器实时负载</span><strong id="thermal-load">—</strong><small id="thermal-core-count">正在检测核心</small></div>
+    </article>
+    <article class="pcat-thermal-hero is-temp">
+      <div class="pcat-thermal-ring" id="thermal-temp-ring"><strong id="thermal-highest">—</strong><small>最高温度</small></div>
+      <div><span>传感器概览</span><strong id="thermal-average">—</strong><small id="thermal-sensor-count">正在枚举传感器</small></div>
+    </article>
+    <article class="pcat-thermal-hero is-power">
+      <div class="pcat-thermal-ring" id="thermal-power-ring"><strong id="thermal-power">—</strong><small>电池侧功率</small></div>
+      <div><span>供电状态</span><strong id="thermal-power-state">—</strong><small id="thermal-power-detail">正在读取电源信息</small></div>
+    </article>
+  </section>
+
+  <div id="thermal-error" class="pcat-thermal-error" hidden></div>
+
+  <section class="pcat-thermal-panel">
+    <header><div><span class="pcat-panel-icon is-temperature">温</span><h2>温度传感器</h2></div><small>自动去除 thermal 与 hwmon 的重复项</small></header>
+    <div id="thermal-groups" class="pcat-temperature-groups">
+      <div class="pcat-thermal-loading">正在读取全部温度传感器…</div>
+    </div>
+  </section>
+
+  <section class="pcat-thermal-grid">
+    <article class="pcat-thermal-panel">
+      <header><div><span class="pcat-panel-icon is-cpu">核</span><h2>CPU 核心占用</h2></div><small>逐核心实时采样</small></header>
+      <div id="thermal-cpu-cores" class="pcat-core-grid"><div class="pcat-thermal-loading">等待第二次采样…</div></div>
+    </article>
+
+    <article class="pcat-thermal-panel">
+      <header><div><span class="pcat-panel-icon is-frequency">频</span><h2>CPU 频率</h2></div><small>集群与调速策略</small></header>
+      <div id="thermal-policies" class="pcat-policy-list"><div class="pcat-thermal-loading">正在读取频率策略…</div></div>
+    </article>
+  </section>
+
+  <section class="pcat-thermal-grid">
+    <article class="pcat-thermal-panel">
+      <header><div><span class="pcat-panel-icon is-power">电</span><h2>电池与供电</h2></div><small>功率为电池侧实时读数</small></header>
+      <div id="thermal-power-items" class="pcat-metric-grid"><div class="pcat-thermal-loading">正在读取供电数据…</div></div>
+    </article>
+
+    <article class="pcat-thermal-panel">
+      <header><div><span class="pcat-panel-icon is-fan">风</span><h2>散热状态</h2></div><small>风扇与温控状态</small></header>
+      <div id="thermal-fans" class="pcat-metric-grid"><div class="pcat-thermal-loading">正在读取风扇状态…</div></div>
+    </article>
+  </section>
+
+  <footer class="pcat-thermal-note">
+    页面每 2 秒读取一次内核与厂家服务的只读数据；不会主动查询模组串口，也不会修改温控、频率或供电设置。
+  </footer>
+</main>
+{% endblock %}
+{% block bottom %}
+<script>document.addEventListener('alpine:init',()=>Alpine.store('app').set_page('thermal'));</script>
+{% endblock %}

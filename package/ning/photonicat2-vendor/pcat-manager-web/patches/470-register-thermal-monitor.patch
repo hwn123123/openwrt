@@ -1,0 +1,18 @@
+--- a/app/pcat-manager-web-main.py
++++ b/app/pcat-manager-web-main.py
+@@ -23,5 +23,6 @@ import pcat_esim
+ import pcat_esim
+ import pcat_extensions
++import pcat_thermal
+ import pcat_manager_web as web_app
+ import app
+ 
+@@ -38,5 +39,7 @@ if __name__ == "__main__":
+                             app)
+     pcat_extensions.register_extensions(web_app.flask_app,
+                                          web_app.api_auth_required, web_app.base_locales)
++    pcat_thermal.register_thermal(web_app.flask_app, web_app.api_auth_required,
++                                  web_app.base_locales, app)
+ 
+     current_working_path = pathlib.Path(__file__).parent.resolve()
+     os.chdir(str(current_working_path))
