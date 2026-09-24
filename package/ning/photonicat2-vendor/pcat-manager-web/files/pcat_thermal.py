@@ -24,6 +24,8 @@ _CATEGORY_ORDER = {
     "other": 8,
 }
 
+_MODEM_REFRESH_INTERVAL = 30.0
+
 _THERMAL_LABELS = {
     "package-thermal": ("processor", "主控封装"),
     "bigcore-thermal": ("processor", "CPU 大核集群"),
@@ -120,6 +122,8 @@ class ThermalSampler:
         self.proc_root = Path(proc_root)
         self._lock = threading.Lock()
         self._previous_cpu = self._cpu_counters()
+        self._last_modem_refresh = 0.0
+        self._modem_refresh_thread = None
 
     def _cpu_counters(self):
         counters = {}
@@ -272,10 +276,49 @@ class ThermalSampler:
                 })
         return sensors
 
+    @staticmethod
+    def _request_modem_temperature(client):
+        try:
+            # At Web-service startup the vendor model cache can still be empty.
+            # USB identity is already authoritative on Photonicat 2, so select
+            # the FM350 command without first queueing a broad modem scan.
+            import pcat_modem_usb
+            if pcat_modem_usb.fm350_present():
+                client.cmd_queue_append("AT+GTSENRDTEMP=0")
+                return
+        except (AttributeError, ImportError, OSError, RuntimeError):
+            pass
+        try:
+            client.start_query("cellular_temperature")
+        except (AttributeError, OSError, RuntimeError):
+            pass
+
+    def _schedule_modem_refresh(self, client):
+        now = time.monotonic()
+        if (self._modem_refresh_thread is not None and
+                self._modem_refresh_thread.is_alive()):
+            return
+        if (now - self._last_modem_refresh >= _MODEM_REFRESH_INTERVAL and
+                not getattr(client, "querying", False)):
+            try:
+                # Use the vendor client's serialized command queue. This adds
+                # one read-only temperature request every 30 seconds only while
+                # this page is being viewed. Queueing runs outside the HTTP
+                # request because the vendor's mutex may be held by another AT
+                # transaction; this page never opens the AT port itself.
+                self._last_modem_refresh = now
+                self._modem_refresh_thread = threading.Thread(
+                    target=self._request_modem_temperature,
+                    args=(client,), daemon=True, name="pcat-thermal-modem-refresh")
+                self._modem_refresh_thread.start()
+            except RuntimeError:
+                self._last_modem_refresh = 0.0
+
     def _modem_sensors(self):
         client = getattr(self.app_module, "modem_client", None) if self.app_module else None
         if client is None:
             return []
+        self._schedule_modem_refresh(client)
         try:
             # A shallow dict copy is atomic under CPython's GIL and never waits
             # for the modem serial mutex, which may be held during a long AT

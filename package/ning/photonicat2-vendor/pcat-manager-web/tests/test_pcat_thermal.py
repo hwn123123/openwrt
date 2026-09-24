@@ -28,9 +28,14 @@ class DummyModem:
     def __init__(self):
         import threading
         self.mutex = threading.Lock()
+        self.querying = False
+        self.refreshes = []
         self.basic = {
             "fm350_temperature_sensors": {"soc_max": 48.3, "md_5g": 47.1}
         }
+
+    def start_query(self, refresh_type):
+        self.refreshes.append(refresh_type)
 
 
 class DummyApp:
@@ -38,8 +43,22 @@ class DummyApp:
     socket_client = None
 
 
+class BlockingModem:
+    def __init__(self):
+        import threading
+        self.basic = {}
+        self.querying = False
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def start_query(self, refresh_type):
+        self.started.set()
+        self.release.wait(timeout=1)
+
+
 class ThermalSamplerTests(unittest.TestCase):
     def setUp(self):
+        DummyApp.modem_client = DummyModem()
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.sys = self.root / "sys"
@@ -104,6 +123,10 @@ class ThermalSamplerTests(unittest.TestCase):
         self.assertEqual(8.335, result["power"]["battery_voltage_v"])
         self.assertEqual(16.67, result["power"]["battery_power_w"])
         self.assertEqual(900, result["fans"][0]["rpm"])
+        sampler._modem_refresh_thread.join(timeout=1)
+        self.assertEqual(["cellular_temperature"], DummyApp.modem_client.refreshes)
+        sampler.read()
+        self.assertEqual(["cellular_temperature"], DummyApp.modem_client.refreshes)
 
     def test_temperature_scaling_and_validation(self):
         self.assertEqual(42.5, MODULE._temperature(42500))
@@ -111,6 +134,17 @@ class ThermalSamplerTests(unittest.TestCase):
         self.assertIsNone(MODULE._temperature(999000))
         self.assertEqual("warning", MODULE._sensor_state(85, 80, 100))
         self.assertEqual("critical", MODULE._sensor_state(101, 80, 100))
+
+    def test_modem_refresh_does_not_block_snapshot(self):
+        modem = BlockingModem()
+        app = types.SimpleNamespace(modem_client=modem, socket_client=None)
+        sampler = MODULE.ThermalSampler(app, self.sys, self.proc)
+        result = sampler.read()
+        self.assertEqual("ok", result["status"])
+        self.assertTrue(modem.started.wait(timeout=0.2))
+        self.assertTrue(sampler._modem_refresh_thread.is_alive())
+        modem.release.set()
+        sampler._modem_refresh_thread.join(timeout=1)
 
 
 if __name__ == "__main__":
