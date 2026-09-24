@@ -1,6 +1,6 @@
 config wifi-device 'radio0'
 	option type 'mac80211'
-	option phy 'phy0'
+	option path 'soc/22000000.pcie/pci0000:00/0000:00:00.0/0000:01:00.0'
 	option country 'US'
 	option band '5g'
 	option channel 'auto'
