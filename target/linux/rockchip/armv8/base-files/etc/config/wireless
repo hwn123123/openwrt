@@ -14,7 +14,7 @@ config wifi-device 'radio0'
 	list channels '157'
 	list channels '161'
 	option htmode 'HE80'
-	option txpower '23'
+	option txpower '30'
 	option disabled '0'
 
 config wifi-iface 'default_radio0'
