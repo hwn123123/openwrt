@@ -1,20 +1,11 @@
 {% extends '_base.html' %}
 {% block page_title %}温度与性能{% endblock %}
 {% block html_head %}
-<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-compact-r3" />
-<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-compact-r3"></script>
+<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-compact-r4" />
+<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-compact-r4"></script>
 {% endblock %}
 {% block content %}
 <main id="pcat-thermal-page" class="pcat-thermal-shell" aria-live="polite">
-  <header class="pcat-thermal-heading">
-    <div>
-      <span class="pcat-thermal-kicker">SYSTEM TELEMETRY</span>
-      <h1>温度与性能</h1>
-      <p>汇总主控、计算单元、内存、网络、蜂窝模组及供电系统的实时状态。</p>
-    </div>
-    <div class="pcat-thermal-live"><span></span><strong id="thermal-live-text">正在读取</strong><small id="thermal-updated">—</small></div>
-  </header>
-
   <section class="pcat-thermal-panel pcat-summary-panel" aria-label="实时摘要">
     <header><div><span class="pcat-panel-icon is-summary">览</span><h2>运行概览</h2></div><small>实时采样</small></header>
     <div class="pcat-summary-grid">

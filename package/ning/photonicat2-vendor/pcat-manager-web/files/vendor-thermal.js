@@ -199,11 +199,6 @@
     renderPower(power);
     renderFans(data.fans);
 
-    const stamp = finite(data.generated_at);
-    text(byId('thermal-updated'), stamp === null ? '刚刚更新' : new Date(stamp * 1000).toLocaleTimeString([], {hour12: false}));
-    text(byId('thermal-live-text'), '设备实时数据');
-    const live = document.querySelector('.pcat-thermal-live');
-    if (live) live.classList.remove('is-error');
     const error = byId('thermal-error');
     if (error) error.hidden = true;
   }
@@ -223,9 +218,6 @@
         notice.hidden = false;
         notice.textContent = '暂时无法读取设备监控数据，将自动重试。';
       }
-      text(byId('thermal-live-text'), '数据暂不可用');
-      const live = document.querySelector('.pcat-thermal-live');
-      if (live) live.classList.add('is-error');
     } finally {
       inFlight = false;
     }
