@@ -1,8 +1,8 @@
 {% extends '_base.html' %}
 {% block page_title %}温度与性能{% endblock %}
 {% block html_head %}
-<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-r1" />
-<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-r1"></script>
+<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-compact-r2" />
+<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-compact-r2"></script>
 {% endblock %}
 {% block content %}
 <main id="pcat-thermal-page" class="pcat-thermal-shell" aria-live="polite">
@@ -15,19 +15,37 @@
     <div class="pcat-thermal-live"><span></span><strong id="thermal-live-text">正在读取</strong><small id="thermal-updated">—</small></div>
   </header>
 
-  <section class="pcat-thermal-overview" aria-label="实时摘要">
-    <article class="pcat-thermal-hero is-cpu">
-      <div class="pcat-thermal-ring" id="thermal-cpu-ring"><strong id="thermal-cpu">—</strong><small>CPU 占用</small></div>
-      <div><span>处理器实时负载</span><strong id="thermal-load">—</strong><small id="thermal-core-count">正在检测核心</small></div>
-    </article>
-    <article class="pcat-thermal-hero is-temp">
-      <div class="pcat-thermal-ring" id="thermal-temp-ring"><strong id="thermal-highest">—</strong><small>最高温度</small></div>
-      <div><span>传感器概览</span><strong id="thermal-average">—</strong><small id="thermal-sensor-count">正在枚举传感器</small></div>
-    </article>
-    <article class="pcat-thermal-hero is-power">
-      <div class="pcat-thermal-ring" id="thermal-power-ring"><strong id="thermal-power">—</strong><small>电池侧功率</small></div>
-      <div><span>供电状态</span><strong id="thermal-power-state">—</strong><small id="thermal-power-detail">正在读取电源信息</small></div>
-    </article>
+  <section class="pcat-thermal-panel pcat-summary-panel" aria-label="实时摘要">
+    <header><div><span class="pcat-panel-icon is-summary">览</span><h2>运行概览</h2></div><small>实时采样</small></header>
+    <div class="pcat-summary-grid">
+      <article class="pcat-summary-card is-cpu">
+        <div><span>CPU 总占用</span><strong id="thermal-cpu">—</strong></div>
+        <div class="pcat-meter"><span id="thermal-cpu-meter"></span></div>
+        <small id="thermal-load">负载 —</small>
+      </article>
+      <article class="pcat-summary-card is-cores">
+        <div><span>在线核心</span><strong id="thermal-core-count">—</strong></div>
+        <small>逐核心实时采样</small>
+      </article>
+      <article class="pcat-summary-card is-temp">
+        <div><span>最高温度</span><strong id="thermal-highest">—</strong></div>
+        <div class="pcat-meter"><span id="thermal-temp-meter"></span></div>
+        <small id="thermal-average">平均温度 —</small>
+      </article>
+      <article class="pcat-summary-card is-count">
+        <div><span>温度读数</span><strong id="thermal-sensor-count">—</strong></div>
+        <small>内核与模组传感器</small>
+      </article>
+      <article class="pcat-summary-card is-power">
+        <div><span>电池侧功率</span><strong id="thermal-power">—</strong></div>
+        <div class="pcat-meter"><span id="thermal-power-meter"></span></div>
+        <small id="thermal-power-detail">—</small>
+      </article>
+      <article class="pcat-summary-card is-supply">
+        <div><span>供电状态</span><strong id="thermal-power-state">—</strong></div>
+        <small>电源管理芯片</small>
+      </article>
+    </div>
   </section>
 
   <div id="thermal-error" class="pcat-thermal-error" hidden></div>

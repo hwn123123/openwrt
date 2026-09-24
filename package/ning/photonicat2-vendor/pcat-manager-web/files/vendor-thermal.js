@@ -13,10 +13,6 @@
     ['other', '其他传感器', false]
   ];
 
-  const STATE_TEXT = {
-    normal: '正常', warning: '偏高', critical: '过热', unavailable: '不可用'
-  };
-
   let inFlight = false;
   let timer = null;
 
@@ -38,10 +34,10 @@
     const number = finite(value);
     return number === null ? '—' : number.toFixed(digits) + (suffix || '');
   }
-  function setRing(id, value, maximum) {
+  function setMeter(id, value, maximum) {
     const node = byId(id);
     const number = finite(value);
-    if (node) node.style.setProperty('--meter', number === null ? 0 : clamp(number / maximum * 100, 0, 100));
+    if (node) node.style.setProperty('--value', (number === null ? 0 : clamp(number / maximum * 100, 0, 100)) + '%');
   }
 
   function renderTemperatures(items) {
@@ -71,16 +67,18 @@
         const state = sensor.state || 'unavailable';
         const card = element('article', 'pcat-sensor-card is-' + state);
         const top = element('div');
+        top.appendChild(element('span', 'pcat-sensor-label', sensor.label || sensor.id));
         const strong = element('strong');
         const temperature = finite(sensor.temperature_c);
         strong.appendChild(document.createTextNode(temperature === null ? '—' : temperature.toFixed(1)));
         strong.appendChild(element('small', '', temperature === null ? '' : ' °C'));
-        const dot = element('span', 'pcat-sensor-state');
-        dot.title = STATE_TEXT[state] || state;
         top.appendChild(strong);
-        top.appendChild(dot);
         card.appendChild(top);
-        card.appendChild(element('span', 'pcat-sensor-label', sensor.label || sensor.id));
+        const meter = element('div', 'pcat-meter');
+        const fill = element('span');
+        fill.style.setProperty('--value', (temperature === null ? 0 : clamp(temperature, 0, 100)) + '%');
+        meter.appendChild(fill);
+        card.appendChild(meter);
         card.appendChild(element('small', 'pcat-sensor-source', sensor.source || '系统传感器'));
         const limits = [];
         if (finite(sensor.warning_c) !== null) limits.push('警告 ' + Number(sensor.warning_c).toFixed(0) + '°C');
@@ -203,9 +201,9 @@
     text(byId('thermal-power-state'), powerStatus(power.battery_status));
     text(byId('thermal-power-detail'), valueOrDash(power.battery_voltage_v, 3, ' V') + ' · ' + valueOrDash(power.battery_capacity, 0, '%'));
 
-    setRing('thermal-cpu-ring', usage, 100);
-    setRing('thermal-temp-ring', highest, 100);
-    setRing('thermal-power-ring', watts, 20);
+    setMeter('thermal-cpu-meter', usage, 100);
+    setMeter('thermal-temp-meter', highest, 100);
+    setMeter('thermal-power-meter', watts, 20);
     renderTemperatures(data.temperatures);
     renderCores(cpu);
     renderPolicies(cpu);
