@@ -1,8 +1,8 @@
 {% extends '_base.html' %}
 {% block page_title %}温度与性能{% endblock %}
 {% block html_head %}
-<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-compact-r2" />
-<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-compact-r2"></script>
+<link rel="stylesheet" href="/static/vendor-thermal.css?v={{ cache_bust_version }}&ui=pcat-compact-r3" />
+<script defer src="/static/vendor-thermal.js?v={{ cache_bust_version }}&ui=pcat-compact-r3"></script>
 {% endblock %}
 {% block content %}
 <main id="pcat-thermal-page" class="pcat-thermal-shell" aria-live="polite">
@@ -50,23 +50,41 @@
 
   <div id="thermal-error" class="pcat-thermal-error" hidden></div>
 
-  <section class="pcat-thermal-panel">
-    <header><div><span class="pcat-panel-icon is-temperature">温</span><h2>温度传感器</h2></div><small>自动去除 thermal 与 hwmon 的重复项</small></header>
-    <div id="thermal-groups" class="pcat-temperature-groups">
-      <div class="pcat-thermal-loading">正在读取全部温度传感器…</div>
+  <section class="pcat-thermal-panel pcat-processor-panel">
+    <header><div><span class="pcat-panel-icon is-cpu">核</span><h2>主控与 CPU</h2></div><small>温度 · 核心占用 · 运行频率</small></header>
+    <div class="pcat-processor-layout">
+      <section class="pcat-compact-group">
+        <header><strong>处理器温度</strong><small id="thermal-processor-count">—</small></header>
+        <div id="thermal-processor-temperatures" class="pcat-temperature-list is-processor"><div class="pcat-thermal-loading">读取中…</div></div>
+      </section>
+      <section class="pcat-compact-group">
+        <header><strong>CPU 核心占用</strong><small>逐核心采样</small></header>
+        <div id="thermal-cpu-cores" class="pcat-core-grid"><div class="pcat-thermal-loading">等待第二次采样…</div></div>
+      </section>
+      <section class="pcat-compact-group">
+        <header><strong>CPU 频率</strong><small>集群与调速策略</small></header>
+        <div id="thermal-policies" class="pcat-policy-list"><div class="pcat-thermal-loading">读取中…</div></div>
+      </section>
     </div>
   </section>
 
-  <section class="pcat-thermal-grid">
-    <article class="pcat-thermal-panel">
-      <header><div><span class="pcat-panel-icon is-cpu">核</span><h2>CPU 核心占用</h2></div><small>逐核心实时采样</small></header>
-      <div id="thermal-cpu-cores" class="pcat-core-grid"><div class="pcat-thermal-loading">等待第二次采样…</div></div>
-    </article>
+  <section class="pcat-thermal-panel pcat-hardware-panel">
+    <header><div><span class="pcat-panel-icon is-temperature">温</span><h2>其他硬件温度</h2></div><small>计算单元、内存、Wi-Fi 与主板</small></header>
+    <div class="pcat-hardware-layout">
+      <section class="pcat-compact-group">
+        <header><strong>计算与内存</strong><small id="thermal-compute-count">—</small></header>
+        <div id="thermal-compute-temperatures" class="pcat-temperature-list is-compute"><div class="pcat-thermal-loading">读取中…</div></div>
+      </section>
+      <section class="pcat-compact-group">
+        <header><strong>网络与主板</strong><small id="thermal-device-count">—</small></header>
+        <div id="thermal-device-temperatures" class="pcat-temperature-list is-device"><div class="pcat-thermal-loading">读取中…</div></div>
+      </section>
+    </div>
+  </section>
 
-    <article class="pcat-thermal-panel">
-      <header><div><span class="pcat-panel-icon is-frequency">频</span><h2>CPU 频率</h2></div><small>集群与调速策略</small></header>
-      <div id="thermal-policies" class="pcat-policy-list"><div class="pcat-thermal-loading">正在读取频率策略…</div></div>
-    </article>
+  <section class="pcat-thermal-panel pcat-modem-panel">
+    <header><div><span class="pcat-panel-icon is-modem">5G</span><h2>5G 蜂窝模组</h2></div><small id="thermal-modem-count">等待 FM350 温度数据</small></header>
+    <div id="thermal-modem-temperatures" class="pcat-temperature-list is-modem"><div class="pcat-thermal-loading">读取中…</div></div>
   </section>
 
   <section class="pcat-thermal-grid">

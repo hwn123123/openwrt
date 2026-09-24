@@ -1,18 +1,6 @@
 (function () {
   'use strict';
 
-  const CATEGORY_ORDER = [
-    ['processor', '处理器', true],
-    ['accelerator', '计算单元', true],
-    ['memory', '内存', true],
-    ['network', '网络设备', true],
-    ['modem', '5G 蜂窝模组', true],
-    ['board', '主板与机身', true],
-    ['storage', '存储设备', false],
-    ['power', '电源系统', false],
-    ['other', '其他传感器', false]
-  ];
-
   let inFlight = false;
   let timer = null;
 
@@ -40,55 +28,56 @@
     if (node) node.style.setProperty('--value', (number === null ? 0 : clamp(number / maximum * 100, 0, 100)) + '%');
   }
 
-  function renderTemperatures(items) {
-    const root = byId('thermal-groups');
+  function sensorCard(sensor) {
+    const state = sensor.state || 'unavailable';
+    const card = element('article', 'pcat-sensor-card is-' + state);
+    const top = element('div');
+    top.appendChild(element('span', 'pcat-sensor-label', sensor.label || sensor.id));
+    const strong = element('strong');
+    const temperature = finite(sensor.temperature_c);
+    strong.appendChild(document.createTextNode(temperature === null ? '—' : temperature.toFixed(1)));
+    strong.appendChild(element('small', '', temperature === null ? '' : ' °C'));
+    top.appendChild(strong);
+    card.appendChild(top);
+    const meter = element('div', 'pcat-meter');
+    const fill = element('span');
+    fill.style.setProperty('--value', (temperature === null ? 0 : clamp(temperature, 0, 100)) + '%');
+    meter.appendChild(fill);
+    card.appendChild(meter);
+    const details = [sensor.source || '系统传感器'];
+    if (finite(sensor.warning_c) !== null) details.push('警告 ' + Number(sensor.warning_c).toFixed(0) + '°C');
+    if (finite(sensor.critical_c) !== null) details.push('临界 ' + Number(sensor.critical_c).toFixed(0) + '°C');
+    card.title = (sensor.label || sensor.id) + ' · ' + details.join(' · ');
+    return card;
+  }
+
+  function renderSensorList(id, sensors, emptyText) {
+    const root = byId(id);
     if (!root) return;
     empty(root);
-    const grouped = {};
-    (items || []).forEach((item) => {
-      const category = item.category || 'other';
-      if (!grouped[category]) grouped[category] = [];
-      grouped[category].push(item);
-    });
+    if (!sensors.length) {
+      root.appendChild(element('div', 'pcat-thermal-empty', emptyText));
+      return;
+    }
+    sensors.forEach((sensor) => root.appendChild(sensorCard(sensor)));
+  }
 
-    CATEGORY_ORDER.forEach(([key, title, always]) => {
-      const sensors = grouped[key] || [];
-      if (!always && !sensors.length) return;
-      const group = element('section', 'pcat-temperature-group');
-      const heading = element('header');
-      heading.appendChild(element('strong', '', title));
-      heading.appendChild(element('small', '', sensors.length ? sensors.length + ' 个传感器' : '暂无可用数据'));
-      group.appendChild(heading);
-      const list = element('div', 'pcat-temperature-list');
-      if (!sensors.length) {
-        list.appendChild(element('div', 'pcat-thermal-empty', key === 'modem' ? '等待厂家服务缓存 FM350 温度数据' : '当前硬件未提供此类温度读数'));
-      }
-      sensors.forEach((sensor) => {
-        const state = sensor.state || 'unavailable';
-        const card = element('article', 'pcat-sensor-card is-' + state);
-        const top = element('div');
-        top.appendChild(element('span', 'pcat-sensor-label', sensor.label || sensor.id));
-        const strong = element('strong');
-        const temperature = finite(sensor.temperature_c);
-        strong.appendChild(document.createTextNode(temperature === null ? '—' : temperature.toFixed(1)));
-        strong.appendChild(element('small', '', temperature === null ? '' : ' °C'));
-        top.appendChild(strong);
-        card.appendChild(top);
-        const meter = element('div', 'pcat-meter');
-        const fill = element('span');
-        fill.style.setProperty('--value', (temperature === null ? 0 : clamp(temperature, 0, 100)) + '%');
-        meter.appendChild(fill);
-        card.appendChild(meter);
-        card.appendChild(element('small', 'pcat-sensor-source', sensor.source || '系统传感器'));
-        const limits = [];
-        if (finite(sensor.warning_c) !== null) limits.push('警告 ' + Number(sensor.warning_c).toFixed(0) + '°C');
-        if (finite(sensor.critical_c) !== null) limits.push('临界 ' + Number(sensor.critical_c).toFixed(0) + '°C');
-        card.title = (sensor.label || sensor.id) + (limits.length ? ' · ' + limits.join(' · ') : '');
-        list.appendChild(card);
-      });
-      group.appendChild(list);
-      root.appendChild(group);
+  function renderTemperatures(items) {
+    const buckets = { processor: [], compute: [], device: [], modem: [] };
+    (items || []).forEach((sensor) => {
+      if (sensor.category === 'processor') buckets.processor.push(sensor);
+      else if (sensor.category === 'accelerator' || sensor.category === 'memory') buckets.compute.push(sensor);
+      else if (sensor.category === 'modem') buckets.modem.push(sensor);
+      else buckets.device.push(sensor);
     });
+    renderSensorList('thermal-processor-temperatures', buckets.processor, '未发现处理器温度');
+    renderSensorList('thermal-compute-temperatures', buckets.compute, '未发现计算或内存温度');
+    renderSensorList('thermal-device-temperatures', buckets.device, '未发现网络或主板温度');
+    renderSensorList('thermal-modem-temperatures', buckets.modem, '等待 FM350 返回温度数据');
+    text(byId('thermal-processor-count'), buckets.processor.length + ' 个温度');
+    text(byId('thermal-compute-count'), buckets.compute.length + ' 个温度');
+    text(byId('thermal-device-count'), buckets.device.length + ' 个温度');
+    text(byId('thermal-modem-count'), buckets.modem.length ? buckets.modem.length + ' 个温度' : '等待 FM350 温度数据');
   }
 
   function renderCores(cpu) {

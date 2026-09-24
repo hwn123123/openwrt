@@ -72,7 +72,7 @@
   box-shadow: inset 0 1px rgba(255,255,255,.025), 0 12px 36px rgba(0,0,0,.18);
 }
 
-.pcat-summary-panel { margin-bottom: .6rem; }
+.pcat-summary-panel { margin-bottom: 0; }
 .pcat-summary-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -158,27 +158,46 @@
 .pcat-panel-icon.is-fan { border-color: rgba(83,220,222,.35); background: rgba(83,220,222,.08); color: #66dcde; }
 .pcat-panel-icon.is-temperature { border-color: rgba(255,111,125,.35); background: rgba(255,111,125,.08); color: #ff8793; }
 .pcat-panel-icon.is-summary { border-color: rgba(38,214,160,.32); background: rgba(38,214,160,.08); color: #26d6a0; }
+.pcat-panel-icon.is-modem { width: 2rem; border-color: rgba(38,214,160,.34); background: rgba(38,214,160,.08); color: #26d6a0; }
 
-.pcat-temperature-groups { display: grid; gap: .5rem; }
-.pcat-temperature-group {
-  padding: .55rem;
-  border: 1px solid rgba(224,255,244,.08);
-  border-radius: 11px;
-  background: rgba(3, 6, 5, .55);
+.pcat-processor-panel,
+.pcat-hardware-panel,
+.pcat-modem-panel {
+  margin-top: .6rem;
 }
-.pcat-temperature-group > header {
+
+.pcat-processor-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 2.35fr) minmax(0, 1.25fr);
+  gap: .65rem;
+}
+
+.pcat-hardware-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
+  gap: .65rem;
+}
+
+.pcat-compact-group { min-width: 0; }
+.pcat-compact-group > header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: .42rem;
+  padding: 0 .08rem;
 }
-.pcat-temperature-group > header strong { color: #b9c7c1; font-size: .68rem; }
-.pcat-temperature-group > header small { color: var(--pcat-faint, #64716c); font-size: .56rem; }
+.pcat-compact-group > header strong { color: #b9c7c1; font-size: .64rem; }
+.pcat-compact-group > header small { color: var(--pcat-faint, #64716c); font-size: .53rem; }
+
 .pcat-temperature-list {
   display: grid;
   grid-template-columns: repeat(8, minmax(0, 1fr));
   gap: .42rem;
 }
+.pcat-temperature-list.is-processor { grid-template-columns: 1fr; }
+.pcat-temperature-list.is-compute { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pcat-temperature-list.is-device { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pcat-temperature-list.is-modem { grid-template-columns: repeat(8, minmax(0, 1fr)); }
 
 .pcat-temperature-list > .pcat-thermal-empty {
   grid-column: 1 / -1;
@@ -206,9 +225,6 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pcat-sensor-card .pcat-sensor-source {
-  display: none;
-}
 .pcat-sensor-card.is-warning { border-color: rgba(241,184,75,.32); }
 .pcat-sensor-card.is-warning .pcat-meter > span { background: #f1b84b; }
 .pcat-sensor-card.is-critical { border-color: rgba(255,111,125,.38); }
@@ -216,7 +232,7 @@
 .pcat-sensor-card.is-unavailable { opacity: .55; }
 .pcat-sensor-card.is-unavailable .pcat-meter > span { background: #64716c; }
 
-.pcat-core-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .5rem; }
+.pcat-core-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .42rem; }
 .pcat-core-card { padding: .55rem; }
 .pcat-core-card > div { display: flex; justify-content: space-between; color: #b9c5c0; font-size: .62rem; }
 .pcat-core-card strong { color: #eef7f3; font-size: .7rem; }
@@ -236,7 +252,7 @@
   transition: width .35s ease;
 }
 
-.pcat-policy-list { display: grid; gap: .5rem; }
+.pcat-policy-list { display: grid; gap: .42rem; }
 .pcat-policy-card { display: grid; grid-template-columns: 1fr auto; gap: .3rem .7rem; padding: .62rem; }
 .pcat-policy-card span { color: var(--pcat-muted, #91a09a); font-size: .6rem; }
 .pcat-policy-card strong { color: #f1f7f4; font-size: .82rem; text-align: right; }
@@ -274,7 +290,10 @@
 
 @media (max-width: 900px) {
   .pcat-summary-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .pcat-temperature-list { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .pcat-processor-layout,
+  .pcat-hardware-layout { grid-template-columns: 1fr; }
+  .pcat-temperature-list.is-processor { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .pcat-temperature-list.is-modem { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .pcat-metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
@@ -288,13 +307,16 @@
   .pcat-thermal-panel > header { align-items: flex-start; }
   .pcat-thermal-panel > header > small { max-width: 8rem; text-align: right; }
   .pcat-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .pcat-temperature-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pcat-temperature-list.is-modem { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pcat-core-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .pcat-thermal-note { text-align: left; }
 }
 
 @media (max-width: 390px) {
-  .pcat-temperature-list,
+  .pcat-temperature-list.is-processor,
+  .pcat-temperature-list.is-compute,
+  .pcat-temperature-list.is-device,
+  .pcat-temperature-list.is-modem,
   .pcat-metric-grid { grid-template-columns: 1fr; }
   .pcat-core-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
