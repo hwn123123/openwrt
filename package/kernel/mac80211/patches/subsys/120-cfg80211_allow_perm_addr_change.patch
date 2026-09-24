@@ -4,11 +4,19 @@ Subject: [PATCH] cfg80211: add support for changing the device mac address via
  sysfs
 
 ---
- net/wireless/sysfs.c | 27 ++++++++++++++++++++++-----
- 1 file changed, 22 insertions(+), 5 deletions(-)
+ net/wireless/sysfs.c | 28 +++++++++++++++++++++++-----
+ 1 file changed, 23 insertions(+), 5 deletions(-)
 
 --- a/net/wireless/sysfs.c
 +++ b/net/wireless/sysfs.c
+@@ -8,6 +8,7 @@
+  */
+ 
+ #include <linux/device.h>
++#include <linux/hex.h>
+ #include <linux/module.h>
+ #include <linux/netdevice.h>
+ #include <linux/nl80211.h>
 @@ -24,18 +24,35 @@ static inline struct cfg80211_registered
  	return container_of(dev, struct cfg80211_registered_device, wiphy.dev);
  }

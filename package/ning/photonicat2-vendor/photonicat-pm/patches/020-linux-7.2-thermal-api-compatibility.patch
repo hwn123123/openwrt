@@ -1,0 +1,24 @@
+--- a/mods/photonicat-pm.c
++++ b/mods/photonicat-pm.c
+@@ -6,6 +6,7 @@
+ #include <linux/init.h>
+ #include <linux/kernel.h>
+ #include <linux/module.h>
++#include <linux/version.h>
+ #include <linux/mod_devicetable.h>
+ #include <linux/platform_device.h>
+ #include <linux/clk.h>
+@@ -1358,8 +1359,13 @@ static int pcat_pm_fan_probe(struct pcat_pm_data *pm_data)
+ 		return -ENODEV;
+ 	}
+ 
++#if LINUX_VERSION_CODE >= KERNEL_VERSION(7, 2, 0)
++	cdev = devm_thermal_of_child_cooling_device_register(dev, fan_node,
++		"pcat-pm-fan", pm_data, &pcat_pm_fan_cooling_ops);
++#else
+ 	cdev = devm_thermal_of_cooling_device_register(dev, fan_node,
+ 		"pcat-pm-fan", pm_data, &pcat_pm_fan_cooling_ops);
++#endif
+ 
+ 	if (IS_ERR(cdev))
+ 		return -ENODEV;

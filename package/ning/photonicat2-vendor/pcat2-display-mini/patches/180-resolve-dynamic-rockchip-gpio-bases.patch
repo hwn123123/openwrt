@@ -1,0 +1,100 @@
+--- a/main.go
++++ b/main.go
+@@ -11,6 +11,7 @@ import (
+ 	"os/signal"
+ 	"path/filepath"
+ 	"strconv"
++	"strings"
+ 	"sync"
+ 	"sync/atomic"
+ 	"syscall"
+@@ -20,5 +21,6 @@ import (
+ 	gc9307 "github.com/photonicat/periph.io-gc9307"
+ 
++	"periph.io/x/conn/v3/gpio"
+ 	"periph.io/x/conn/v3/gpio/gpioreg"
+ 	"periph.io/x/conn/v3/physic"
+ 	"periph.io/x/conn/v3/spi"
+@@ -39,9 +41,7 @@ var embeddedDebianConfigJSON []byte
+ 
+ const (
+-	RST_PIN              = "GPIO122"
+-	DC_PIN               = "GPIO121"
+-	CS_PIN               = "GPIO13"
+-	BL_PIN               = "GPIO13" //now we are using pwm control backlight
++	RST_GPIO             = 122 // GPIO3_D2
++	DC_GPIO              = 121 // GPIO3_D1
+ 	PCAT2_LCD_WIDTH      = 172
+ 	PCAT2_LCD_HEIGHT     = 320
+ 	PCAT2_X_OFFSET       = 34
+@@ -491,6 +491,48 @@ type Config struct {
+ 	Pages                            []Page `json:"pages"`
+ }
+ 
++// resolveRockchipGPIO translates the stable Rockchip bank-based number used
++// by the board schematic (bank*32 + offset) to the Linux global GPIO number.
++// Older kernels assigned gpio0 a base of zero, while newer kernels allocate
++// dynamic bases (commonly starting at 512), so hard-coding "GPIO122" is no
++// longer valid. Keep the legacy lookup first so one binary works on both.
++func resolveRockchipGPIO(logical int) (gpio.PinOut, error) {
++	legacyName := fmt.Sprintf("GPIO%d", logical)
++	if pin := gpioreg.ByName(legacyName); pin != nil {
++		return pin, nil
++	}
++
++	bank := logical / 32
++	offset := logical % 32
++	chipPaths, err := filepath.Glob("/sys/class/gpio/gpiochip*")
++	if err != nil {
++		return nil, fmt.Errorf("enumerate GPIO controllers: %w", err)
++	}
++	wantedLabel := fmt.Sprintf("gpio%d", bank)
++	for _, chipPath := range chipPaths {
++		labelData, err := os.ReadFile(filepath.Join(chipPath, "label"))
++		if err != nil || strings.TrimSpace(string(labelData)) != wantedLabel {
++			continue
++		}
++		baseData, err := os.ReadFile(filepath.Join(chipPath, "base"))
++		if err != nil {
++			return nil, fmt.Errorf("read %s base: %w", wantedLabel, err)
++		}
++		base, err := strconv.Atoi(strings.TrimSpace(string(baseData)))
++		if err != nil {
++			return nil, fmt.Errorf("parse %s base: %w", wantedLabel, err)
++		}
++		dynamicName := fmt.Sprintf("GPIO%d", base+offset)
++		pin := gpioreg.ByName(dynamicName)
++		if pin == nil {
++			return nil, fmt.Errorf("%s maps to unregistered %s", legacyName, dynamicName)
++		}
++		log.Printf("GPIO mapping: %s -> %s (%s offset %d)", legacyName, dynamicName, wantedLabel, offset)
++		return pin, nil
++	}
++	return nil, fmt.Errorf("GPIO controller %s not found for %s", wantedLabel, legacyName)
++}
++
+ // checkDMAAvailability checks if SPI DMA is usable for display output.
+ //
+ // spidev only writes command/pixel data to the panel on this board, therefore
+@@ -1003,8 +1045,19 @@ func main() {
+ 		log.Fatal(err)
+ 	}
+ 
+-	// Setup display.
+-	display = gc9307.New(conn, gpioreg.ByName(RST_PIN), gpioreg.ByName(DC_PIN), gpioreg.ByName(CS_PIN), gpioreg.ByName(BL_PIN))
++	// Set up the two GPIOs that are genuinely controlled by this process. CS is
++	// handled by the SPI controller and the backlight by pwm-backlight; passing
++	// gpio.INVALID for those optional hooks prevents both nil dereferences and
++	// accidental access to an unrelated line that happens to share number 13.
++	resetPin, err := resolveRockchipGPIO(RST_GPIO)
++	if err != nil {
++		log.Fatalf("display reset GPIO: %v", err)
++	}
++	dcPin, err := resolveRockchipGPIO(DC_GPIO)
++	if err != nil {
++		log.Fatalf("display D/C GPIO: %v", err)
++	}
++	display = gc9307.New(conn, resetPin, dcPin, gpio.INVALID, gpio.INVALID)
+ 	display.Configure(gc9307.Config{
+ 		Width:        PCAT2_LCD_WIDTH,
+ 		Height:       PCAT2_LCD_HEIGHT,

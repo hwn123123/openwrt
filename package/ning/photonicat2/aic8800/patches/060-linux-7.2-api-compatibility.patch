@@ -1,0 +1,31 @@
+--- a/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_msg_tx.c
++++ b/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_msg_tx.c
+@@ -9,6 +9,8 @@
+  ******************************************************************************
+  */
+ 
++#include <linux/string.h>
++
+ #include "rwnx_msg_tx.h"
+ #include "rwnx_mod_params.h"
+ #include "reg_access.h"
+@@ -4849,7 +4851,7 @@ int rwnx_send_dbg_trigger_req(struct rwn
+         return -ENOMEM;
+ 
+     /* Set parameters for the MM_DBG_TRIGGER_REQ message */
+-    strncpy(req->error, msg, sizeof(req->error));
++    strscpy(req->error, msg, sizeof(req->error));
+ 
+     /* Send the MM_DBG_TRIGGER_REQ message to LMAC FW */
+     return rwnx_send_msg(rwnx_hw, req, 0, -1, NULL);
+--- a/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_rx.c
++++ b/src/USB/driver_fw/drivers/aic8800/aic8800_fdrv/rwnx_rx.c
+@@ -1638,7 +1638,7 @@ void reord_deinit_sta(struct aicwf_rx_pr
+             reord_rxframe_free(&rx_priv->freeq_lock, &rx_priv->rxframes_freequeue, &req->rxframe_list);
+         }
+ 
+-		AICWFDBG(LOGINFO, "reord dinit in_irq():%d in_atomic:%d in_softirq:%d\r\n", (int)in_irq()
++		AICWFDBG(LOGINFO, "reord dinit in_hardirq():%d in_atomic:%d in_softirq:%d\r\n", (int)in_hardirq()
+ 			,(int)in_atomic(), (int)in_softirq());
+         spin_unlock_bh(&preorder_ctrl->reord_list_lock);
+     }

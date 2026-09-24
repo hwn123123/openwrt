@@ -1,0 +1,49 @@
+From: OpenWrt Project <openwrt-devel@lists.openwrt.org>
+Subject: [PATCH] phy: rockchip: usbdp: defer registration until suppliers
+ are ready
+
+devm_clk_bulk_get_all() returns -EPROBE_DEFER when one of the clock
+providers is not ready yet.  Converting every value below one to
+-ENODEV prevents the platform driver from ever being probed again.
+
+Propagate negative errors and only return -ENODEV when the device has
+no clocks.  Also register the built-in USBDP driver at late_initcall
+time.  On RK3576 the UTMI clock is supplied by the USB2 PHY below a
+simple-mfd node, which may not exist yet when the normal device initcalls
+run.  Registering USBDP after those suppliers are populated avoids the
+fw_devlink/probe ordering deadlock and lets the deferred DWC3 controller
+probe complete during boot.
+
+--- a/drivers/phy/rockchip/phy-rockchip-usbdp.c
++++ b/drivers/phy/rockchip/phy-rockchip-usbdp.c
+@@ -427,7 +427,9 @@ static int rk_udphy_clk_init(struct rk_u
+ 	int i;
+ 
+ 	udphy->num_clks = devm_clk_bulk_get_all(dev, &udphy->clks);
+-	if (udphy->num_clks < 1)
++	if (udphy->num_clks < 0)
++		return udphy->num_clks;
++	if (!udphy->num_clks)
+ 		return -ENODEV;
+ 
+ 	/* used for configure phy reference clock frequency */
+@@ -1658,7 +1660,18 @@ static struct platform_driver rk_udphy_d
+ 		.pm = &rk_udphy_pm_ops,
+ 	},
+ };
+-module_platform_driver(rk_udphy_driver);
++
++static int __init rk_udphy_driver_init(void)
++{
++	return platform_driver_register(&rk_udphy_driver);
++}
++late_initcall(rk_udphy_driver_init);
++
++static void __exit rk_udphy_driver_exit(void)
++{
++	platform_driver_unregister(&rk_udphy_driver);
++}
++module_exit(rk_udphy_driver_exit);
+ 
+ MODULE_AUTHOR("Frank Wang <frank.wang@rock-chips.com>");
+ MODULE_AUTHOR("Zhang Yubing <yubing.zhang@rock-chips.com>");

@@ -1,0 +1,32 @@
+From: NWRT kernel 7.2 adaptation
+Subject: [PATCH] scripts: dtc: accept the legacy graph_child_address check name
+
+OpenWrt's common image rules pass -Wno-graph_child_address to dtc.  The
+warning was removed when the graph checks were reworked in newer dtc, but
+an unknown warning name is fatal.  Keep a no-op compatibility entry so the
+unchanged OpenWrt image logic works with the dtc shipped by Linux 7.2.
+
+--- a/scripts/dtc/checks.c
++++ b/scripts/dtc/checks.c
+@@ -1905,6 +1905,13 @@ static void check_graph_endpoint(struct
+ }
+ WARNING(graph_endpoint, check_graph_endpoint, NULL, &graph_nodes);
+ 
++static void check_graph_child_address(struct check *c, struct dt_info *dti,
++                                      struct node *node)
++{
++}
++CHECK(graph_child_address, check_graph_child_address, NULL);
++
++
+ static struct check *check_table[] = {
+ 	&duplicate_node_names, &duplicate_property_names,
+ 	&node_name_chars, &node_name_format, &node_name_not_empty, &property_name_chars,
+@@ -1992,6 +1999,7 @@ static struct check *check_table[] = {
+ 	&alias_paths,
+ 
+ 	&graph_nodes, &graph_port, &graph_endpoint,
++	&graph_child_address,
+ 
+ 	&always_fail,
+ };
