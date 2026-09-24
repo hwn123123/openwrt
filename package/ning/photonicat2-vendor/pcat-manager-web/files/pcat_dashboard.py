@@ -8,7 +8,6 @@ import glob
 import os
 import subprocess
 import threading
-import time
 
 
 def _read_text(path, default=""):
@@ -97,53 +96,17 @@ class ModemRuntimeSampler:
     """Read the modem's own Linux runtime through its USB ADB interface.
 
     The sampler is entirely demand driven. It starts no worker and executes
-    no command until the web UI asks for modem runtime data.
+    no command until the web UI asks for modem runtime data.  ADB telemetry is
+    optional: an unavailable transport only produces empty dashboard values
+    and must never trigger modem recovery, USB reset, or a service restart.
     """
 
     _separator = "__PCAT_MODEM_MEMORY__"
     _thermal_separator = "__PCAT_MODEM_THERMAL__"
-    _recovery_command = (
-        "/usr/bin/python3",
-        "/usr/share/pcat-manager-web/pcat_modem_usb.py",
-        "--recover-adb",
-    )
-    _recovery_cooldown = 300
 
     def __init__(self):
         self._cpu_sample = None
         self._lock = threading.Lock()
-        self._consecutive_failures = 0
-        self._recovery_process = None
-        self._last_recovery_request = -self._recovery_cooldown
-
-    def _note_unavailable(self, result):
-        """Recover ADB only after a visible dashboard requested it twice."""
-        with self._lock:
-            self._consecutive_failures += 1
-            running = (self._recovery_process is not None and
-                       self._recovery_process.poll() is None)
-            now = time.monotonic()
-            cooling_down = (
-                now - self._last_recovery_request < self._recovery_cooldown)
-            if self._consecutive_failures < 2 or running or cooling_down:
-                result["recovering"] = running
-                return
-            environment = os.environ.copy()
-            environment["HOME"] = "/root"
-            try:
-                self._recovery_process = subprocess.Popen(
-                    self._recovery_command,
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    close_fds=True,
-                    start_new_session=True,
-                    env=environment,
-                )
-            except OSError:
-                self._recovery_process = None
-            self._last_recovery_request = now
-            result["recovering"] = self._recovery_process is not None
 
     @staticmethod
     def _parse_cpu(line):
@@ -229,10 +192,8 @@ class ModemRuntimeSampler:
                 capture_output=True, text=True, timeout=3, check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            self._note_unavailable(result)
             return result
         if completed.returncode != 0 or self._separator not in completed.stdout:
-            self._note_unavailable(result)
             return result
 
         cpu_text, payload = completed.stdout.split(self._separator, 1)
@@ -249,7 +210,6 @@ class ModemRuntimeSampler:
             thermal_text.strip().splitlines())
 
         with self._lock:
-            self._consecutive_failures = 0
             if current is not None and self._cpu_sample is not None:
                 total_delta = current[0] - self._cpu_sample[0]
                 idle_delta = current[1] - self._cpu_sample[1]
