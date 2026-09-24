@@ -1,0 +1,16 @@
+wifi: mt76: mt7925: dump the caller stack on MCU timeout
+
+The command ID alone does not identify which BSS update path timed out.
+Dump the stack only on a real timeout so recurring MT7927 firmware hangs
+can be tied to the initiating mac80211 operation without continuous
+debug logging.
+
+--- a/mt7925/mcu.c
++++ b/mt7925/mcu.c
+@@ -27,6 +27,7 @@ int mt7925_mcu_parse_response(struct mt76_dev *mdev, int cmd,
+ 	if (!skb) {
+ 		dev_err(mdev->dev, "Message %08x (seq %d) timeout\n", cmd, seq);
++		dump_stack();
+ 		mt792x_reset(mdev);
+ 
+ 		return -ETIMEDOUT;
