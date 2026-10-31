@@ -285,6 +285,10 @@ emit() {
 	emit nr_bands "$(printf '%s\n' "$band" | awk -F"'" '/Active Band Class:/ && $2 ~ /(nr5g|n[0-9])/ && !seen[$2]++ { if (out != "") out = out ", "; out = out $2 } END { print out }')"
 	emit carrier_aggregation "$carrier_aggregation_state"
 	emit carrier_aggregation_state "$carrier_aggregation_state"
+	# Static X75 chipset specification, separate from live network allocation.
+	# https://www.qualcomm.com/modems/products/snapdragon-x75-5g-modem-rf-system
+	emit carrier_aggregation_capability supported
+	emit carrier_aggregation_max_sub6_cc 5
 	emit carrier_count "$carrier_count"
 	emit carrier_components "$carrier_components"
 	emit active_channels "$active_channels"

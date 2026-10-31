@@ -153,7 +153,7 @@ function aggregationLabel(s) {
 
 function aggregationCapability(s) {
 	if (s.carrier_aggregation_capability === 'supported' && number(s.carrier_aggregation_max_sub6_cc) > 0)
-		return _('Verified maximum: %s CC').format(s.carrier_aggregation_max_sub6_cc);
+		return _('X75 chipset limit: %s CC').format(s.carrier_aggregation_max_sub6_cc);
 	return _('Capability not verified');
 }
 
@@ -340,7 +340,7 @@ function carrierAggregationPanel(s, aggregationStatus) {
 			cellularDatum('实时状态', aggregationStatus, s.access_technologies, stateTone),
 			cellularDatum('可见射频记录', count ? String(count) : '—', components.join(' · '), stateTone),
 			cellularDatum('可见带宽', bandwidths.join(' + ') || '—', '不代表聚合总带宽', stateTone),
-			cellularDatum('设备能力上限', maximum > 0 ? '最高 ' + maximum + ' CC' : '未验证', '需基带能力数据', 'is-info')
+			cellularDatum('芯片规格上限', maximum > 0 ? '最高 ' + maximum + ' CC' : '未验证', 'X75 Sub-6；实际组合取决于设备与网络', 'is-info')
 		]),
 		E('div', { 'class': 'xm14-ca-components' }, componentNodes),
 		E('div', { 'class': 'xm14-ca-radio-row' }, [

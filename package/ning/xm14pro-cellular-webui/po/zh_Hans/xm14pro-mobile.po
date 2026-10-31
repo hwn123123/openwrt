@@ -811,8 +811,8 @@ msgstr "聚合状态未验证"
 msgid "Waiting for radio data"
 msgstr "等待无线数据"
 
-msgid "Verified maximum: %s CC"
-msgstr "已验证上限：%s CC"
+msgid "X75 chipset limit: %s CC"
+msgstr "X75 芯片标称上限：%s CC"
 
 msgid "Capability not verified"
 msgstr "设备聚合能力未验证"

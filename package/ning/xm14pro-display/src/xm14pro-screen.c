@@ -1888,7 +1888,7 @@ static void draw_cellular_details_page(struct canvas *c,
     if (data->cell_show_aggregation) {
         const char *capability =
             !strcmp(data->carrier_aggregation_capability, "supported") ?
-            "硬件支持聚合；上限未验证" : "聚合能力尚未验证";
+            "X75 芯片标称 · Sub-6 最高 5CC" : "聚合能力尚未验证";
         bold_text(c, 90, 1515, data->carrier_aggregation, 57,
                   !strcmp(data->carrier_aggregation_state, "active") ? C_GREEN : C_CYAN);
         text(c, 90, 1605, capability, 34, C_MUTED);
