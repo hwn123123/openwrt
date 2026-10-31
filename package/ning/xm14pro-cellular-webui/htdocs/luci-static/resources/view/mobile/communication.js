@@ -213,7 +213,7 @@ return view.extend({
 			(nextMessages || []).forEach(function(message) {
 				var key = messageKey(message);
 					if (!knownMessages[key] && message.direction === 'in' && message.read !== true &&
-					    !(activeTab === 'sms' && normalize(selectedPeer) === normalize(message.number)))
+					    !(!document.hidden && activeTab === 'sms' && normalize(selectedPeer) === normalize(message.number)))
 					announceEvent(_('New message'), '%s\n%s'.format(normalize(message.number) || _('Unknown sender'), message.text || ''), 'sms', 'sms-' + key, false);
 				knownMessages[key] = true;
 			});
@@ -298,7 +298,7 @@ return view.extend({
 
 		function renderSms() {
 			var grouped = conversations(messages);
-			if (selectedPeer && viewingPeer !== selectedPeer) {
+			if (!document.hidden && selectedPeer && viewingPeer !== selectedPeer) {
 				viewingPeer = selectedPeer;
 				markThreadViewed(selectedPeer);
 			}
@@ -608,7 +608,14 @@ return view.extend({
 			content
 		], 'xm14-communication-page');
 		updateNotificationButton();
-		document.addEventListener('visibilitychange', function() { if (!document.hidden) document.title = normalTitle; });
+		document.addEventListener('visibilitychange', function() {
+			if (document.hidden) return;
+			document.title = normalTitle;
+			if (activeTab === 'sms' && selectedPeer) {
+				markThreadViewed(selectedPeer);
+				renderContent();
+			}
+		});
 		renderContent();
 
 		var previousCallSignature = [ status.active_call_count, status.active_call_id, status.active_call_state, status.active_call_number ].join('|');
@@ -619,7 +626,7 @@ return view.extend({
 				detectIncomingCall(next[0]);
 				detectNewMessages(next[1].messages || []);
 				status = next[0]; mailbox = next[1]; messages = mergeMultipart(applyDeliveryReceipts(mailbox.messages || [], mailbox.receipts || []));
-				if (activeTab === 'sms' && selectedPeer) markThreadViewed(selectedPeer);
+				if (!document.hidden && activeTab === 'sms' && selectedPeer) markThreadViewed(selectedPeer);
 				updateScreenButton();
 				var callSignature = [ status.active_call_count, status.active_call_id, status.active_call_state, status.active_call_number ].join('|');
 				var messageSignature = JSON.stringify(messages);
