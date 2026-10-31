@@ -7,6 +7,7 @@ TOPDIR="$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)"
 SEED="$SCRIPT_DIR/configs/shennong-rootfs.config"
 PLATFORM_INSTALLER="$SCRIPT_DIR/../xm14pro-platform/install-target.sh"
 MODEMMANAGER_COMPAT_INSTALLER="$SCRIPT_DIR/install-modemmanager-compat.sh"
+LUCI_MENU_COMPAT_INSTALLER="$SCRIPT_DIR/install-luci-menu-compat.sh"
 OPENCLASH_COMPAT_INSTALLER="$SCRIPT_DIR/install-openclash-compat.sh"
 STOCK_NETWORK_COMPAT_INSTALLER="$SCRIPT_DIR/install-stock-network-compat.sh"
 DOCKER_COMPAT_INSTALLER="$SCRIPT_DIR/install-docker-compat.sh"
@@ -25,6 +26,7 @@ VENDOR_MODULE_SOURCE="${XM14_VENDOR_MODULE_SOURCE:-/home/ning/xiangmu/xm14-input
 [[ -f "$SEED" ]] || { printf 'missing seed config: %s\n' "$SEED" >&2; exit 2; }
 [[ -x "$PLATFORM_INSTALLER" ]] || { printf 'missing platform installer: %s\n' "$PLATFORM_INSTALLER" >&2; exit 2; }
 [[ -x "$MODEMMANAGER_COMPAT_INSTALLER" ]] || { printf 'missing ModemManager compatibility installer: %s\n' "$MODEMMANAGER_COMPAT_INSTALLER" >&2; exit 2; }
+[[ -x "$LUCI_MENU_COMPAT_INSTALLER" ]] || { printf 'missing LuCI menu compatibility installer: %s\n' "$LUCI_MENU_COMPAT_INSTALLER" >&2; exit 2; }
 [[ -x "$OPENCLASH_COMPAT_INSTALLER" ]] || { printf 'missing OpenClash compatibility installer: %s\n' "$OPENCLASH_COMPAT_INSTALLER" >&2; exit 2; }
 [[ -x "$STOCK_NETWORK_COMPAT_INSTALLER" ]] || { printf 'missing stock-network compatibility installer: %s\n' "$STOCK_NETWORK_COMPAT_INSTALLER" >&2; exit 2; }
 [[ -x "$DOCKER_COMPAT_INSTALLER" ]] || { printf 'missing Docker compatibility installer: %s\n' "$DOCKER_COMPAT_INSTALLER" >&2; exit 2; }
@@ -80,6 +82,7 @@ done < "$SCRIPT_DIR/audio-modules.sha256"
 
 "$PLATFORM_INSTALLER"
 "$MODEMMANAGER_COMPAT_INSTALLER"
+"$LUCI_MENU_COMPAT_INSTALLER"
 "$OPENCLASH_COMPAT_INSTALLER"
 "$STOCK_NETWORK_COMPAT_INSTALLER"
 "$DOCKER_COMPAT_INSTALLER"

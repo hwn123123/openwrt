@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Also remove the stale menu from incremental images containing an older
+# luci-proto-modemmanager package. Its protocol files stay installed.
+menu=/usr/share/luci/menu.d/luci-proto-modemmanager.json
+[ -f "$menu" ] || exit 0
+grep -q '"admin/status/modemmanager"' "$menu" || exit 1
+[ "$(grep -c '"admin/' "$menu")" -eq 1 ] || exit 1
+rm -f -- "$menu"
+exit 0
