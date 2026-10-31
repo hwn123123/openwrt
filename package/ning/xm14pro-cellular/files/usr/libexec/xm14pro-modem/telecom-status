@@ -129,10 +129,13 @@ emit() {
 		printf 'voice_call_query=0\n'
 	fi
 
+	# The modem may reject empty/unsupported storage categories while still
+	# returning the unread SIM count. Keep that usable value without claiming
+	# that the sum of all four categories is available.
+	emit sms_unread_total "$sms_unread_count"
 	if [ -n "$sms_read_count" ] && [ -n "$sms_unread_count" ] && [ -n "$sms_sent_count" ] && [ -n "$sms_unsent_count" ]; then
 		printf 'sms_storage_query=1\n'
 		printf 'sms_stored_total=%s\n' "$((sms_read_count + sms_unread_count + sms_sent_count + sms_unsent_count))"
-		printf 'sms_unread_total=%s\n' "$sms_unread_count"
 	else
 		printf 'sms_storage_query=0\n'
 	fi

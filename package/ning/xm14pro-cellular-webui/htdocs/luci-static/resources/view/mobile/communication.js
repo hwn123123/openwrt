@@ -257,6 +257,7 @@ return view.extend({
 				known(status.smsc_address) ? [ _('SMSC'), status.smsc_address, '' ] : null,
 				[ _('Message route'), routeDetail || (status.sms_route_query ? _('Available') : _('Unavailable')), status.sms_route_query ? 'is-good' : 'is-warn' ],
 				known(status.sms_stored_total) ? [ _('Stored / unread'), '%s / %s'.format(status.sms_stored_total, mobile.text(status.sms_unread_total, '0')), '' ] : null,
+				!known(status.sms_stored_total) && known(status.sms_unread_total) ? [ _('Unread') + ' (SIM)', String(status.sms_unread_total), '' ] : null,
 				known(status.ims_sms_status) || known(status.ims_sms_technology) ? [ _('IMS messages'), mobile.servicePair(status.ims_sms_status, status.ims_sms_technology), '' ] : null
 			].filter(Boolean);
 			return E('section', { 'class': 'xm14-sms-statusbar' }, items.map(function(item) {
