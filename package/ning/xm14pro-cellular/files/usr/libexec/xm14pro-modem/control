@@ -1149,7 +1149,8 @@ sim_sync() {
 			if [ -s "$cache" ]; then
 				[ "$(jsonfilter -i "$cache" -e '@.sim_tag' 2>/dev/null)" = "$actual_tag" ] || {
 					temporary="$cache.$$"
-					sed "s/\"sim_tag\":\"[^\"]*\"/\"sim_tag\":\"$actual_tag\"/" "$cache" > "$temporary" && mv "$temporary" "$cache"
+					sed "s/\"sim_tag\":\"[^\"]*\"/\"sim_tag\":\"$actual_tag\"/" "$cache" > "$temporary" && mv "$temporary" "$cache" &&
+						rm -f -- "$MESSAGE_STATE/local_sim-${slot}-${index}.sent.json.read" "$MESSAGE_STATE/local_sim-${slot}-${index}.sent.json.unread"
 				}
 				sim_cache_time "$cache"
 				continue
