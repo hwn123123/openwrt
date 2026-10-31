@@ -9,7 +9,7 @@
 #include <libqrtr-glib.h>
 #include <libqmi-glib.h>
 
-typedef enum { CMD_DIAL, CMD_ANSWER, CMD_END, CMD_DTMF, CMD_SMS_SEND, CMD_SMS_READ, CMD_SMSC_GET, CMD_SMS_LISTEN, CMD_VOICE_LISTEN } Command;
+typedef enum { CMD_DIAL, CMD_ANSWER, CMD_END, CMD_DTMF, CMD_SMS_SEND, CMD_SMS_READ, CMD_SMS_TAG, CMD_SMS_DELETE, CMD_SMSC_GET, CMD_SMS_LISTEN, CMD_VOICE_LISTEN } Command;
 
 static GMainLoop *loop;
 static QrtrBus *bus;
@@ -18,6 +18,7 @@ static QmiClient *client;
 static Command command;
 static const char *argument1;
 static const char *argument2;
+static const char *argument3;
 static guint32 message_index;
 static int exit_status = EXIT_FAILURE;
 static GPtrArray *sms_pdus;
@@ -593,6 +594,34 @@ static void sms_read_ready(QmiClientWms *wms, GAsyncResult *res, gpointer unused
     qmi_message_wms_raw_read_output_unref(out); finish(TRUE);
 }
 
+static void sms_tag_ready(QmiClientWms *wms, GAsyncResult *res, gpointer unused)
+{
+    GError *error = NULL;
+    QmiMessageWmsModifyTagOutput *out = qmi_client_wms_modify_tag_finish(wms, res, &error);
+    if (!out || !qmi_message_wms_modify_tag_output_get_result(out, &error)) {
+        if (out) qmi_message_wms_modify_tag_output_unref(out);
+        fail_error("SIM SMS tag update failed", error);
+        return;
+    }
+    qmi_message_wms_modify_tag_output_unref(out);
+    printf("{\"ok\":true,\"read\":%s}\n", !strcmp(argument3, "read") ? "true" : "false");
+    finish(TRUE);
+}
+
+static void sms_delete_ready(QmiClientWms *wms, GAsyncResult *res, gpointer unused)
+{
+    GError *error = NULL;
+    QmiMessageWmsDeleteOutput *out = qmi_client_wms_delete_finish(wms, res, &error);
+    if (!out || !qmi_message_wms_delete_output_get_result(out, &error)) {
+        if (out) qmi_message_wms_delete_output_unref(out);
+        fail_error("SIM SMS delete failed", error);
+        return;
+    }
+    qmi_message_wms_delete_output_unref(out);
+    puts("{\"ok\":true}");
+    finish(TRUE);
+}
+
 /* libqmi knows the WMS SMSC indication but qmicli does not expose the older
  * Get SMSC Address request (0x0034).  Send that standard read-only request
  * through the already allocated WMS client and decode its documented TLV. */
@@ -778,6 +807,20 @@ static void run_command(void)
         qmi_message_wms_raw_read_input_set_message_memory_storage_id(in, storage, message_index, NULL);
         qmi_message_wms_raw_read_input_set_message_mode(in, QMI_WMS_MESSAGE_MODE_GSM_WCDMA, NULL);
         qmi_client_wms_raw_read(QMI_CLIENT_WMS(client), in, 20, NULL, (GAsyncReadyCallback)sms_read_ready, NULL); qmi_message_wms_raw_read_input_unref(in);
+    } else if (command == CMD_SMS_TAG) {
+        QmiMessageWmsModifyTagInput *in = qmi_message_wms_modify_tag_input_new();
+        QmiWmsMessageTagType tag = !strcmp(argument3, "read") ? QMI_WMS_MESSAGE_TAG_TYPE_MT_READ : QMI_WMS_MESSAGE_TAG_TYPE_MT_NOT_READ;
+        qmi_message_wms_modify_tag_input_set_message_tag(in, QMI_WMS_STORAGE_TYPE_UIM, message_index, tag, NULL);
+        qmi_message_wms_modify_tag_input_set_message_mode(in, QMI_WMS_MESSAGE_MODE_GSM_WCDMA, NULL);
+        qmi_client_wms_modify_tag(QMI_CLIENT_WMS(client), in, 20, NULL, (GAsyncReadyCallback)sms_tag_ready, NULL);
+        qmi_message_wms_modify_tag_input_unref(in);
+    } else if (command == CMD_SMS_DELETE) {
+        QmiMessageWmsDeleteInput *in = qmi_message_wms_delete_input_new();
+        qmi_message_wms_delete_input_set_memory_storage(in, QMI_WMS_STORAGE_TYPE_UIM, NULL);
+        qmi_message_wms_delete_input_set_memory_index(in, message_index, NULL);
+        qmi_message_wms_delete_input_set_message_mode(in, QMI_WMS_MESSAGE_MODE_GSM_WCDMA, NULL);
+        qmi_client_wms_delete(QMI_CLIENT_WMS(client), in, 20, NULL, (GAsyncReadyCallback)sms_delete_ready, NULL);
+        qmi_message_wms_delete_input_unref(in);
     } else if (command == CMD_SMSC_GET) {
         QmiMessage *request = qmi_message_new(QMI_SERVICE_WMS,
                                               qmi_client_get_cid(client),
@@ -841,7 +884,7 @@ static gboolean timeout_cb(gpointer unused)
 
 int main(int argc, char **argv)
 {
-    GError *error = NULL; char *end = NULL;
+    GError *error = NULL; char *end = NULL; unsigned long parsed_index;
 	if (argc == 3 && !strcmp(argv[1], "pdu-decode")) {
 		GArray *raw = NULL;
 		if (!parse_hex(argv[2], &raw) || !print_pdu_json((guint8 *)raw->data, raw->len)) {
@@ -853,10 +896,10 @@ int main(int argc, char **argv)
 		return EXIT_SUCCESS;
 	}
     if (argc < 3) {
-        fprintf(stderr, "usage: %s dial NUMBER | answer CALL_ID | end CALL_ID | dtmf CALL_ID DIGIT | sms-send NUMBER TEXT | sms-send-ims NUMBER TEXT | sms-read uim|nv INDEX | smsc-get live | sms-listen DIRECTORY | voice-listen STATE_FILE | pdu-decode HEX\n", argv[0]);
+        fprintf(stderr, "usage: %s dial NUMBER | answer CALL_ID | end CALL_ID | dtmf CALL_ID DIGIT | sms-send NUMBER TEXT | sms-send-ims NUMBER TEXT | sms-read uim|nv INDEX | sms-tag uim INDEX read|unread | sms-delete uim INDEX | smsc-get live | sms-listen DIRECTORY | voice-listen STATE_FILE | pdu-decode HEX\n", argv[0]);
         return EXIT_FAILURE;
     }
-    argument1 = argv[2]; argument2 = argc > 3 ? argv[3] : NULL;
+    argument1 = argv[2]; argument2 = argc > 3 ? argv[3] : NULL; argument3 = argc > 4 ? argv[4] : NULL;
     if (!strcmp(argv[1], "dial") && argc == 3) command = CMD_DIAL;
     else if (!strcmp(argv[1], "answer") && argc == 3) command = CMD_ANSWER;
     else if (!strcmp(argv[1], "end") && argc == 3) command = CMD_END;
@@ -864,15 +907,18 @@ int main(int argc, char **argv)
     else if (!strcmp(argv[1], "sms-send") && argc == 4) command = CMD_SMS_SEND;
     else if (!strcmp(argv[1], "sms-send-ims") && argc == 4) { command = CMD_SMS_SEND; sms_on_ims = TRUE; }
     else if (!strcmp(argv[1], "sms-read") && argc == 4 && (!strcmp(argument1, "uim") || !strcmp(argument1, "nv"))) command = CMD_SMS_READ;
+    else if (!strcmp(argv[1], "sms-tag") && argc == 5 && !strcmp(argument1, "uim") && (!strcmp(argument3, "read") || !strcmp(argument3, "unread"))) command = CMD_SMS_TAG;
+    else if (!strcmp(argv[1], "sms-delete") && argc == 4 && !strcmp(argument1, "uim")) command = CMD_SMS_DELETE;
 	else if (!strcmp(argv[1], "smsc-get") && argc == 3 && !strcmp(argument1, "live")) command = CMD_SMSC_GET;
 	else if (!strcmp(argv[1], "sms-listen") && argc == 3) command = CMD_SMS_LISTEN;
 	else if (!strcmp(argv[1], "voice-listen") && argc == 3) command = CMD_VOICE_LISTEN;
     else { fprintf(stderr, "invalid telephony command\n"); return EXIT_FAILURE; }
 
     if (command == CMD_DIAL && strspn(argument1, "+0123456789*#") != strlen(argument1)) { fprintf(stderr, "invalid phone number\n"); return EXIT_FAILURE; }
-    if (command == CMD_ANSWER || command == CMD_END || command == CMD_DTMF || command == CMD_SMS_READ) {
-        errno = 0; message_index = strtoul(command == CMD_SMS_READ ? argument2 : argument1, &end, 10);
-        if (errno || !end || *end || message_index > G_MAXUINT8 && command != CMD_SMS_READ) { fprintf(stderr, "invalid numeric identifier\n"); return EXIT_FAILURE; }
+    if (command == CMD_ANSWER || command == CMD_END || command == CMD_DTMF || command == CMD_SMS_READ || command == CMD_SMS_TAG || command == CMD_SMS_DELETE) {
+        errno = 0; parsed_index = strtoul((command == CMD_SMS_READ || command == CMD_SMS_TAG || command == CMD_SMS_DELETE) ? argument2 : argument1, &end, 10);
+        if (errno || !end || *end || parsed_index > G_MAXUINT32 || (parsed_index > G_MAXUINT8 && command != CMD_SMS_READ && command != CMD_SMS_TAG && command != CMD_SMS_DELETE)) { fprintf(stderr, "invalid numeric identifier\n"); return EXIT_FAILURE; }
+        message_index = (guint32)parsed_index;
     }
     if (command == CMD_DTMF && (!argument2 || strlen(argument2) != 1 || !strchr("0123456789*#ABCD", argument2[0]))) {
         fprintf(stderr, "invalid DTMF digit\n");

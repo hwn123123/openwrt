@@ -8,6 +8,35 @@ function tag(text, kind) { return E('span', { 'class': 'ui-tag ' + (kind || '') 
 function known(value) { return !mobile.missing(value); }
 function normalize(number) { return String(number || '').replace(/[\s()-]/g, ''); }
 function displayTime(value) { return known(value) ? String(value).replace('T', ' ') : ''; }
+function messageEpoch(message) {
+	var raw = String(message.timestamp || '').replace('T', ' ');
+	var match = /^(\d{2,4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})(?::(\d{2}))?/.exec(raw);
+	if (match) {
+		var year = Number(match[1]);
+		if (year < 100) year += 2000;
+		return new Date(year, Number(match[2]) - 1, Number(match[3]), Number(match[4]), Number(match[5]), Number(match[6] || 0)).getTime();
+	}
+	return Number(message.timestamp_epoch || 0) * 1000;
+}
+function sortMessages(messages) {
+	return messages.sort(function(a, b) { return messageEpoch(b) - messageEpoch(a); });
+}
+function deduplicateMessages(messages) {
+	var known = {}, result = [];
+	(messages || []).forEach(function(message) {
+		var key = messageKey(message), previous = known[key];
+		if (previous && (previous.source === 'sim' || message.source === 'sim')) {
+			(message.record_ids || []).forEach(function(id) {
+				if (previous.record_ids.indexOf(id) < 0) previous.record_ids.push(id);
+			});
+			if (message.read !== true) previous.read = false;
+			return;
+		}
+		known[key] = message;
+		result.push(message);
+	});
+	return result;
+}
 function messageKey(message) {
 	return [ message.direction || '', normalize(message.number), message.timestamp || '', message.text || '' ].join('|');
 }
@@ -81,7 +110,7 @@ function mergeMultipart(messages) {
 		}).join('');
 		group.message.multipart_complete = group.count === group.parts.length;
 	});
-	return output;
+	return deduplicateMessages(sortMessages(output));
 }
 
 function conversations(messages) {
@@ -101,6 +130,8 @@ return view.extend({
 		 * first render so an empty boot-time cache cannot incorrectly disable
 		 * the real VOICE/WMS controls. */
 		return mobile.action('refresh-telecom').catch(function() { return null; }).then(function() {
+				return mobile.action('sms-sync').catch(function() { return null; });
+		}).then(function() {
 				return Promise.all([
 					mobile.status(),
 					mobile.action('messages').catch(function() { return { messages: [], receive_active: false }; }),
@@ -267,7 +298,6 @@ return view.extend({
 
 		function renderSms() {
 			var grouped = conversations(messages);
-			if (!selectedPeer && grouped.order.length) selectedPeer = grouped.order[0];
 			if (selectedPeer && viewingPeer !== selectedPeer) {
 				viewingPeer = selectedPeer;
 				markThreadViewed(selectedPeer);
@@ -306,6 +336,16 @@ return view.extend({
 					});
 					renderContent();
 				});
+			}
+
+			function forwardMessage(message) {
+				selectedPeer = null;
+				viewingPeer = null;
+				draftRecipient = '';
+				draftText = message.text || '';
+				renderContent();
+				var target = content.querySelector('input[type="tel"]');
+				if (target) target.focus();
 			}
 
 			function deleteThread(number) {
@@ -358,6 +398,7 @@ return view.extend({
 						E('p', {}, message.text || ''),
 						E('time', {}, [ displayTime(message.timestamp), deliveryLabel(message) ? ' · ' + deliveryLabel(message) : '' ]),
 						E('div', { 'class': 'xm14-message-actions' }, [
+							E('button', { 'type': 'button', 'title': _('Forward'), 'click': function() { forwardMessage(message); } }, _('Forward')),
 							message.direction === 'in' ? E('button', { 'type': 'button', 'title': message.read === true ? _('Mark as unread') : _('Mark as read'), 'disabled': !(message.record_ids || []).length ? '' : null, 'click': function() { setMessageRead(message, message.read !== true); } }, message.read === true ? _('Unread') : _('Read')) : '',
 							E('button', { 'type': 'button', 'class': 'xm14-message-delete', 'title': _('Delete message'), 'disabled': !(message.record_ids || []).length ? '' : null, 'click': function() { deleteMessage(message); } }, '×')
 						])
@@ -530,7 +571,9 @@ return view.extend({
 		}
 
 		function refreshAll() {
-			return Promise.all([ mobile.action('refresh-telecom').catch(function() { return null; }), fetchMessages(), fetchHistory() ])
+			return mobile.action('refresh-telecom').catch(function() { return null; })
+				.then(function() { return mobile.action('sms-sync').catch(function(error) { mobile.notifyError(error); return null; }); })
+				.then(function() { return Promise.all([ fetchMessages(), fetchHistory() ]); })
 				.then(fetchStatus).then(renderContent).catch(mobile.notifyError);
 		}
 

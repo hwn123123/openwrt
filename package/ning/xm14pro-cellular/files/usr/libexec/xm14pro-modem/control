@@ -25,6 +25,7 @@ IMS_CALL_STATE=$DELIVERY_ROOT/call-state
 CALL_HISTORY=/var/lib/xm14pro/calls
 CALL_ACTION=$STATE_ROOT/call-local-action
 MESSAGE_STATE=/var/lib/xm14pro/sms-state
+SIM_CACHE=/var/lib/xm14pro/sms
 TELEPHONY_LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
 RADIO_SMS_CLIENT=$ANDROID_COMPAT_ROOT/vendor/bin/xm14pro-radio-sms
 AUDIO_CONTROL=/usr/libexec/xm14pro-audio/control
@@ -980,6 +981,7 @@ call_audio_action() {
 
 sms_send() {
 	local number="$1" message="$2" output message_id message_ids segments timestamp timestamp_epoch record slot transport ref
+	umask 077
 	[ -x "$TELEPHONY_LAUNCHER" ] || fail "Android 无线电启动器未安装"
 	[ -x "$RADIO_SMS_CLIENT" ] || fail "Android Radio Messaging 客户端未安装"
 	phone_number_valid "$number" || fail "收件人号码格式无效"
@@ -1060,18 +1062,100 @@ message_state_path() {
 	printf '%s/%s.read\n' "$MESSAGE_STATE" "$name"
 }
 
-message_set_read() {
-	local id="$1" state="$2" marker temporary
-	marker="$(message_state_path "$id")" || return 1
-	case "$state" in
-		1)
-			mkdir -p "$MESSAGE_STATE" || return 1
-			temporary="$marker.$$"
-			printf '%s\n' "$(date +%s)" > "$temporary" && mv "$temporary" "$marker"
-			;;
-		0) rm -f -- "$marker" ;;
+message_unread_path() {
+	local marker
+	marker="$(message_state_path "$1")" || return 1
+	printf '%s\n' "${marker%.read}.unread"
+}
+
+sim_record_action() {
+	local path="$1" action="$2" source index slot subscription current cached key response
+	source="$(jsonfilter -i "$path" -e '@.source' 2>/dev/null)"
+	[ "$source" = sim ] || return 0
+	index="$(jsonfilter -i "$path" -e '@.sim_index' 2>/dev/null)"
+	slot="$(jsonfilter -i "$path" -e '@.slot' 2>/dev/null)"
+	case "$index" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$slot" = "$(selected_phone_slot sms 2>/dev/null)" ] || return 1
+	subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+	case "$subscription:$slot" in 0:slot1|1:slot2) ;; *) return 1 ;; esac
+	# Avoid changing a newly reused SIM index using a stale cached message.
+	current="$(timeout -k 2 12 /usr/sbin/xm14pro-telephony sms-read uim "$index" 2>/dev/null)" || return 1
+	for key in number timestamp text; do
+		cached="$(jsonfilter -i "$path" -e "@.$key" 2>/dev/null)"
+		[ "$cached" = "$(printf '%s\n' "$current" | jsonfilter -e "@.$key" 2>/dev/null)" ] || return 1
+	done
+	case "$action" in read|unread) response="$(timeout -k 2 12 /usr/sbin/xm14pro-telephony sms-tag uim "$index" "$action" 2>/dev/null)" || return 1 ;;
+		delete) response="$(timeout -k 2 12 /usr/sbin/xm14pro-telephony sms-delete uim "$index" 2>/dev/null)" || return 1 ;;
 		*) return 1 ;;
 	esac
+	[ "$(printf '%s\n' "$response" | jsonfilter -e '@.ok' 2>/dev/null)" = true ]
+}
+
+message_set_read() {
+	local id="$1" state="$2" marker unread temporary
+	marker="$(message_state_path "$id")" || return 1
+	unread="$(message_unread_path "$id")" || return 1
+	case "$id" in local:sim-*) sim_record_action "$(message_record_path "$id")" "$([ "$state" = 1 ] && printf read || printf unread)" || return 1 ;; esac
+	mkdir -p "$MESSAGE_STATE" || return 1
+	case "$state" in
+		1)
+			temporary="$marker.$$"
+			printf '%s\n' "$(date +%s)" > "$temporary" && mv "$temporary" "$marker" || return 1
+			rm -f -- "$unread"
+			;;
+		0)
+			temporary="$unread.$$"
+			printf '%s\n' "$(date +%s)" > "$temporary" && mv "$temporary" "$unread" || return 1
+			rm -f -- "$marker"
+			;;
+		*) return 1 ;;
+	esac
+}
+
+sim_sync() {
+	local slot subscription tag list entries index actual_tag cache tombstone deleted_at now decoded temporary imported=0 listed=0
+	umask 077
+	slot="$(selected_phone_slot sms)" || fail "当前没有可用的短信 SIM 卡"
+	subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+	case "$subscription:$slot" in 0:slot1|1:slot2) ;; *) fail "短信 SIM 与 QMI 当前卡不一致" ;; esac
+	command -v qmicli >/dev/null 2>&1 || fail "缺少 QMI 短信工具"
+	[ -x /usr/sbin/xm14pro-telephony ] || fail "缺少 SIM 短信读取器"
+	mkdir -p "$SIM_CACHE" "$MESSAGE_STATE" || fail "短信缓存目录不可写"
+	chmod 0700 "$SIM_CACHE" "$MESSAGE_STATE" || fail "短信缓存目录权限设置失败"
+	# This is an explicit refresh, never part of the three-second mailbox poll.
+	for tag in mt-read mt-not-read mo-sent mo-not-sent; do
+		list="$(timeout -k 2 12 qmicli -d qrtr://0 "--wms-list-messages=uim,$tag" 2>/dev/null)" || continue
+		entries="$(printf '%s\n' "$list" | awk -F"'" '/Index:/ { idx=$2 } /Tag:/ { if (idx ~ /^[0-9]+$/ && $2 ~ /^(mt-read|mt-not-read|mo-sent|mo-not-sent)$/) print idx, $2; idx="" }' | head -n 200)"
+		while read -r index actual_tag; do
+			[ -n "$index" ] || continue
+			listed=$((listed + 1))
+			cache="$SIM_CACHE/sim-${slot}-${index}.sent.json"
+			tombstone="$MESSAGE_STATE/sim-${slot}-${index}.sent.json.deleted"
+			if [ -e "$tombstone" ]; then
+				deleted_at="$(cat "$tombstone" 2>/dev/null)"
+				now="$(date +%s)"
+				case "$deleted_at" in ''|*[!0-9]*) deleted_at=0 ;; esac
+				[ "$deleted_at" -le "$now" ] && [ "$now" -lt "$((deleted_at + 300))" ] && continue
+				rm -f -- "$tombstone"
+			fi
+			if [ -s "$cache" ]; then
+				[ "$(jsonfilter -i "$cache" -e '@.sim_tag' 2>/dev/null)" = "$actual_tag" ] || {
+					temporary="$cache.$$"
+					sed "s/\"sim_tag\":\"[^\"]*\"/\"sim_tag\":\"$actual_tag\"/" "$cache" > "$temporary" && mv "$temporary" "$cache"
+				}
+				continue
+			fi
+			decoded="$(timeout -k 2 12 /usr/sbin/xm14pro-telephony sms-read uim "$index" 2>/dev/null)" || continue
+			[ "$(printf '%s\n' "$decoded" | jsonfilter -e '@.ok' 2>/dev/null)" = true ] || continue
+			temporary="$cache.$$"
+			printf '%s\n' "$decoded" | sed "s/^{/{\"source\":\"sim\",\"sim_tag\":\"$actual_tag\",\"slot\":\"$slot\",\"sim_index\":$index,/" > "$temporary" || continue
+			mv "$temporary" "$cache" || continue
+			imported=$((imported + 1))
+		done <<EOF
+$entries
+EOF
+	done
+	printf '{"ok":true,"listed":%d,"imported":%d}\n' "$listed" "$imported"
 }
 
 normalized_message_number() {
@@ -1086,8 +1170,10 @@ sms_delete_json() {
 			IFS=,
 			for id in $value; do
 				path="$(message_record_path "$id")" || { IFS="$old_ifs"; fail "短信记录不存在或标识无效"; }
+				sim_record_action "$path" delete || { IFS="$old_ifs"; fail "删除 SIM 短信失败，记录仍保留"; }
 				rm -f -- "$path" || { IFS="$old_ifs"; fail "删除短信记录失败"; }
-				marker="$(message_state_path "$id" 2>/dev/null)" && rm -f -- "$marker"
+				marker="$(message_state_path "$id" 2>/dev/null)" && rm -f -- "$marker" "${marker%.read}.unread"
+				case "$id" in local:sim-*) printf '%s\n' "$(date +%s)" > "$MESSAGE_STATE/${id#local:}.deleted" ;; esac
 				deleted=$((deleted + 1))
 			done
 			IFS="$old_ifs"
@@ -1102,18 +1188,25 @@ sms_delete_json() {
 				number="$(printf '%s\n' "$decoded" | jsonfilter -e '@.number' 2>/dev/null)"
 				[ "$(normalized_message_number "$number")" = "$target" ] || continue
 				id="$(message_record_id "$file")"
+				sim_record_action "$file" delete || fail "删除 SIM 短信失败，记录仍保留"
 				rm -f -- "$file" || fail "删除同号码短信记录失败"
-				marker="$(message_state_path "$id" 2>/dev/null)" && rm -f -- "$marker"
+				marker="$(message_state_path "$id" 2>/dev/null)" && rm -f -- "$marker" "${marker%.read}.unread"
+				case "$id" in local:sim-*) printf '%s\n' "$(date +%s)" > "$MESSAGE_STATE/${id#local:}.deleted" ;; esac
 				deleted=$((deleted + 1))
 			done
 			;;
 		all)
 			for file in /var/lib/xm14pro/sms/*.pdu /var/lib/xm14pro/sms/*.sent.json "$DELIVERY_ROOT"/incoming-*.pdu "$DELIVERY_ROOT"/delivery-*.json; do
 				[ -f "$file" ] || continue
+				sim_record_action "$file" delete || fail "删除 SIM 短信失败，记录仍保留"
+				case "${file##*/}" in sim-*.sent.json)
+					mkdir -p "$MESSAGE_STATE"
+					printf '%s\n' "$(date +%s)" > "$MESSAGE_STATE/${file##*/}.deleted"
+					;; esac
 				rm -f -- "$file" || fail "清空短信记录失败"
 				deleted=$((deleted + 1))
 			done
-			for marker in "$MESSAGE_STATE"/*.read; do
+			for marker in "$MESSAGE_STATE"/*.read "$MESSAGE_STATE"/*.unread; do
 				[ -f "$marker" ] || continue
 				rm -f -- "$marker" || fail "清空短信已读状态失败"
 			done
@@ -1169,7 +1262,12 @@ messages_json() {
 		record_id="$(message_record_id "$file")"
 		direction="$(printf '%s\n' "$decoded" | jsonfilter -e '@.direction' 2>/dev/null)"
 		marker="$(message_state_path "$record_id" 2>/dev/null)"
-		if [ "$direction" != in ] || [ -f "$marker" ]; then read_state=true; else read_state=false; fi
+		if [ "$direction" != in ] || [ -f "$marker" ] ||
+		   { [ ! -f "${marker%.read}.unread" ] && [ "$(printf '%s\n' "$decoded" | jsonfilter -e '@.sim_tag' 2>/dev/null)" = mt-read ]; }; then
+			read_state=true
+		else
+			read_state=false
+		fi
 		decoded="$(printf '%s\n' "$decoded" | sed "s/^{/{\"record_id\":\"$record_id\",\"read\":$read_state,/")"
 		printf '%s%s' "$comma" "$decoded"
 		comma=,
@@ -1222,6 +1320,7 @@ case "${1:-status}" in
 	screen-telephony) screen_telephony "$2" ;;
 	sms-send) sms_send "$2" "$3" ;;
 	messages) messages_json ;;
+	sms-sync) sim_sync ;;
 	sms-delete) sms_delete_json record "$2" ;;
 	sms-delete-thread) sms_delete_json thread "$2" ;;
 	sms-delete-all) sms_delete_json all ;;
