@@ -1,0 +1,18 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=22
+STOP=88
+
+start() {
+	# PID 1 starts a minimal DRM splash before nwrt userspace is available.
+	# Release that initramfs renderer before the real dashboard takes over.
+	killall xm14pro-early-splash 2>/dev/null || true
+	mkdir -p /var/run/xm14display
+	printf '0\n' > /var/run/xm14display/page
+	touch /var/run/xm14display/dashboard-ready
+}
+
+stop() {
+	rm -f /var/run/xm14display/dashboard-ready
+}

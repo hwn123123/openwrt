@@ -1,0 +1,11 @@
+config stock_modules 'main'
+	option enabled '1'
+	option adsp '1'
+	option audio '1'
+	option touch '1'
+	option wifi '1'
+	option cellular '0'
+	# Enable only after the matching stock sidecar has passed real-device
+	# validation. Shipping the modules does not claim the userspace is ready.
+	option nfc '0'
+	option infrared '0'

@@ -1,0 +1,5 @@
+config battery 'main'
+	option refresh_interval '3'
+	option temperature_warning '45'
+	option temperature_critical '55'
+

@@ -1,0 +1,287 @@
+#!/bin/sh
+
+. /usr/share/libubox/jshn.sh
+
+STATE_ROOT=/var/run/xm14pro-bonding
+RUNTIME_FILE=$STATE_ROOT/runtime
+PRIMARY_STATE=/var/run/xm14pro/dsi-cellular.state
+SECONDARY_STATE=/var/run/xm14pro/dsi-bond-secondary.state
+UIM_STATE=/var/run/xm14pro/uim-state
+CELL_CACHE=$STATE_ROOT/cells.json
+SIM1_TABLE=201
+SIM2_TABLE=202
+SIM1_MARK=0x10000
+SIM2_MARK=0x20000
+MARK_MASK=0x30000
+
+value() {
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
+}
+
+number() {
+	case "$1" in ''|*[!0-9]*) printf '0\n' ;; *) printf '%s\n' "$1" ;; esac
+}
+
+counter() {
+	local device="$1" name="$2" result
+	result="$(cat "/sys/class/net/$device/statistics/$name" 2>/dev/null)"
+	number "$result"
+}
+
+fail_json() {
+	json_init
+	json_add_boolean ok 0
+	json_add_string error "$1"
+	json_dump
+	exit 1
+}
+
+valid_apn_optional() {
+	case "$1" in *[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
+}
+
+valid_weight() {
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 100 ] 2>/dev/null
+}
+
+qmi_field() {
+	local raw="$1" label="$2"
+	printf '%s\n' "$raw" | awk -F"'" -v label="$label:" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, label) == 1 && NF >= 2) { print $2; exit }
+		}'
+}
+
+qmi_values() {
+	local raw="$1" label="$2"
+	printf '%s\n' "$raw" | awk -F"'" -v label="$label:" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, label) == 1 && NF >= 2 && !seen[$2]++) {
+				if (out != "") out = out ", "
+				out = out $2
+			}
+		}
+		END { print out }'
+}
+
+add_cell() {
+	local slot="$1" subscription="$2" location band available=0 radio arfcn cell_id
+	location="$(timeout -k 2 15 qmicli -d qrtr://0 \
+		--nas-bind-subscription="$subscription" --nas-get-cell-location-info 2>/dev/null)"
+	band="$(timeout -k 2 15 qmicli -d qrtr://0 \
+		--nas-bind-subscription="$subscription" --nas-get-rf-band-info 2>/dev/null)"
+	printf '%s\n' "$location" | grep -q 'Successfully got cell location info' && available=1
+	if printf '%s\n' "$location" | grep -q '5GNR cell information'; then
+		radio='5G NR'
+	elif printf '%s\n' "$location" | grep -q 'LTE'; then
+		radio='LTE'
+	elif printf '%s\n' "$location" | grep -q 'WCDMA'; then
+		radio='WCDMA'
+	elif printf '%s\n' "$location" | grep -q 'GSM'; then
+		radio='GSM'
+	fi
+	arfcn="$(qmi_field "$location" '5GNR ARFCN')"
+	[ -n "$arfcn" ] || arfcn="$(qmi_field "$location" 'EUTRA Absolute RF Channel Number')"
+	[ -n "$arfcn" ] || arfcn="$(qmi_field "$band" 'Active Channel')"
+	cell_id="$(qmi_field "$location" 'Global Cell ID')"
+	[ -n "$cell_id" ] || cell_id="$(qmi_field "$location" 'Cell ID')"
+	json_add_object ''
+	json_add_int slot "$slot"
+	json_add_boolean available "$available"
+	json_add_string radio "$radio"
+	json_add_string plmn "$(qmi_field "$location" PLMN)"
+	json_add_string tac "$(qmi_field "$location" 'Tracking Area Code')"
+	json_add_string cell_id "$cell_id"
+	json_add_string pci "$(qmi_field "$location" 'Physical Cell ID')"
+	json_add_string arfcn "$arfcn"
+	json_add_string rsrp "$(qmi_field "$location" RSRP)"
+	json_add_string rsrq "$(qmi_field "$location" RSRQ)"
+	json_add_string sinr "$(qmi_field "$location" SNR)"
+	json_add_string bands "$(qmi_values "$band" 'Active Band Class')"
+	json_add_string channels "$(qmi_values "$band" 'Active Channel')"
+	json_add_string bandwidths "$(qmi_values "$band" Bandwidth)"
+	json_close_object
+}
+
+cells() {
+	local force="$1" now stamp payload temporary
+	mkdir -p "$STATE_ROOT" || fail_json '无法创建聚合状态目录'
+	now="$(date +%s)"
+	stamp="$(stat -c %Y "$CELL_CACHE" 2>/dev/null)"
+	case "$stamp" in ''|*[!0-9]*) stamp=0 ;; esac
+	if [ "$force" != 1 ] && [ -s "$CELL_CACHE" ] && [ $((now - stamp)) -lt 10 ]; then
+		cat "$CELL_CACHE"
+		return 0
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_add_int updated "$now"
+	json_add_array cells
+	add_cell 1 primary
+	add_cell 2 secondary
+	json_close_array
+	payload="$(json_dump)"
+	temporary="$CELL_CACHE.$$"
+	printf '%s\n' "$payload" > "$temporary" && mv -f "$temporary" "$CELL_CACHE"
+	printf '%s\n' "$payload"
+}
+
+state_connected() {
+	local state_file="$1" device address
+	device="$(value "$state_file" device)"
+	address="$(value "$state_file" ipv4_address)"
+	[ -n "$device" ] && [ -n "$address" ] &&
+		ip -4 address show dev "$device" 2>/dev/null | grep -q "inet ${address}/"
+}
+
+resolve_primary_subscription() {
+	local subscription primary_device primary_address active_data_slot
+	subscription="$(value "$RUNTIME_FILE" primary_subscription)"
+	case "$subscription" in 0|1) printf '%s\n' "$subscription"; return 0 ;; esac
+	primary_device="$(value "$PRIMARY_STATE" device)"
+	primary_address="$(value "$PRIMARY_STATE" ipv4_address)"
+	if [ -n "$primary_device" ] && [ -n "$primary_address" ] &&
+		ip -4 address show dev "$primary_device" 2>/dev/null | grep -q "inet ${primary_address}/"; then
+		subscription="$(value "$PRIMARY_STATE" qmi_subscription)"
+		case "$subscription" in 0|1) printf '%s\n' "$subscription"; return 0 ;; esac
+	fi
+	active_data_slot="$(value "$UIM_STATE" active_data_slot)"
+	case "$active_data_slot" in
+		1) printf '0\n' ;;
+		2) printf '1\n' ;;
+		*) printf '\n' ;;
+	esac
+}
+
+add_sim() {
+	local name="$1" state_file="$2" primary_subscription="$3" sim_subscription="$4"
+	local prefix="$5" weight="$6" table="$7" mark="$8"
+	local device address gateway subscription connected=0 role health=offline
+	device="$(value "$state_file" device)"
+	address="$(value "$state_file" ipv4_address)"
+	gateway="$(value "$state_file" ipv4_gateway)"
+	subscription="$(value "$state_file" qmi_subscription)"
+	if state_connected "$state_file"; then connected=1; health=online; fi
+	if [ "$sim_subscription" = "$primary_subscription" ]; then role=primary; else role=secondary; fi
+	if [ "$connected" = 0 ]; then device=; address=; gateway=; fi
+	json_add_object "$name"
+	json_add_boolean connected "$connected"
+	json_add_string health "$health"
+	json_add_string role "$role"
+	json_add_string device "$device"
+	json_add_string address "$address"
+	json_add_string gateway "$gateway"
+	json_add_string apn "$(value "$RUNTIME_FILE" "${prefix}_runtime_apn")"
+	json_add_int weight "$(number "$weight")"
+	json_add_int route_table "$table"
+	json_add_string route_mark "$mark/$MARK_MASK"
+	json_add_string tx_bytes_per_second "$(value "$RUNTIME_FILE" "${prefix}_tx_rate")"
+	json_add_string rx_bytes_per_second "$(value "$RUNTIME_FILE" "${prefix}_rx_rate")"
+	json_add_string tx_bytes "$(counter "$device" tx_bytes)"
+	json_add_string rx_bytes "$(counter "$device" rx_bytes)"
+	json_add_string tx_packets "$(counter "$device" tx_packets)"
+	json_add_string rx_packets "$(counter "$device" rx_packets)"
+	json_add_string tx_errors "$(counter "$device" tx_errors)"
+	json_add_string rx_errors "$(counter "$device" rx_errors)"
+	json_close_object
+}
+
+status() {
+	local enabled sim1_apn sim2_apn sim1_weight sim2_weight phase error
+	local primary_subscription file_sim1 file_sim2 running=0 active=0 active_paths=0
+	local total_weight sim1_percent sim2_percent started_at
+	enabled="$(uci -q get xm14bonding.main.enabled)"
+	sim1_apn="$(uci -q get xm14bonding.main.sim1_apn)"
+	sim2_apn="$(uci -q get xm14bonding.main.sim2_apn)"
+	sim1_weight="$(uci -q get xm14bonding.main.sim1_weight)"; valid_weight "$sim1_weight" || sim1_weight=1
+	sim2_weight="$(uci -q get xm14bonding.main.sim2_weight)"; valid_weight "$sim2_weight" || sim2_weight=1
+	pgrep -f '/usr/libexec/xm14pro-bonding/run' >/dev/null 2>&1 && running=1
+	phase="$(value "$RUNTIME_FILE" phase)"
+	error="$(value "$RUNTIME_FILE" error)"
+	started_at="$(value "$RUNTIME_FILE" started_at)"
+	primary_subscription="$(resolve_primary_subscription)"
+	if [ "$primary_subscription" = 0 ]; then
+		file_sim1="$PRIMARY_STATE"; file_sim2="$SECONDARY_STATE"
+	elif [ "$primary_subscription" = 1 ]; then
+		file_sim1="$SECONDARY_STATE"; file_sim2="$PRIMARY_STATE"
+	else
+		file_sim1=; file_sim2=
+	fi
+	state_connected "$file_sim1" && active_paths=$((active_paths + 1))
+	state_connected "$file_sim2" && active_paths=$((active_paths + 1))
+	if [ "$(value "$RUNTIME_FILE" balance_active)" = 1 ] && [ "$active_paths" = 2 ] &&
+		ip -4 rule show | grep -q "fwmark $SIM1_MARK/$MARK_MASK.*lookup $SIM1_TABLE" &&
+		ip -4 rule show | grep -q "fwmark $SIM2_MARK/$MARK_MASK.*lookup $SIM2_TABLE"; then
+		active=1
+	fi
+	if [ "$enabled" != 1 ]; then phase=disabled; error=; fi
+	[ -n "$phase" ] || phase=starting
+	total_weight=$((sim1_weight + sim2_weight))
+	sim1_percent=$((sim1_weight * 100 / total_weight))
+	sim2_percent=$((100 - sim1_percent))
+
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean enabled "$([ "$enabled" = 1 ] && echo 1 || echo 0)"
+	json_add_boolean running "$running"
+	json_add_boolean balance_active "$active"
+	json_add_string mode connection_load_balance
+	json_add_string phase "$phase"
+	json_add_string error "$error"
+	json_add_int active_paths "$active_paths"
+	json_add_string sim1_apn "$sim1_apn"
+	json_add_string sim2_apn "$sim2_apn"
+	json_add_int sim1_weight "$sim1_weight"
+	json_add_int sim2_weight "$sim2_weight"
+	json_add_int sim1_percent "$sim1_percent"
+	json_add_int sim2_percent "$sim2_percent"
+	json_add_string total_rx_bytes_per_second "$(value "$RUNTIME_FILE" total_rx_rate)"
+	json_add_string total_tx_bytes_per_second "$(value "$RUNTIME_FILE" total_tx_rate)"
+	json_add_string total_rx_bytes "$(value "$RUNTIME_FILE" total_rx_bytes)"
+	json_add_string total_tx_bytes "$(value "$RUNTIME_FILE" total_tx_bytes)"
+	json_add_string started_at "$started_at"
+	add_sim sim1 "$file_sim1" "$primary_subscription" 0 sim1 "$sim1_weight" "$SIM1_TABLE" "$SIM1_MARK"
+	add_sim sim2 "$file_sim2" "$primary_subscription" 1 sim2 "$sim2_weight" "$SIM2_TABLE" "$SIM2_MARK"
+	json_dump
+}
+
+save() {
+	local enabled="$1" sim1_apn="$2" sim2_apn="$3" sim1_weight="$4" sim2_weight="$5"
+	case "$enabled" in 0|1) ;; *) fail_json '启用参数无效' ;; esac
+	valid_apn_optional "$sim1_apn" || fail_json 'SIM 1 APN 格式无效'
+	valid_apn_optional "$sim2_apn" || fail_json 'SIM 2 APN 格式无效'
+	valid_weight "$sim1_weight" || fail_json 'SIM 1 分流权重必须为 1 到 100'
+	valid_weight "$sim2_weight" || fail_json 'SIM 2 分流权重必须为 1 到 100'
+	uci -q set xm14bonding.main=main || fail_json '无法创建双卡分流配置'
+	uci -q set "xm14bonding.main.enabled=$enabled"
+	uci -q set "xm14bonding.main.sim1_apn=$sim1_apn"
+	uci -q set "xm14bonding.main.sim2_apn=$sim2_apn"
+	uci -q set "xm14bonding.main.sim1_weight=$sim1_weight"
+	uci -q set "xm14bonding.main.sim2_weight=$sim2_weight"
+	for option in server port key tunnel_local tunnel_gateway; do uci -q delete "xm14bonding.main.$option"; done
+	uci -q commit xm14bonding || fail_json '双卡分流配置保存失败'
+	if [ "$enabled" = 1 ]; then
+		/etc/init.d/xm14pro-bonding enable >/dev/null 2>&1
+		/etc/init.d/xm14pro-bonding restart >/dev/null 2>&1
+	else
+		/etc/init.d/xm14pro-bonding disable >/dev/null 2>&1
+		/etc/init.d/xm14pro-bonding stop >/dev/null 2>&1
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_dump
+}
+
+action="$1"
+shift 2>/dev/null || true
+case "$action" in
+	status) status ;;
+	cells) cells "$1" ;;
+	save) [ "$#" -eq 5 ] || fail_json '配置参数不完整'; save "$@" ;;
+	*) fail_json '不支持的双卡分流操作' ;;
+esac

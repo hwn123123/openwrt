@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'wifi %s\n' "$*" >>"$XM14PRO_WIFI_TEST_LOG"

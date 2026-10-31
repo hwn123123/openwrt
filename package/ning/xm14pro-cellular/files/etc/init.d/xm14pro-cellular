@@ -1,0 +1,113 @@
+#!/bin/sh /etc/rc.common
+
+USE_PROCD=1
+START=63
+STOP=38
+
+service_enabled() {
+	[ "$(uci -q get xm14cellular.main.enabled)" != "0" ]
+}
+
+sync_network_config() {
+	local modem iptype roaming timeout allowedmode preferredmode pincode
+	modem=$(uci -q get xm14cellular.main.modem)
+	iptype=$(uci -q get xm14cellular.main.iptype)
+	roaming=$(uci -q get xm14cellular.main.roaming)
+	timeout=$(uci -q get xm14cellular.main.command_timeout)
+	allowedmode=$(uci -q get xm14cellular.main.allowedmode)
+	preferredmode=$(uci -q get xm14cellular.main.preferredmode)
+	pincode=$(uci -q get xm14cellular.main.pincode)
+
+	# Keep netifd from racing the phone-specific readiness sequence. The
+	# autoconnect worker below is the sole automatic ifup owner.
+	uci -q batch <<-EOF
+		set network.cellular='interface'
+		set network.cellular.auto='0'
+		set network.cellular.proto='xm14pro'
+		set network.cellular.device='${modem:-any}'
+		set network.cellular.iptype='${iptype:-ipv4v6}'
+		set network.cellular.allow_roaming='${roaming:-0}'
+		set network.cellular.force_connection='0'
+		set network.cellular.signalrate='5'
+		set network.cellular.init_epsbearer='modem'
+		set network.cellular.timeout='${timeout:-120}'
+		set network.cellular.metric='10'
+		delete network.cellular.allowedmode
+		delete network.cellular.preferredmode
+		delete network.cellular.pincode
+		delete network.cellular.apn
+		delete network.cellular.profile_id
+		commit network
+	EOF
+	# The active slot's independent override or carrier default is resolved only
+	# after uim-keeper has selected the matching QMI subscription.
+	[ -n "$allowedmode" ] && uci -q set "network.cellular.allowedmode=$allowedmode"
+	[ -n "$preferredmode" ] && uci -q set "network.cellular.preferredmode=$preferredmode"
+	[ -n "$pincode" ] && uci -q set "network.cellular.pincode=$pincode"
+	uci -q commit network
+}
+
+start_service() {
+	service_enabled || return 0
+	sync_network_config
+
+	# Bring MPSS online and restore the selected SIM before any data call. The
+	# stock NICM/DSI runtime owns IPA/RMNET creation; do not rebuild its topology
+	# with the superseded hand-crafted WDS path.
+	/usr/libexec/xm14pro-modem/bringup || {
+		logger -t xm14-cellular "pre-ModemManager modem preparation failed"
+		return 1
+	}
+	/usr/libexec/xm14pro-modem/uim-keeper --prepare-only || {
+		logger -t xm14-cellular "pre-ModemManager SIM selection failed"
+		return 1
+	}
+	procd_open_instance uim
+	procd_set_param command /usr/libexec/xm14pro-modem/uim-keeper
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	procd_open_instance autoconnect
+	procd_set_param command /usr/libexec/xm14pro-modem/autoconnect
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	# Incoming SMS is owned by the persistent Qualcomm IMS Stable-AIDL bridge.
+	# A second QMI WMS client cannot register the IMS transfer route reliably
+	# and previously left a live process without a working receive callback.
+	mkdir -p /var/lib/xm14pro/sms
+
+	# Keep the current call state fresh from VOICE indications.  This lets the
+	# LuCI dialer show and answer an incoming call without polling QMI itself.
+	mkdir -p /var/lib/xm14pro/calls
+	procd_open_instance call-monitor
+	procd_set_param command /usr/sbin/xm14pro-call-monitor
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	rm -f /var/run/xm14pro/voice-state
+	procd_open_instance voice-listener
+	procd_set_param command /usr/sbin/xm14pro-telephony voice-listen /var/run/xm14pro/voice-state
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	sync_network_config
+	ifdown cellular >/dev/null 2>&1 || true
+	restart
+}
+
+service_triggers() {
+	# This service writes network.cellular itself. Watching all of network would
+	# turn that commit into a reload loop.
+	procd_add_reload_trigger xm14cellular
+}

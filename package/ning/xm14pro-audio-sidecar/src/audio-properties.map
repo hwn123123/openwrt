@@ -1,0 +1,15 @@
+LIBC {
+	global:
+		__system_property_get;
+};
+
+LIBCUTILS {
+	global:
+		property_get;
+		property_get_bool;
+		property_get_int32;
+		property_get_int64;
+		property_set;
+	local:
+		*;
+};

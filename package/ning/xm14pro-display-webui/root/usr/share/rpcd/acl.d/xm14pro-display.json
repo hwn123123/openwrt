@@ -1,0 +1,14 @@
+{
+	"xm14pro-display": {
+		"description": "Configure the Xiaomi native touch screen",
+		"read": {
+			"uci": [ "xm14display" ],
+			"file": { "/usr/libexec/xm14pro-display": [ "list", "exec" ] }
+		},
+		"write": {
+			"uci": [ "xm14display" ],
+			"file": { "/usr/libexec/xm14pro-display": [ "list", "exec" ] }
+		}
+	}
+}
+

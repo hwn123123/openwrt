@@ -1,0 +1,81 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+START=12
+STOP=88
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+
+wait_qseecomd_ready() {
+	local pid fd target fd_count attempt cmdline exe
+
+	# A stable qseecomd has opened the SSD partition and the ten GP/RPMB
+	# listener sets (roughly sixty descriptors on this firmware).  Do not let
+	# ssgtzd load the QWES TA before those listeners exist: that failed state is
+	# cached inside the already-loaded TA and cannot be repaired afterwards.
+	for attempt in $(seq 1 60); do
+		for cmdline in /proc/[0-9]*/cmdline; do
+			[ -r "$cmdline" ] || continue
+			case "$(tr '\000' ' ' < "$cmdline" 2>/dev/null)" in
+				*'/vendor/bin/qseecomd'*) ;;
+				*) continue ;;
+			esac
+			pid="${cmdline#/proc/}"
+			pid="${pid%/cmdline}"
+			[ -d "/proc/$pid/fd" ] || continue
+
+			# A shell executing this probe can contain the text qseecomd in its
+			# argv.  Accept only the Android linker that actually loaded the
+			# daemon, then require its complete listener descriptor set.
+			exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+			case "$exe" in
+				*'/android-root/system/bin/bootstrap/linker64') ;;
+				*) continue ;;
+			esac
+			fd_count="$(find "/proc/$pid/fd" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l)"
+			[ "$fd_count" -ge 40 ] || continue
+			for fd in "/proc/$pid/fd"/*; do
+				target="$(readlink "$fd" 2>/dev/null)"
+				case "$target" in
+					*'/dev/sda2')
+						logger -t xm14pro-qwes "qseecomd ready: pid=$pid fds=$fd_count"
+						return 0
+						;;
+				esac
+			done
+		done
+		sleep 1
+	done
+
+	logger -t xm14pro-qwes 'qseecomd did not finish SSD/RPMB listener initialization'
+	return 1
+}
+
+start_service() {
+	rm -f /dev/socket/ssgtzd /dev/socket/ssgtzd_opener
+
+	# qseecomd is a separate procd service. procd starts registered processes
+	# only after start_service() returns, so registering and waiting for it in
+	# this same function would deadlock until the readiness timeout.
+	/etc/init.d/xm14pro-qseecomd running || /etc/init.d/xm14pro-qseecomd start
+	wait_qseecomd_ready || return 1
+
+	procd_open_instance ssgtzd
+	procd_set_param command /usr/libexec/xm14pro-qwes/ssgtzd-launcher "$ANDROID_ROOT" ssgtzd
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	procd_open_instance qwesd
+	procd_set_param command /usr/libexec/xm14pro-qwes/ssgtzd-launcher "$ANDROID_ROOT" qwesd
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14cellular
+}

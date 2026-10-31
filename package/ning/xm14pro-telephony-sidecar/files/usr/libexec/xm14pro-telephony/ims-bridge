@@ -1,0 +1,64 @@
+#!/bin/sh
+# Start the persistent framework-side Qualcomm IMS owner. It attaches both
+# physical SIM instances before initializing the dynamically selected active
+# slot and never touches DSI, APN, rmnet, routes, DNS, netifd or firewall.
+
+TAG=xm14pro-ims-client
+STATE_ROOT=/var/run/xm14pro
+STATE_FILE=$STATE_ROOT/ims-aidl-state
+ERROR_FILE=$STATE_ROOT/ims-aidl-error
+SUBSCRIPTION_FILE=$STATE_ROOT/qmi-subscription
+PERSISTENT_RADIO=/mnt/nwrt-data/device-state/telephony/radio
+RADIO_FRAMEWORK_STATE=$PERSISTENT_RADIO/xm14pro-radio-framework.state
+IMS_CLIENT_DIR=$PERSISTENT_RADIO/ims-client
+PERSISTENT_STATE=$IMS_CLIENT_DIR/ims-aidl-state
+PERSISTENT_SOCKET=$IMS_CLIENT_DIR/control.sock
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
+CLIENT=$ANDROID_ROOT/vendor/bin/xm14pro-radio-sms
+
+mkdir -p "$STATE_ROOT" || exit 1
+rm -f "$STATE_FILE" "$ERROR_FILE"
+
+# r37 proved that waiting for the default cellular interface is not the IMS
+# framework boundary. Wait for the persistent standard Radio owner; this is a
+# read-only dependency check and performs no data-plane action.
+radio_attempt=0
+while [ "$radio_attempt" -lt 300 ]; do
+	grep -Fq '"ready":true' "$RADIO_FRAMEWORK_STATE" 2>/dev/null && break
+	radio_attempt=$((radio_attempt + 1))
+	sleep 1
+done
+if ! grep -Fq '"ready":true' "$RADIO_FRAMEWORK_STATE" 2>/dev/null; then
+	printf '%s\n' 'standard Radio framework callbacks did not become ready' > "$ERROR_FILE"
+	logger -t "$TAG" "$(cat "$ERROR_FILE")"
+	exit 1
+fi
+logger -t "$TAG" 'standard Radio framework callbacks are ready; starting persistent Qualcomm IMS owner'
+
+attempt=0
+while [ "$attempt" -lt 180 ]; do
+	subscription="$(cat "$SUBSCRIPTION_FILE" 2>/dev/null)"
+	case "$subscription" in
+		0) slot=slot1 ;;
+		1) slot=slot2 ;;
+		*) slot= ;;
+	esac
+	if [ -n "$slot" ] && [ -x "$LAUNCHER" ] && [ -x "$CLIENT" ]; then
+		mkdir -p "$IMS_CLIENT_DIR" || exit 1
+		chown 10230:10230 "$IMS_CLIENT_DIR" || exit 1
+		chmod 0770 "$IMS_CLIENT_DIR" || exit 1
+		rm -f "$PERSISTENT_STATE" "$PERSISTENT_STATE.tmp" \
+			"$PERSISTENT_SOCKET"
+		ln -sf "$PERSISTENT_STATE" "$STATE_FILE" || exit 1
+		logger -t "$TAG" "attaching both Qualcomm IMS slots; active slot is $slot"
+		exec "$LAUNCHER" "$ANDROID_ROOT" ims-bridge ims-daemon "$slot"
+	fi
+	attempt=$((attempt + 1))
+	sleep 1
+done
+
+error="IMS subscription did not become available during cold boot"
+printf '%s\n' "$error" > "$ERROR_FILE"
+logger -t "$TAG" "$error"
+exit 1

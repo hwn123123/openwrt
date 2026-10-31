@@ -1,0 +1,2041 @@
+msgid ""
+msgstr "Content-Type: text/plain; charset=UTF-8\nLanguage: zh_Hans\n"
+
+msgid "Mobile network"
+msgstr "移动网络"
+
+msgid "Overview"
+msgstr "总览"
+
+msgid "Mobile network overview"
+msgstr "移动网络总览"
+
+msgid "Cellular dialing"
+msgstr "蜂窝拨号"
+
+msgid "Radio and carrier"
+msgstr "无线电与运营商"
+
+msgid "SIM and dual-SIM"
+msgstr "SIM 与双卡"
+
+msgid "Calls and IMS"
+msgstr "电话与 IMS"
+
+msgid "SMS"
+msgstr "收发短信"
+
+msgid "Signal, cells and bands"
+msgstr "信号、小区与频段"
+
+msgid "CPE and sharing"
+msgstr "CPE 与共享"
+
+msgid "CPE and device"
+msgstr "CPE 与设备"
+
+msgid "Device information"
+msgstr "设备信息"
+
+msgid "Diagnostics"
+msgstr "诊断日志"
+
+msgid "All values below come from the live nwrt backend. Missing data stays unknown."
+msgstr "以下数值全部来自当前 nwrt 后端；读不到的数据明确标为暂不可读。"
+
+msgid "Verified phone behaviour"
+msgstr "已验证的手机行为"
+
+msgid "Function"
+msgstr "功能"
+
+msgid "Android evidence"
+msgstr "安卓日志证据"
+
+msgid "nwrt implementation"
+msgstr "nwrt 实现状态"
+
+msgid "Modem"
+msgstr "基带"
+
+msgid "Detected"
+msgstr "已发现"
+
+msgid "Not detected"
+msgstr "未发现"
+
+msgid "Power state"
+msgstr "电源状态"
+
+msgid "Carrier"
+msgstr "运营商"
+
+msgid "Operator"
+msgstr "运营商"
+
+msgid "Registration"
+msgstr "网络注册"
+
+msgid "Radio access"
+msgstr "无线接入制式"
+
+msgid "Data connection"
+msgstr "数据连接"
+
+msgid "Network available"
+msgstr "网络接口可用"
+
+msgid "SIM assignment"
+msgstr "SIM 分工"
+
+msgid "Mobile data"
+msgstr "移动数据"
+
+msgid "Mobile-data dial and disconnect"
+msgstr "移动数据拨号与断开"
+
+msgid "SIM hot plug and slot switch"
+msgstr "SIM 热插拔与卡槽切换"
+
+msgid "SMS send and receive"
+msgstr "短信收发"
+
+msgid "Voice calls and IMS"
+msgstr "语音通话与 IMS"
+
+msgid "Requires a native QMI WMS / Qualcomm IMS bridge in nwrt"
+msgstr "需要在 nwrt 中实现原生 QMI WMS / Qualcomm IMS 桥接层"
+
+msgid "Requires the RadioVoice / Qualcomm IMS execution layer in nwrt"
+msgstr "需要在 nwrt 中移植 RadioVoice / Qualcomm IMS 执行层"
+
+msgid "QRTR is live, but ModemManager has not created a modem object"
+msgstr "QRTR 已运行，但 ModemManager 尚未创建基带对象"
+
+msgid "APN is never hard-coded. Leave it empty to use the SIM/carrier profile discovered at runtime."
+msgstr "APN 绝不写死；留空时使用运行时从 SIM/运营商发现的配置。"
+
+msgid "APN override"
+msgstr "APN 手动覆盖"
+
+msgid "SIM slot 1 APN override"
+msgstr "卡槽 1 APN 手动覆盖"
+
+msgid "SIM slot 2 APN override"
+msgstr "卡槽 2 APN 手动覆盖"
+
+msgid "Resolved APN"
+msgstr "当前实际 APN"
+
+msgid "IPv6 address"
+msgstr "IPv6 地址"
+
+msgid "Empty = carrier/modem automatic selection"
+msgstr "留空 = 运营商/基带自动选择"
+
+msgid "PDP type"
+msgstr "PDP 类型"
+
+msgid "Allow roaming"
+msgstr "允许漫游"
+
+msgid "Automatic connection"
+msgstr "自动连接"
+
+msgid "Live bearer"
+msgstr "实时数据承载"
+
+msgid "Runtime profile ID"
+msgstr "运行时运营商配置 ID"
+
+msgid "Dial settings"
+msgstr "拨号设置"
+
+msgid "Dial settings saved."
+msgstr "拨号设置已保存。"
+
+msgid "Android path confirmed by capture"
+msgstr "安卓原厂路径已由日志确认"
+
+msgid "The stock system selected carrier profiles dynamically, created IMS and internet contexts, issued SETUP_DATA_CALL, and attached the resulting rmnet route. nwrt must reproduce this path through its phone-specific compatibility layer; it must not use a fixed APN or Quectel AT activation."
+msgstr "原厂系统会动态选择运营商配置，建立 IMS 和上网上下文，发起 SETUP_DATA_CALL，再接入 rmnet 路由。nwrt 必须通过手机专用兼容层复现该路径，不能使用固定 APN 或 Quectel AT 激活。"
+
+msgid "Radio controls operate only through the detected phone-modem backend."
+msgstr "无线电控制只能对已真实发现的手机基带执行。"
+
+msgid "Enable airplane mode"
+msgstr "开启飞行模式"
+
+msgid "Disable airplane mode"
+msgstr "关闭飞行模式"
+
+msgid "Airplane mode"
+msgstr "飞行模式"
+
+msgid "Allowed modes"
+msgstr "允许制式"
+
+msgid "Preferred mode"
+msgstr "首选制式"
+
+msgid "Access technology"
+msgstr "当前接入制式"
+
+msgid "Confirmed behaviour"
+msgstr "已确认的行为"
+
+msgid "Physical hot plug, two slots and Android subscription switching are confirmed by the captured logs."
+msgstr "日志已确认物理热插拔、双卡槽与安卓订阅切换过程。"
+
+msgid "Current backend view"
+msgstr "当前后端状态"
+
+msgid "Slot assignment"
+msgstr "卡槽分工"
+
+msgid "SIM slot 1"
+msgstr "卡槽 1"
+
+msgid "SIM slot 2"
+msgstr "卡槽 2"
+
+msgid "Data SIM saved; it takes effect on the next radio-stack start."
+msgstr "数据卡槽已保存，将在下次启动无线电栈时生效。"
+
+msgid "No active nwrt voice transport"
+msgstr "nwrt 语音传输尚未接通"
+
+msgid "No active nwrt SMS transport"
+msgstr "nwrt 短信传输尚未接通"
+
+msgid "Voice calls"
+msgstr "语音通话"
+
+msgid "Slot details and security"
+msgstr "卡槽详情与安全"
+
+msgid "Live UIM detail requires an explicit backend query"
+msgstr "卡槽实况需要明确的 UIM 后端查询"
+
+msgid "A native LuCI SMS workspace. It does not call the old module AT-command backend."
+msgstr "原生 LuCI 短信工作台，不会调用旧的模组 AT 命令后端。"
+
+msgid "Compose"
+msgstr "新建短信"
+
+msgid "Send using"
+msgstr "发送卡槽"
+
+msgid "Recipient"
+msgstr "收件人"
+
+msgid "Message"
+msgstr "短信内容"
+
+msgid "Sending is locked"
+msgstr "发送按钮已锁定"
+
+msgid "Mailbox"
+msgstr "短信箱"
+
+msgid "Inbox"
+msgstr "收件箱"
+
+msgid "Sent"
+msgstr "已发送"
+
+msgid "Outbox"
+msgstr "发件箱"
+
+msgid "Drafts"
+msgstr "草稿箱"
+
+msgid "SMS capabilities represented by this page"
+msgstr "本页覆盖的短信能力"
+
+msgid "Long/segmented SMS"
+msgstr "长短信/分段短信"
+
+msgid "Delivery reports"
+msgstr "送达回执"
+
+msgid "SMSC and cell broadcast"
+msgstr "短信中心与小区广播"
+
+msgid "Voice and IMS are separate from mobile-data dialing and use the phone vendor IMS path."
+msgstr "语音与 IMS 独立于移动数据拨号，它们使用手机厂商 IMS 路径。"
+
+msgid "Cellular details"
+msgstr "蜂窝详细信息"
+
+msgid "Live network, serving cell, signal, allocation and device identity"
+msgstr "实时网络、服务小区、信号、载波分配与设备身份"
+
+msgid "Current network"
+msgstr "当前网络"
+
+msgid "Signal measurements"
+msgstr "信号测量"
+
+msgid "Carrier allocation"
+msgstr "载波分配"
+
+msgid "IMEI SV %s · MEID %s"
+msgstr "IMEI SV %s · MEID %s"
+
+msgid "Copy %s"
+msgstr "复制%s"
+
+msgid "%s copied"
+msgstr "已复制%s"
+
+msgid "Refresh radio details"
+msgstr "刷新蜂窝详情"
+
+msgid "Radio details refreshed"
+msgstr "蜂窝详情已刷新"
+
+msgid "More network and device details"
+msgstr "更多网络与设备详情"
+
+msgid "Expand to inspect full session, modem, IMS and system information"
+msgstr "展开查看完整会话、基带、IMS 与系统信息"
+
+msgid "Current carriers"
+msgstr "当前载波"
+
+msgid "%s CC"
+msgstr "%sCC"
+
+msgid "Up to %s CC"
+msgstr "最高 %sCC"
+
+msgid "Current serving"
+msgstr "当前驻留"
+
+msgid "Band and channel"
+msgstr "频段与信道"
+
+msgid "Network selection"
+msgstr "网络选择"
+
+msgid "System information"
+msgstr "系统信息"
+
+msgid "Screen service returned invalid data"
+msgstr "屏幕服务返回的数据无效"
+
+msgid "Service returned invalid data: %s"
+msgstr "服务返回的数据无效：%s"
+
+msgid "Operation failed"
+msgstr "操作失败"
+
+msgid "Device service status"
+msgstr "设备服务状态"
+
+msgid "Core service status"
+msgstr "核心服务状态"
+
+msgid "Dialer"
+msgstr "拨号盘"
+
+msgid "Call using"
+msgstr "通话卡槽"
+
+msgid "Dial controls are locked"
+msgstr "通话按钮已锁定"
+
+msgid "IMS registration"
+msgstr "IMS 注册"
+
+msgid "Current call"
+msgstr "当前通话"
+
+msgid "Phone functions covered"
+msgstr "本页覆盖的手机通话功能"
+
+msgid "Outgoing and incoming calls"
+msgstr "呼出与来电"
+
+msgid "Hold, mute and DTMF"
+msgstr "保持、静音与 DTMF"
+
+msgid "Call history and contacts"
+msgstr "通话记录与联系人"
+
+msgid "Audio route"
+msgstr "音频路由"
+
+msgid "Supplementary services"
+msgstr "呼叫转移等补充业务"
+
+msgid "Measurements are displayed only when supplied by the live NAS backend."
+msgstr "只显示实时 NAS 后端实际返回的测量值。"
+
+msgid "Signal"
+msgstr "信号"
+
+msgid "Serving cell"
+msgstr "服务小区"
+
+msgid "Bands and aggregation"
+msgstr "频段与载波聚合"
+
+msgid "Neighbour cells, scan and band policy"
+msgstr "邻区、扫网与频段策略"
+
+msgid "No measurement is being synthesized"
+msgstr "未生成任何伪测量值"
+
+msgid "The mobile uplink remains separate from LAN, Wi-Fi AP and USB-gadget configuration."
+msgstr "移动上行与 LAN、Wi-Fi AP 和 USB Gadget 设置分开管理。"
+
+msgid "Uplink"
+msgstr "上行链路"
+
+msgid "Sharing paths"
+msgstr "共享出口"
+
+msgid "Wi-Fi access point"
+msgstr "Wi-Fi 热点"
+
+msgid "USB network gadget"
+msgstr "USB 网卡"
+
+msgid "NAT and forwarding"
+msgstr "NAT 与转发"
+
+msgid "CPE policy"
+msgstr "CPE 策略"
+
+msgid "Identifiers are read from the live modem object; unavailable values remain blank."
+msgstr "设备标识直接从实时基带对象读取；读不到时保持空白。"
+
+msgid "Phone modem"
+msgstr "手机基带"
+
+msgid "Own number"
+msgstr "本机号码"
+
+msgid "Runtime"
+msgstr "运行状态"
+
+msgid "System uptime"
+msgstr "系统运行时间"
+
+msgid "Privacy"
+msgstr "隐私"
+
+msgid "Read-only live diagnostics for the phone modem stack."
+msgstr "手机基带协议栈的只读实时诊断。"
+
+msgid "Backend health"
+msgstr "后端健康状态"
+
+msgid "Evidence boundary"
+msgstr "日志证据与实时数据边界"
+
+msgid "Filtered system log"
+msgstr "已过滤的系统日志"
+
+msgid "Unknown"
+msgstr "暂不可读"
+
+msgid "Not reported"
+msgstr "暂不可读"
+
+msgid "Available"
+msgstr "可用"
+
+msgid "Unavailable"
+msgstr "不可用"
+
+msgid "Connected"
+msgstr "已连接"
+
+msgid "Disconnected"
+msgstr "未连接"
+
+msgid "Enabled"
+msgstr "已开启"
+
+msgid "Disabled"
+msgstr "已关闭"
+
+msgid "Automatic"
+msgstr "自动"
+
+msgid "Refresh"
+msgstr "刷新"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Disconnect"
+msgstr "断开"
+
+msgid "Save settings"
+msgstr "保存设置"
+
+msgid "Send"
+msgstr "发送"
+
+msgid "Call"
+msgstr "拨号"
+
+msgid "Answer"
+msgstr "接听"
+
+msgid "Hang up"
+msgstr "挂断"
+
+msgid "Live status from the Xiaomi phone modem compatibility layer."
+msgstr "来自小米手机基带兼容层的实时状态。"
+
+msgid "Device status"
+msgstr "设备状态"
+
+msgid "Uptime: %s"
+msgstr "运行时间：%s"
+
+msgid "%d d %d h %d min"
+msgstr "%d 天 %d 小时 %d 分钟"
+
+msgid "%d h %d min"
+msgstr "%d 小时 %d 分钟"
+
+msgid "%d min"
+msgstr "%d 分钟"
+
+msgid "Modem state"
+msgstr "基带状态"
+
+msgid "Signal quality"
+msgstr "信号质量"
+
+msgid "Network registration"
+msgstr "网络注册"
+
+msgid "SIM status"
+msgstr "SIM 状态"
+
+msgid "Network interface"
+msgstr "网络接口"
+
+msgid "QRTR services"
+msgstr "QRTR 服务"
+
+msgid "Live services"
+msgstr "实时服务数"
+
+msgid "Live radio signal"
+msgstr "实时无线信号"
+
+msgid "Radio"
+msgstr "制式"
+
+msgid "Band"
+msgstr "频段"
+
+msgid "Network information"
+msgstr "网络信息"
+
+msgid "Interface"
+msgstr "接口"
+
+msgid "IPv4 address"
+msgstr "IPv4 地址"
+
+msgid "APN mode"
+msgstr "APN 模式"
+
+msgid "SIM object"
+msgstr "SIM 对象"
+
+msgid "Calls"
+msgstr "通话"
+
+msgid "Registered"
+msgstr "已注册"
+
+msgid "Home network"
+msgstr "归属网络"
+
+msgid "Roaming"
+msgstr "漫游"
+
+msgid "Live cellular, SIM and uplink status."
+msgstr "实时蜂窝网络、SIM 与上行链路状态。"
+
+msgid "Roaming allowed"
+msgstr "允许漫游"
+
+msgid "Roaming blocked"
+msgstr "禁止漫游"
+
+msgid "Allowed"
+msgstr "允许"
+
+msgid "Blocked"
+msgstr "禁止"
+
+msgid "Cellular network"
+msgstr "蜂窝网络"
+
+msgid "Cellular network and SIM"
+msgstr "蜂窝网络与 SIM"
+
+msgid "2.4 GHz + 5 GHz (compatibility)"
+msgstr "2.4 GHz + 5 GHz（兼容优先）"
+
+msgid "2.4 GHz + 6 GHz"
+msgstr "2.4 GHz + 6 GHz"
+
+msgid "5 GHz + 6 GHz (performance)"
+msgstr "5 GHz + 6 GHz（性能优先）"
+
+msgid "2.4 GHz SSID"
+msgstr "2.4 GHz 名称"
+
+msgid "5 GHz SSID"
+msgstr "5 GHz 名称"
+
+msgid "6 GHz SSID"
+msgstr "6 GHz 名称"
+
+msgid "Enable AP"
+msgstr "启用 Wi-Fi 热点"
+
+msgid "Country code"
+msgstr "监管域国家码"
+
+msgid "Concurrent bands"
+msgstr "并发频段"
+
+msgid "Wi-Fi password"
+msgstr "Wi-Fi 密码"
+
+msgid "Wi-Fi password must contain 8 to 63 characters."
+msgstr "Wi-Fi 密码必须为 8 至 63 个字符。"
+
+msgid "Wi-Fi settings applied."
+msgstr "Wi-Fi 设置已应用。"
+
+msgid "Save and apply"
+msgstr "保存并应用"
+
+msgid "Uplink and forwarding"
+msgstr "上行与转发"
+
+msgid "Sharing status"
+msgstr "共享状态"
+
+msgid "CPE runtime state"
+msgstr "CPE 运行状态"
+
+msgid "Wi-Fi interface"
+msgstr "Wi-Fi 接口"
+
+msgid "Wi-Fi address"
+msgstr "Wi-Fi 地址"
+
+msgid "USB interface"
+msgstr "USB 接口"
+
+msgid "USB address"
+msgstr "USB 地址"
+
+msgid "Type-C mode"
+msgstr "Type-C 模式"
+
+msgid "USB network and charging"
+msgstr "USB 网卡（同时充电）"
+
+msgid "Charging only"
+msgstr "仅充电"
+
+msgid "USB mode applied."
+msgstr "USB 模式已应用。"
+
+msgid "Enable CPE forwarding"
+msgstr "启用 CPE 转发"
+
+msgid "Share through Wi-Fi"
+msgstr "通过 Wi-Fi 共享"
+
+msgid "Share through USB"
+msgstr "通过 USB 共享"
+
+msgid "Block management from cellular"
+msgstr "禁止蜂窝侧访问管理界面"
+
+msgid "Allow cellular-side ping"
+msgstr "允许蜂窝侧 Ping"
+
+msgid "Automatic TCP MSS clamp"
+msgstr "自动修正 TCP MSS"
+
+msgid "CPE policy applied."
+msgstr "CPE 策略已应用。"
+
+msgid "Device and backend"
+msgstr "设备与后端"
+
+msgid "Phone services"
+msgstr "手机服务"
+
+msgid "Signal and serving cell"
+msgstr "信号与服务小区"
+
+msgid "TAC / LAC"
+msgstr "TAC / LAC"
+
+msgid "PCI / ARFCN"
+msgstr "PCI / ARFCN"
+
+msgid "CPU %s"
+msgstr "CPU %s"
+
+msgid "Battery %s"
+msgstr "电池 %s"
+
+msgid "Dialing, radio and dual-SIM settings."
+msgstr "管理拨号、无线电与双卡设置。"
+
+msgid "Automatic carrier APN"
+msgstr "自动使用运营商 APN"
+
+msgid "Slot assignment saved."
+msgstr "卡槽分工已保存。"
+
+msgid "Connection"
+msgstr "连接状态"
+
+msgid "Calls and messages"
+msgstr "通话与短信"
+
+msgid "Voice, IMS and SMS status."
+msgstr "语音、IMS 与短信状态。"
+
+msgid "Service state"
+msgstr "服务状态"
+
+msgid "SMS sending is unavailable"
+msgstr "短信发送当前不可用"
+
+msgid "The current nwrt backend has no active SMS transport."
+msgstr "当前 nwrt 后端尚无可用的短信传输通道。"
+
+msgid "Calling is unavailable"
+msgstr "通话当前不可用"
+
+msgid "The current nwrt backend has no active voice transport."
+msgstr "当前 nwrt 后端尚无可用的语音传输通道。"
+
+msgid "Device and diagnostics"
+msgstr "设备与诊断"
+
+msgid "Live device status and system log."
+msgstr "实时设备状态与系统日志。"
+
+msgid "Neighbour cells"
+msgstr "邻区信息"
+
+msgid "No live neighbour-cell data"
+msgstr "暂无实时邻区数据"
+
+msgid "The modem backend did not return neighbour-cell measurements."
+msgstr "基带后端当前没有返回邻区测量值。"
+
+msgid "Wi-Fi settings"
+msgstr "Wi-Fi 设置"
+
+msgid "USB sharing settings"
+msgstr "USB 共享设置"
+
+msgid "CPE forwarding settings"
+msgstr "CPE 转发设置"
+
+msgid "Data SIM: %s"
+msgstr "上网卡：%s"
+
+msgid "ARFCN"
+msgstr "绝对射频信道号"
+
+msgid "Absent"
+msgstr "未插卡"
+
+msgid "Active"
+msgstr "运行中"
+
+msgid "Active data SIM"
+msgstr "当前上网卡"
+
+msgid "Active: %s"
+msgstr "当前：%s"
+
+msgid "Address"
+msgstr "地址"
+
+msgid "Backend"
+msgstr "后端"
+
+msgid "Backend operation failed"
+msgstr "后端操作失败"
+
+msgid "Backend returned invalid JSON: %s"
+msgstr "后端返回了无效 JSON：%s"
+
+msgid "Band profile"
+msgstr "频段方案"
+
+msgid "CPE forwarding"
+msgstr "CPE 转发"
+
+msgid "Carrier aggregation"
+msgstr "载波聚合"
+
+msgid "Active · %s CC"
+msgstr "已激活 · %sCC"
+
+msgid "Single carrier now"
+msgstr "当前单载波"
+
+msgid "Live allocation unavailable"
+msgstr "暂未获得实时分量"
+
+msgid "Waiting for radio data"
+msgstr "等待无线数据"
+
+msgid "Supported · 5G Sub-6 up to %s CC"
+msgstr "硬件支持 · 5G Sub-6 最多 %sCC"
+
+msgid "Capability unavailable"
+msgstr "硬件能力未知"
+
+msgid "Aggregation capability"
+msgstr "聚合能力"
+
+msgid "Current aggregation"
+msgstr "当前聚合状态"
+
+msgid "Component carriers"
+msgstr "分量载波"
+
+msgid "Channel bandwidth"
+msgstr "信道带宽"
+
+msgid "Active channels"
+msgstr "当前信道"
+
+msgid "Cellular identity and allocation"
+msgstr "蜂窝标识与载波分配"
+
+msgid "Capability and current allocation are shown separately"
+msgstr "硬件能力与运营商当前分配分开显示"
+
+msgid "Physical screen cellular details"
+msgstr "本机屏幕蜂窝详情"
+
+msgid "Choose the data shown on the device cellular page"
+msgstr "选择设备蜂窝详情页显示的数据"
+
+msgid "Show IMEI"
+msgstr "显示 IMEI"
+
+msgid "Complete device identifier"
+msgstr "完整设备标识"
+
+msgid "Show serving cell"
+msgstr "显示服务小区"
+
+msgid "Cell ID / NCI, PCI, TAC and ARFCN"
+msgstr "小区 ID / NCI、PCI、TAC 与 ARFCN"
+
+msgid "Show carrier aggregation"
+msgstr "显示载波聚合"
+
+msgid "Hardware capability and current component carriers"
+msgstr "硬件聚合能力与当前分量载波"
+
+msgid "Show signal details"
+msgstr "显示信号详情"
+
+msgid "Live RSSI, RSRP, RSRQ and SINR"
+msgstr "实时 RSSI、RSRP、RSRQ 与 SINR"
+
+msgid "Screen display setting applied"
+msgstr "屏幕显示设置已应用"
+
+msgid "Screen backend returned invalid data"
+msgstr "屏幕后端返回了无效数据"
+
+msgid "Screen operation failed"
+msgstr "屏幕操作失败"
+
+msgid "Cell ID / NCI"
+msgstr "小区 ID / NCI"
+
+msgid "Cellular link"
+msgstr "蜂窝链路"
+
+msgid "Cellular uplink, Wi-Fi AP, USB network and forwarding status."
+msgstr "蜂窝上行、Wi-Fi 热点、USB 网卡与转发的实时状态。"
+
+msgid "Configured"
+msgstr "配置状态"
+
+msgid "Configured data SIM"
+msgstr "配置的上网卡"
+
+msgid "Connected clients"
+msgstr "已连接客户端"
+
+msgid "Country code"
+msgstr "监管域国家码"
+
+msgid "DNS servers"
+msgstr "DNS 服务器"
+
+msgid "Data SIM"
+msgstr "上网卡"
+
+msgid "Data path"
+msgstr "数据通路"
+
+msgid "Data port mapper"
+msgstr "数据端口映射"
+
+msgid "Data session uptime"
+msgstr "数据会话时长"
+
+msgid "Device management"
+msgstr "设备管理"
+
+msgid "Discovered"
+msgstr "已发现"
+
+msgid "IMS"
+msgstr "IMS"
+
+msgid "IMS service"
+msgstr "IMS 服务"
+
+msgid "IPv4 gateway"
+msgstr "IPv4 网关"
+
+msgid "Inactive"
+msgstr "未运行"
+
+msgid "Interface up"
+msgstr "接口已启动"
+
+msgid "LTE bands"
+msgstr "LTE 频段"
+
+msgid "Last data error"
+msgstr "最近数据错误"
+
+msgid "Live measurements from the selected SIM radio stack."
+msgstr "来自当前上网卡无线协议栈的实时测量。"
+
+msgid "MCC / MNC"
+msgstr "MCC / MNC"
+
+msgid "MTU"
+msgstr "MTU"
+
+msgid "Messages"
+msgstr "短信"
+
+msgid "Mode"
+msgstr "模式"
+
+msgid "Modem detected"
+msgstr "基带已发现"
+
+msgid "Modem remote processor"
+msgstr "基带远程处理器"
+
+msgid "ModemManager object"
+msgstr "ModemManager 对象"
+
+msgid "ModemManager process"
+msgstr "ModemManager 进程"
+
+msgid "NAS control service"
+msgstr "NAS 控制服务"
+
+msgid "NICM data service"
+msgstr "NICM 数据服务"
+
+msgid "NR bands"
+msgstr "NR 频段"
+
+msgid "LTE EARFCN"
+msgstr "LTE EARFCN"
+
+msgid "NR ARFCN"
+msgstr "NR ARFCN"
+
+msgid "NSA / SA"
+msgstr "NSA / SA"
+
+msgid "Network access"
+msgstr "网络接入"
+
+msgid "No"
+msgstr "否"
+
+msgid "No matching log entries."
+msgstr "没有匹配的日志。"
+
+msgid "Not present"
+msgstr "不存在"
+
+msgid "Not ready"
+msgstr "未就绪"
+
+msgid "Open USB sharing"
+msgstr "打开 USB 共享"
+
+msgid "Open Wi-Fi"
+msgstr "打开 Wi-Fi"
+
+msgid "Open forwarding"
+msgstr "打开转发设置"
+
+msgid "PCI"
+msgstr "PCI"
+
+msgid "PLMN"
+msgstr "PLMN"
+
+msgid "Preferred SIM"
+msgstr "首选卡"
+
+msgid "Present"
+msgstr "存在"
+
+msgid "QMI services"
+msgstr "QMI 服务"
+
+msgid "QWES security service"
+msgstr "QWES 安全服务"
+
+msgid "Quality"
+msgstr "质量"
+
+msgid "RSRP"
+msgstr "RSRP"
+
+msgid "RSRQ"
+msgstr "RSRQ"
+
+msgid "RSSI"
+msgstr "RSSI"
+
+msgid "Radio capability"
+msgstr "无线能力"
+
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Registration services"
+msgstr "注册服务"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Runtime state"
+msgstr "运行状态"
+
+msgid "SIM management"
+msgstr "SIM 管理"
+
+msgid "SIM slot %s"
+msgstr "SIM 卡槽 %s"
+
+msgid "SINR"
+msgstr "SINR"
+
+msgid "SMS control channel"
+msgstr "短信控制通道"
+
+msgid "Save"
+msgstr "保存"
+
+msgid "Session uptime"
+msgstr "会话时长"
+
+msgid "State"
+msgstr "状态"
+
+msgid "Status"
+msgstr "状态"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "TAC"
+msgstr "TAC"
+
+msgid "Traffic"
+msgstr "流量"
+
+msgid "Traffic received"
+msgstr "接收流量"
+
+msgid "Traffic sent"
+msgstr "发送流量"
+
+msgid "USB device controller"
+msgstr "USB 设备控制器"
+
+msgid "USB forwarding"
+msgstr "USB 转发"
+
+msgid "VoLTE"
+msgstr "VoLTE"
+
+msgid "VoNR"
+msgstr "VoNR"
+
+msgid "Voice"
+msgstr "语音"
+
+msgid "Voice control channel"
+msgstr "语音控制通道"
+
+msgid "Voice service"
+msgstr "语音服务"
+
+msgid "WMS service"
+msgstr "WMS 短信服务"
+
+msgid "Wi-Fi AP active"
+msgstr "Wi-Fi 热点运行中"
+
+msgid "Wi-Fi AP inactive"
+msgstr "Wi-Fi 热点未运行"
+
+msgid "Wi-Fi calling"
+msgstr "Wi-Fi 通话"
+
+msgid "Wi-Fi forwarding"
+msgstr "Wi-Fi 转发"
+
+msgid "Yes"
+msgstr "是"
+
+msgid "Refresh radio status"
+msgstr "刷新无线状态"
+msgid "Active bands"
+msgstr "当前频段"
+
+msgid "Location area code"
+msgstr "位置区码"
+
+msgid "Live voice, IMS and SMS state from the selected SIM."
+msgstr "当前所选 SIM 的实时语音、IMS 与短信状态。"
+
+msgid "Refresh phone services"
+msgstr "刷新电话服务"
+
+msgid "SMS route query"
+msgstr "短信路由查询"
+
+msgid "SMS routes"
+msgstr "短信路由数量"
+
+msgid "SIM storage route"
+msgstr "SIM 卡存储路由"
+
+msgid "Direct delivery route"
+msgstr "直接投递路由"
+
+msgid "Send and receive channel"
+msgstr "短信收发通道"
+
+msgid "Not connected"
+msgstr "未接通"
+
+msgid "Voice configuration"
+msgstr "语音配置"
+
+msgid "Readable"
+msgstr "可读取"
+
+msgid "Voice domain"
+msgstr "语音域"
+
+msgid "Voice privacy"
+msgstr "语音隐私模式"
+
+msgid "TTY mode"
+msgstr "TTY 模式"
+
+msgid "Automatic answer"
+msgstr "自动接听"
+
+msgid "Call control channel"
+msgstr "通话控制通道"
+
+msgid "IMS services"
+msgstr "IMS 服务"
+
+msgid "IMS query"
+msgstr "IMS 查询"
+
+msgid "IMS access"
+msgstr "IMS 接入网络"
+
+msgid "IMS voice"
+msgstr "IMS 语音"
+
+msgid "IMS messages"
+msgstr "IMS 短信"
+
+msgid "IMS video"
+msgstr "IMS 视频通话"
+
+msgid "IMS supplementary services"
+msgstr "IMS 补充业务"
+
+msgid "SIM capabilities"
+msgstr "SIM 能力"
+
+msgid "Physical SIM slots"
+msgstr "实体 SIM 卡槽"
+
+msgid "eSIM"
+msgstr "eSIM"
+
+msgid "Supported"
+msgstr "支持"
+
+msgid "Not supported"
+msgstr "不支持"
+
+msgid "Current signal"
+msgstr "当前信号"
+
+msgid "Configured allowed modes"
+msgstr "已配置的允许制式"
+
+msgid "Configured preferred mode"
+msgstr "已配置的首选制式"
+
+msgid "Data registration"
+msgstr "数据注册状态"
+
+msgid "NAS report"
+msgstr "NAS 原始状态"
+
+msgid "CPU usage"
+msgstr "CPU 使用率"
+
+msgid "Memory usage"
+msgstr "内存使用率"
+
+msgid "Modem temperature"
+msgstr "基带温度"
+
+msgid "Download speed"
+msgstr "下载速率"
+
+msgid "Upload speed"
+msgstr "上传速率"
+
+msgid "Access network"
+msgstr "接入网络"
+
+msgid "Address and traffic"
+msgstr "地址与流量"
+
+msgid "SIM and sharing"
+msgstr "SIM 与共享"
+
+msgid "Wi-Fi AP"
+msgstr "Wi-Fi 热点"
+
+msgid "USB network"
+msgstr "USB 网络"
+
+msgid "Live · 3 s"
+msgstr "实时 · 3 秒"
+
+msgid "%s cores · load %s"
+msgstr "%s 核 · 负载 %s"
+
+msgid "CPU %s · battery %s"
+msgstr "CPU %s · 电池 %s"
+
+msgid "Total %s"
+msgstr "累计 %s"
+
+msgid "%s Wi-Fi clients"
+msgstr "%s 个 Wi-Fi 客户端"
+
+msgid "Real-time data from nwrt device interfaces"
+msgstr "数据来自 nwrt 设备实时接口"
+
+msgid "Refresh interval: 3 seconds"
+msgstr "刷新间隔：3 秒"
+
+msgid "Stored message query"
+msgstr "本机短信存储查询"
+
+msgid "Rejected by phone firmware"
+msgstr "手机基带固件已拒绝"
+
+msgid "Stored messages"
+msgstr "已存储短信"
+
+msgid "Unread messages"
+msgstr "未读短信"
+
+msgid "Live call query"
+msgstr "实时通话查询"
+
+msgid "Active calls"
+msgstr "当前通话数"
+
+msgid "Call state"
+msgstr "通话状态"
+
+msgid "Direction"
+msgstr "通话方向"
+
+msgid "Phone number"
+msgstr "电话号码"
+
+msgid "Allow mobile-side ping"
+msgstr "允许蜂窝侧 Ping"
+
+msgid "Apply"
+msgstr "应用"
+
+msgid "Automatic APN"
+msgstr "自动 APN"
+
+msgid "Battery temperature"
+msgstr "电池温度"
+
+msgid "Block management from mobile network"
+msgstr "禁止从蜂窝网络访问管理页面"
+
+msgid "CPE active"
+msgstr "CPE 转发正常"
+
+msgid "CPE inactive"
+msgstr "CPE 转发未运行"
+
+msgid "CPE state"
+msgstr "CPE 状态"
+
+msgid "CPU temperature"
+msgstr "CPU 温度"
+
+msgid "Data service"
+msgstr "数据服务"
+
+msgid "Device health"
+msgstr "设备运行状态"
+
+msgid "Device services"
+msgstr "设备服务"
+
+msgid "Download"
+msgstr "下载速率"
+
+msgid "Enable forwarding"
+msgstr "启用 CPE 转发"
+
+msgid "Enter a phone number."
+msgstr "请输入电话号码。"
+
+msgid "Enter a recipient and message."
+msgstr "请输入收件人号码和短信内容。"
+
+msgid "Gateway"
+msgstr "网关"
+
+msgid "IP address"
+msgstr "IP 地址"
+
+msgid "Make a call"
+msgstr "拨打电话"
+
+msgid "Message content unavailable"
+msgstr "短信内容不可读取"
+
+msgid "Message sent."
+msgstr "短信已发送。"
+
+msgid "Messages service"
+msgstr "短信服务"
+
+msgid "Mobile data SIM"
+msgstr "上网卡"
+
+msgid "Mobile data settings saved."
+msgstr "移动数据设置已保存。"
+
+msgid "Mobile network unavailable"
+msgstr "移动网络不可用"
+
+msgid "Mobile uplink"
+msgstr "蜂窝上行"
+
+msgid "Modem processor"
+msgstr "基带处理器"
+
+msgid "Network session"
+msgstr "网络会话"
+
+msgid "New message"
+msgstr "发送短信"
+
+msgid "No active call."
+msgstr "当前没有通话。"
+
+msgid "No messages in the selected SIM storage."
+msgstr "当前 SIM 中没有可读取的短信。"
+
+msgid "No received messages."
+msgstr "暂无收到的短信。"
+
+msgid "Message receiving service is not running."
+msgstr "短信接收服务未运行。"
+
+msgid "Attached"
+msgstr "已附着"
+
+msgid "Not registered"
+msgstr "未注册"
+
+msgid "Searching"
+msgstr "正在搜网"
+
+msgid "Available"
+msgstr "可用"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Online"
+msgstr "在线"
+
+msgid "Private number"
+msgstr "未知号码"
+
+msgid "Radio and serving cell"
+msgstr "无线信号与服务小区"
+
+msgid "Radio control"
+msgstr "无线电控制"
+
+msgid "Radio details"
+msgstr "无线网络详情"
+
+msgid "Radio online"
+msgstr "无线电在线"
+
+msgid "Real-time status"
+msgstr "实时状态"
+
+msgid "Received"
+msgstr "已接收"
+
+msgid "Recipient number"
+msgstr "收件人号码"
+
+msgid "Refreshes every 3 seconds"
+msgstr "每 3 秒刷新"
+
+msgid "SIM and phone services"
+msgstr "SIM 与电话服务"
+
+msgid "SIM preference saved."
+msgstr "SIM 偏好已保存。"
+
+msgid "SIM selection"
+msgstr "SIM 选择"
+
+msgid "Send message"
+msgstr "发送短信"
+
+msgid "System load"
+msgstr "系统负载"
+
+msgid "System log"
+msgstr "系统日志"
+
+msgid "TCP MSS clamp"
+msgstr "TCP MSS 自动调整"
+
+msgid "Traffic counters"
+msgstr "流量统计"
+
+msgid "Turning on airplane mode disconnects mobile data and powers down the radio."
+msgstr "开启飞行模式会断开移动数据并关闭无线电。"
+
+msgid "Unknown sender"
+msgstr "未知发件人"
+
+msgid "Uplink interface"
+msgstr "上行接口"
+
+msgid "Upload"
+msgstr "上传速率"
+
+msgid "%s cores"
+msgstr "%s 核"
+
+msgid "%s routes"
+msgstr "%s 条路由"
+
+msgid "ALSA sound cards"
+msgstr "ALSA 声卡"
+
+msgid "Architecture"
+msgstr "系统架构"
+
+msgid "Available QMI services"
+msgstr "可用 QMI 服务"
+
+msgid "Baseband revision"
+msgstr "基带版本"
+
+msgid "Boot slot"
+msgstr "启动槽位"
+
+msgid "Call-state listener"
+msgstr "来电监听"
+
+msgid "Conversations"
+msgstr "会话"
+
+msgid "DMS maximum RX rate"
+msgstr "DMS 报告最大下行"
+
+msgid "DMS maximum TX rate"
+msgstr "DMS 报告最大上行"
+
+msgid "Data counters"
+msgstr "数据计数"
+
+msgid "Delete"
+msgstr "删除"
+
+msgid "Dialing"
+msgstr "正在拨号"
+
+msgid "Direct delivery"
+msgstr "直接交付"
+
+msgid "Ended"
+msgstr "已结束"
+
+msgid "Enter phone number"
+msgstr "输入电话号码"
+
+msgid "Hardware restricted"
+msgstr "硬件限制"
+
+msgid "Hardware revision"
+msgstr "硬件版本"
+
+msgid "Hostname"
+msgstr "主机名"
+
+msgid "IMEI"
+msgstr "IMEI"
+
+msgid "IMEI SV"
+msgstr "IMEI SV"
+
+msgid "IPv4 prefix"
+msgstr "IPv4 前缀"
+
+msgid "IPv6 gateway"
+msgstr "IPv6 网关"
+
+msgid "IPv6 prefix"
+msgstr "IPv6 前缀"
+
+msgid "In call"
+msgstr "通话中"
+
+msgid "Incoming"
+msgstr "来电"
+
+msgid "Kernel"
+msgstr "内核"
+
+msgid "LTE band capabilities"
+msgstr "LTE 频段能力"
+
+msgid "Link errors and drops"
+msgstr "链路错误与丢包"
+
+msgid "Listening"
+msgstr "正在监听"
+
+msgid "Load %s / %s / %s"
+msgstr "负载 %s / %s / %s"
+
+msgid "MEID"
+msgstr "MEID"
+
+msgid "Manufacturer"
+msgstr "制造商"
+
+msgid "Message route"
+msgstr "短信路由"
+
+msgid "Model"
+msgstr "基带型号"
+
+msgid "Modem identity"
+msgstr "基带身份信息"
+
+msgid "NR band capabilities"
+msgstr "NR 频段能力"
+
+msgid "New conversation"
+msgstr "新建会话"
+
+msgid "No messages yet."
+msgstr "暂无短信。"
+
+msgid "Offline"
+msgstr "离线"
+
+msgid "On hold"
+msgstr "通话保持"
+
+msgid "Operating mode"
+msgstr "运行模式"
+
+msgid "Phone"
+msgstr "电话"
+
+msgid "Power source"
+msgstr "供电状态"
+
+msgid "QMI subscription %s"
+msgstr "QMI 订阅 %s"
+
+msgid "RX drops %s"
+msgstr "接收丢包 %s"
+
+msgid "RX errors %s"
+msgstr "接收错误 %s"
+
+msgid "RX packets"
+msgstr "接收数据包"
+
+msgid "Radio capabilities"
+msgstr "无线电能力"
+
+msgid "Ready to dial"
+msgstr "可拨号"
+
+msgid "Receiving"
+msgstr "短信接收"
+
+msgid "Ringing"
+msgstr "正在响铃"
+
+msgid "Runtime APN"
+msgstr "实际 APN"
+
+msgid "SIM and operator"
+msgstr "SIM 与运营商"
+
+msgid "SMS SIM"
+msgstr "短信卡槽"
+
+msgid "SMSC"
+msgstr "短信中心"
+
+msgid "SMSC address"
+msgstr "短信中心号码"
+
+msgid "Software version"
+msgstr "软件版本"
+
+msgid "Start a new conversation."
+msgstr "新建会话并发送短信。"
+
+msgid "Storage filesystem"
+msgstr "存储文件系统"
+
+msgid "Storage usage"
+msgstr "存储使用率"
+
+msgid "Stored / unread"
+msgstr "已存储 / 未读"
+
+msgid "Supported networks"
+msgstr "支持的网络"
+
+msgid "System and service stack"
+msgstr "系统与服务栈"
+
+msgid "TX drops %s"
+msgstr "发送丢包 %s"
+
+msgid "TX errors %s"
+msgstr "发送错误 %s"
+
+msgid "TX packets"
+msgstr "发送数据包"
+
+msgid "Transmitted"
+msgstr "已发送"
+
+msgid "UIM message storage"
+msgstr "UIM 短信存储"
+
+msgid "Voice audio endpoint"
+msgstr "通话音频端点"
+
+msgid "WMS transfer route"
+msgstr "WMS 直传路由"
+
+msgid "Waiting"
+msgstr "等待接听"
+
+msgid "Write a message"
+msgstr "输入短信"
+
+msgid "Browser notifications require HTTPS on this address."
+msgstr "当前地址必须启用 HTTPS 才能使用浏览器通知。"
+
+msgid "Enable notifications"
+msgstr "开启通知"
+
+msgid "Incoming call"
+msgstr "来电"
+
+msgid "New message"
+msgstr "新短信"
+
+msgid "Notifications are blocked in the browser site settings."
+msgstr "浏览器的网站设置已阻止通知。"
+
+msgid "Notifications blocked"
+msgstr "通知已阻止"
+
+msgid "Notifications need HTTPS"
+msgstr "通知需要 HTTPS"
+
+msgid "Notifications on"
+msgstr "通知已开启"
+
+msgid "Notifications unavailable"
+msgstr "通知不可用"
+
+msgid "NWRT mobile core"
+msgstr "NWRT 移动核心"
+
+msgid "Live device status"
+msgstr "实时设备状态"
+
+msgid "Qualcomm mobile modem"
+msgstr "高通移动基带"
+
+msgid "Cellular and SIM control"
+msgstr "蜂窝网络与 SIM 控制"
+
+msgid "NWRT CPE forwarding"
+msgstr "NWRT CPE 转发"
+
+msgid "Live routing and device services"
+msgstr "实时路由与设备服务"
+
+msgid "Forwarding"
+msgstr "网络转发"
+
+msgid "Browser communication console"
+msgstr "浏览器通信控制台"
+
+msgid "Voice SIM"
+msgstr "通话 SIM"
+
+msgid "Messages SIM"
+msgstr "短信 SIM"
+
+msgid "Device overall status"
+msgstr "设备总状态"
+
+msgid "Mobile link"
+msgstr "移动链路"
+
+msgid "Baseband"
+msgstr "基带"
+
+msgid "Live links"
+msgstr "实时链路"
+
+msgid "Wireless AP"
+msgstr "无线接入点"
+
+msgid "USB sharing"
+msgstr "USB 共享"
+
+msgid "System resources"
+msgstr "系统资源"
+
+msgid "Live telemetry"
+msgstr "实时遥测"
+
+msgid "Real samples from this session"
+msgstr "当前会话的真实采样"
+
+msgid "CPU load"
+msgstr "CPU 负载"
+
+msgid "Memory"
+msgstr "内存"
+
+msgid "Cellular throughput"
+msgstr "蜂窝吞吐"
+
+msgid "Network and device details"
+msgstr "网络与设备详情"
+
+msgid "Live backend data"
+msgstr "后端实时数据"
+
+msgid "Modem status"
+msgstr "基带状态"
+
+msgid "Native phone baseband"
+msgstr "手机原生基带"
+
+msgid "APN and data"
+msgstr "APN 与数据"
+
+msgid "Automatic carrier profile by default"
+msgstr "默认自动使用运营商配置"
+
+msgid "Each SIM uses its own carrier profile by default"
+msgstr "每张 SIM 默认独立使用各自运营商配置"
+
+msgid "Signal and quality"
+msgstr "信号与质量"
+
+msgid "Network mode"
+msgstr "网络模式"
+
+msgid "Connection control"
+msgstr "连接控制"
+
+msgid "Current session %s"
+msgstr "当前会话 %s"
+
+msgid "Dual-SIM selection"
+msgstr "双卡选择"
+
+msgid "Physical card state and data preference"
+msgstr "实体卡状态与上网卡偏好"
+
+msgid "Hardware radio and flight mode"
+msgstr "硬件无线电与飞行模式"
+
+msgid "Service ready"
+msgstr "服务就绪"
+
+msgid "Service unavailable"
+msgstr "服务不可用"
+
+msgid "Forwarding active"
+msgstr "转发运行中"
+
+msgid "Forwarding inactive"
+msgstr "转发未启用"
+
+msgid "Interface overview"
+msgstr "接口总览"
+
+msgid "Real uplink and sharing interfaces"
+msgstr "真实上行与共享接口"
+
+msgid "Cellular uplink"
+msgstr "蜂窝上行"
+
+msgid "USB gadget"
+msgstr "USB 设备网络"
+
+msgid "CPE forwarding policy"
+msgstr "CPE 转发策略"
+
+msgid "Firewall, NAT and path policy"
+msgstr "防火墙、NAT 与链路策略"
+
+msgid "Type-C gadget and charging mode"
+msgstr "Type-C 网络与充电模式"
+
+msgid "Controller"
+msgstr "控制器"
+
+msgid "Device service matrix"
+msgstr "设备服务矩阵"
+
+msgid "%s QRTR services discovered"
+msgstr "已发现 %s 个 QRTR 服务"
+
+msgid "Cellular traffic"
+msgstr "蜂窝流量"
+
+msgid "nwrt runtime"
+msgstr "nwrt 运行时间"
+
+msgid "Recent modem and CPE events"
+msgstr "最近的基带与 CPE 事件"
+
+msgid "Live"
+msgstr "实时"
+
+msgid "Hardware telemetry"
+msgstr "硬件遥测"
+
+msgid "Thermal, storage and voice-audio state"
+msgstr "温度、存储与通话音频状态"
+
+msgid "Storage"
+msgstr "存储"
+
+msgid "Voice audio"
+msgstr "通话音频"
+
+msgid "%s sound cards"
+msgstr "%s 个声卡"
+
+msgid "ALSA endpoint unavailable"
+msgstr "ALSA 端点不可用"
+
+msgid "%s clients"
+msgstr "%s 个客户端"
+
+msgid "%s clients · %s"
+msgstr "%s 个客户端 · %s"
+
+msgid "%s QRTR services"
+msgstr "%s 个 QRTR 服务"
+
+msgid "%d characters · %d SMS"
+msgstr "%d 个字符 · %d 条短信"
+
+msgid "[Missing part %d]"
+msgstr "[缺少第 %d 段]"
+
+msgid "In-page notifications on"
+msgstr "页面通知已开启"
+
+msgid "In-page call and message notifications are enabled. HTTPS is required for system notifications."
+msgstr "页面内的来电和短信通知已开启；系统级通知需要使用 HTTPS。"
+
+msgid "Call history"
+msgstr "通话记录"
+
+msgid "No call records yet."
+msgstr "暂无通话记录。"
+
+msgid "%d records"
+msgstr "%d 条记录"
+
+msgid "Outgoing"
+msgstr "呼出"
+
+msgid "Completed"
+msgstr "已接通"
+
+msgid "Missed"
+msgstr "未接来电"
+
+msgid "Rejected"
+msgstr "已拒接"
+
+msgid "Cancelled"
+msgstr "已取消"
+
+msgid "Failed"
+msgstr "失败"
+
+msgid "Not answered"
+msgstr "未接通"
+
+msgid "Delete this message?"
+msgstr "确定删除这条短信吗？"
+
+msgid "Message deleted."
+msgstr "短信已删除。"
+
+msgid "Delete all messages with %s?"
+msgstr "确定删除与 %s 的全部短信吗？"
+
+msgid "Conversation deleted."
+msgstr "同号码短信已全部删除。"
+
+msgid "Delete all messages? This cannot be undone."
+msgstr "确定删除全部短信吗？此操作无法撤销。"
+
+msgid "All messages deleted."
+msgstr "全部短信已删除。"
+
+msgid "Delete conversation"
+msgstr "删除同号码短信"
+
+msgid "Delete all messages"
+msgstr "删除全部短信"
+
+msgid "Delete message"
+msgstr "删除短信"
+
+msgid "Unread"
+msgstr "未读"
+
+msgid "Read"
+msgstr "已读"
+
+msgid "Mark as unread"
+msgstr "标为未读"
+
+msgid "Mark as read"
+msgstr "标为已读"
+
+msgid "Marked as read."
+msgstr "已标为已读。"
+
+msgid "Marked as unread."
+msgstr "已标为未读。"
+
+msgid "Set independent defaults for mobile data, calls and messages"
+msgstr "分别设置上网、通话和短信默认卡"
+
+msgid "Ready · Calls and messages available"
+msgstr "已就绪 · 可通话和收发短信"
+
+msgid "Automatic uses the active mobile-data SIM first and switches to another ready SIM when necessary."
+msgstr "自动模式优先使用当前上网卡，必要时自动使用另一张已就绪的卡。"
+
+msgid "SIM assignments saved."
+msgstr "SIM 卡分工已保存。"
+
+msgid "Current mobile data"
+msgstr "当前上网卡"
+
+msgid "Current calls"
+msgstr "当前通话卡"
+
+msgid "Current messages"
+msgstr "当前短信卡"
+
+msgid "Applying dual-SIM settings..."
+msgstr "正在应用双卡设置…"

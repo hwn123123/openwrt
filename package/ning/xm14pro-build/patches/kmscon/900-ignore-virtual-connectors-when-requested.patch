@@ -1,0 +1,20 @@
+--- a/src/video/drm_shared.c
++++ b/src/video/drm_shared.c
+@@ -1478,6 +1478,17 @@ int drm_video_hotplug(struct video *video, bool read_dpms, bool modeset)
+ 		conn = drmModeGetConnector(vdrm->fd, res->connectors[i]);
+ 		if (!conn)
+ 			continue;
++
++		/* Qualcomm phone DRM exposes always-connected Virtual/writeback
++		 * connectors beside the physical DSI panel.  They are not scanout
++		 * displays and repeatedly fail atomic modesets.  Keep the default
++		 * behaviour unless the embedding service explicitly requests this
++		 * filter. */
++		if (conn->connector_type == DRM_MODE_CONNECTOR_VIRTUAL &&
++		    getenv("KMSCON_IGNORE_VIRTUAL")) {
++			drmModeFreeConnector(conn);
++			continue;
++		}
+ 		if (conn->connection != DRM_MODE_CONNECTED || conn->count_modes == 0) {
+ 			drmModeFreeConnector(conn);
+ 			continue;

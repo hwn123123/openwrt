@@ -1,0 +1,32 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+# QCRIL/IMS are started by S64.  This process then assumes Android's missing
+# framework-side ownership of all standard Radio response/indication callbacks.
+START=65
+STOP=39
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
+STATE=/mnt/nwrt-data/device-state/telephony/radio/xm14pro-radio-framework.state
+
+start_service() {
+	local enabled
+
+	config_load xm14telephony
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+
+	rm -f "$STATE"
+	procd_open_instance radio-framework
+	procd_set_param command "$LAUNCHER" "$ANDROID_ROOT" radio-framework
+	procd_set_param respawn 3600 5 3
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14telephony
+}

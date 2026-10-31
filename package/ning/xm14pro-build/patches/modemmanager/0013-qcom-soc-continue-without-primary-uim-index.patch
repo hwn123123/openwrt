@@ -1,0 +1,39 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qcom-soc: continue probing without a primary UIM index
+
+Xiaomi's in-SoC modem reports the inserted USIM but leaves all provisioning
+session indexes unset until the Android RIL takes ownership of the card.  The
+generic QMI parser consequently reports SIM_NOT_INSERTED and aborts modem
+initialization before NAS or WDS can be tested.
+
+Do not mutate UIM provisioning from ModemManager: doing so has rebooted this
+downstream vendor kernel on a later card-status request.  Instead, only for
+the qcom-soc plugin and only for the exact missing-primary-index result, treat
+the initial PIN check as unlocked and continue read-only modem probing.  All
+other UIM errors and all other QMI devices keep their upstream behaviour.
+
+--- a/src/mm-broadband-modem-qmi.c
++++ b/src/mm-broadband-modem-qmi.c
+@@ -902,6 +902,23 @@ unlock_required_uim_get_card_status_ready (QmiClientUim *client,
+                                                   NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+                                                   &error)) {
++        /* Xiaomi's phone modem may expose a present USIM while leaving the
++         * provisioning indexes unset.  Never create that session here: the
++         * downstream UIM transport has rebooted after such mutations.  Let
++         * qcom-soc continue far enough to test NAS/WDS instead. */
++        if (g_strcmp0 (mm_base_modem_get_plugin (MM_BASE_MODEM (self)), "qcom-soc") == 0 &&
++            g_error_matches (error,
++                             MM_MOBILE_EQUIPMENT_ERROR,
++                             MM_MOBILE_EQUIPMENT_ERROR_SIM_NOT_INSERTED) &&
++            g_strcmp0 (error->message, "GW primary session index unknown") == 0) {
++            mm_obj_warn (self, "continuing without Xiaomi Primary GW UIM index");
++            g_clear_error (&error);
++            g_task_return_int (task, MM_MODEM_LOCK_NONE);
++            g_object_unref (task);
++            qmi_message_uim_get_card_status_output_unref (output);
++            return;
++        }
++
+         /* The device may report a SIM NOT INSERTED error if we're querying the
+          * card status soon after power on. We'll let the Modem interface generic
+          * logic retry loading the info a bit later if that's the case. This will

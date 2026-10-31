@@ -1,0 +1,32 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+process_running() {
+	local needle="$1"
+
+	ps w | awk -v needle="$needle" '
+		index($0, needle) && $0 !~ /awk -v needle=/ { found = 1 }
+		END { exit found ? 0 : 1 }
+	'
+}
+
+json_bool() {
+	if "$@"; then
+		printf true
+	else
+		printf false
+	fi
+}
+
+card=false
+pcm_links=0
+[ -r /proc/asound/cards ] &&
+	grep -Fq pineapple-mtp-snd-card /proc/asound/cards && card=true
+[ -r /proc/asound/pcm ] && pcm_links="$(wc -l </proc/asound/pcm)"
+
+printf '{"card_ready":%s,"pcm_links":%s,"adsprpc_running":' \
+	"$card" "$pcm_links"
+json_bool process_running '/vendor/bin/audioadsprpcd audiopd'
+printf ',"hal_running":'
+json_bool process_running '/vendor/bin/hw/android.hardware.audio.service_64'
+printf '}\n'

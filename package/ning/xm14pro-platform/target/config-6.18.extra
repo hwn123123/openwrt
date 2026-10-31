@@ -1,0 +1,6 @@
+# Build-time socket diagnostics used by network diagnostics tools.
+CONFIG_INET_DIAG=y
+# CONFIG_INET_DIAG_DESTROY is not set
+# CONFIG_INET_RAW_DIAG is not set
+CONFIG_INET_TCP_DIAG=y
+CONFIG_SOCK_DIAG=y

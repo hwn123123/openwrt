@@ -1,0 +1,6 @@
+#!/bin/sh
+cat <<'EOF'
+HE160/5GHz
+EHT bw=160 MHz
+320MHz in 6GHz Supported
+EOF

@@ -1,0 +1,33 @@
+{
+	"admin/mobile": {
+		"title": "Mobile network",
+		"order": 45,
+		"action": { "type": "firstchild" },
+		"depends": { "acl": [ "xm14pro-cellular-webui" ] }
+	},
+	"admin/mobile/overview": {
+		"title": "Overview",
+		"order": 10,
+		"action": { "type": "view", "path": "mobile/overview" }
+	},
+	"admin/mobile/data": {
+		"title": "Cellular network and SIM",
+		"order": 20,
+		"action": { "type": "view", "path": "mobile/network" }
+	},
+	"admin/mobile/bonding": {
+		"title": "双卡聚合",
+		"order": 25,
+		"action": { "type": "view", "path": "mobile/bonding" }
+	},
+	"admin/mobile/sms": {
+		"title": "Calls and messages",
+		"order": 30,
+		"action": { "type": "view", "path": "mobile/communication" }
+	},
+	"admin/mobile/cpe": {
+		"title": "CPE and device",
+		"order": 40,
+		"action": { "type": "view", "path": "mobile/cpe" }
+	}
+}

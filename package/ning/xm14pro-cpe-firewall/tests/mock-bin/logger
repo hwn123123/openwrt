@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'logger %s\n' "$*" >>"$XM14PRO_TEST_LOG"

@@ -1,0 +1,3 @@
+config dms 'main'
+	option enabled '1'
+	option mac '02:14:14:14:00:01'

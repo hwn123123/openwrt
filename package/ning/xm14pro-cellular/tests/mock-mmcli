@@ -1,0 +1,56 @@
+#!/bin/sh
+
+case "$*" in
+	"-L -K")
+		echo "modem-list.value[1] : /org/freedesktop/ModemManager1/Modem/0"
+		;;
+	"-m 0 -K")
+		cat <<'EOF'
+modem.generic.manufacturer : Qualcomm
+modem.generic.model : Snapdragon X75
+modem.generic.state : connected
+modem.generic.access-technologies : 5gnr, lte
+modem.generic.signal-quality.value : 80
+modem.generic.sim : /org/freedesktop/ModemManager1/SIM/0
+modem.3gpp.registration-state : home
+modem.3gpp.operator-name : China Mobile
+modem.3gpp.operator-code : 46000
+EOF
+		;;
+	"-i /org/freedesktop/ModemManager1/SIM/0 -K")
+		cat <<'EOF'
+sim.properties.imsi : 460001234567890
+sim.properties.iccid : 8986000000000000000
+EOF
+		;;
+	"-m 0 --messaging-list-sms -K")
+		echo "modem.messaging.sms.value[1] : /org/freedesktop/ModemManager1/SMS/7 (received)"
+		;;
+	"-m 0 --signal-get -K")
+		cat <<'EOF'
+modem.signal.nr5g.rsrp : -82.00
+modem.signal.nr5g.rsrq : -10.00
+modem.signal.nr5g.snr : 24.50
+modem.signal.lte.rsrp : -96.00
+modem.signal.lte.rsrq : -13.00
+modem.signal.lte.snr : 12.00
+EOF
+		;;
+	"-s 7 -K")
+		cat <<'EOF'
+sms.content.number : +8613800138000
+sms.content.text : 测试短信
+sms.content.timestamp : 2026-10-10T12:34:56+08
+sms.content.state : received
+EOF
+		;;
+	"-m 0 --messaging-create-sms="*)
+		echo "Successfully created new SMS: /org/freedesktop/ModemManager1/SMS/8"
+		;;
+	"-s 8 --send")
+		echo "successfully sent the SMS"
+		;;
+	*)
+		exit 1
+		;;
+esac

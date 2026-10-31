@@ -1,0 +1,60 @@
+From: nwrt Xiaomi 14 Pro support <ning@localhost>
+Subject: [PATCH] qmicli: bind and query IMSA on one client
+
+The X80 modem keeps IMSA subscription binding on the allocated QMI client.
+Allow --imsa-bind to modify a real IMSA query so status is read from the
+selected phone subscription instead of a new unbound client.
+
+--- a/src/qmicli/qmicli-imsa.c
++++ b/src/qmicli/qmicli-imsa.c
+@@ -100,8 +100,7 @@ qmicli_imsa_options_enabled (void)
+     if (checked)
+         return !!n_actions;
+ 
+-    n_actions = ((bind_flag >= 0) +
+-                 get_ims_registration_status_flag +
++    n_actions = (get_ims_registration_status_flag +
+		 get_ims_services_status_flag +
+                  noop_flag);
+ 
+@@ -139,12 +138,19 @@ operation_shutdown (gboolean operation_status)
+ 
+ #if defined HAVE_QMI_MESSAGE_IMSA_BIND
+ 
++void qmicli_imsa_run (QmiDevice      *device,
++                      QmiClientImsa  *client,
++                      GCancellable   *cancellable);
++
+ static void
+ bind_ready (QmiClientImsa *client,
+             GAsyncResult *res)
+ {
+     QmiMessageImsaBindOutput *output;
+     g_autoptr(GError) error = NULL;
++    QmiDevice       *next_device;
++    QmiClientImsa   *next_client;
++    GCancellable    *next_cancellable;
+ 
+     output = qmi_client_imsa_bind_finish (client, res, &error);
+     if (!output) {
+@@ -162,8 +168,19 @@ bind_ready (QmiClientImsa *client,
+ 
+     g_print ("[%s] IMSA bind successful\n", qmi_device_get_path_display (ctx->device));
+ 
++    next_device = g_object_ref (ctx->device);
++    next_client = g_object_ref (ctx->client);
++    next_cancellable = g_object_ref (ctx->cancellable);
+     qmi_message_imsa_bind_output_unref (output);
+-    operation_shutdown (TRUE);
++    context_free (ctx);
++    ctx = NULL;
++    bind_flag = -1;
++
++    qmicli_imsa_run (next_device, next_client, next_cancellable);
++
++    g_object_unref (next_cancellable);
++    g_object_unref (next_client);
++    g_object_unref (next_device);
+ }
+ 
+ #endif /* HAVE_QMI_MESSAGE_IMSA_BIND */

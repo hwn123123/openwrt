@@ -1,0 +1,1233 @@
+#!/bin/sh
+
+# Single, phone-specific control surface used by the mobile-network WebUI.
+# Normal status reads only cached/system state.  Direct QMI access is reserved
+# for an explicit refresh action so browser polling cannot compete with
+# ModemManager for the Xiaomi modem's QRTR services.
+
+. /usr/share/libubox/jshn.sh
+
+TAG=xm14-mobile-api
+STATE_ROOT=/var/run/xm14pro
+DSI_STATE=$STATE_ROOT/dsi-cellular.state
+DSI_ERROR=$STATE_ROOT/dsi-cellular.error
+UIM_STATE=$STATE_ROOT/uim-state
+RADIO_STATE=$STATE_ROOT/radio-state
+TELECOM_STATE=$STATE_ROOT/telecom-state
+VOICE_STATE=$STATE_ROOT/voice-state
+SMSC_STATE=$STATE_ROOT/smsc-state
+IMS_AIDL_STATE=$STATE_ROOT/ims-aidl-state
+AIRPLANE_STATE=$STATE_ROOT/airplane-mode
+DATA_SWITCH_FILE=$STATE_ROOT/data-slot-switching
+ANDROID_COMPAT_ROOT=/usr/libexec/xm14pro-qwes/android-root
+DELIVERY_ROOT=$ANDROID_COMPAT_ROOT/data/vendor/radio/ims-client
+IMS_CALL_STATE=$DELIVERY_ROOT/call-state
+CALL_HISTORY=/var/lib/xm14pro/calls
+CALL_ACTION=$STATE_ROOT/call-local-action
+MESSAGE_STATE=/var/lib/xm14pro/sms-state
+TELEPHONY_LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
+RADIO_SMS_CLIENT=$ANDROID_COMPAT_ROOT/vendor/bin/xm14pro-radio-sms
+AUDIO_CONTROL=/usr/libexec/xm14pro-audio/control
+DDS_CONTROL=/usr/libexec/xm14pro-nicm/dds-control-launcher
+
+fail() {
+	json_init
+	json_add_boolean ok 0
+	json_add_string error "$*"
+	json_dump
+	exit 1
+}
+
+uci_value() {
+	uci -q get "xm14cellular.main.$1" 2>/dev/null
+}
+
+modem_id() {
+	mmcli -L 2>/dev/null | sed -n 's#.*Modem/\([0-9][0-9]*\).*#\1#p' | head -n 1
+}
+
+mm_value() {
+	local raw="$1" key="$2"
+	printf '%s\n' "$raw" | sed -n "s/^[[:space:]]*$key[[:space:]]*:[[:space:]]*//p" | head -n 1 | sed "s/^'//;s/'$//"
+}
+
+network_status() {
+	ubus call network.interface.cellular status 2>/dev/null || printf '%s\n' '{}'
+}
+
+file_value() {
+	local file="$1" key="$2"
+	[ -r "$file" ] || return 0
+	sed -n "s/^$key=//p" "$file" | tail -n 1
+}
+
+call_value() {
+	local value
+	if [ "$(file_value "$IMS_CALL_STATE" active_call_count)" = 1 ]; then
+		case "$1" in
+			active_call_count|active_call_id|active_call_state|active_call_type|active_call_direction|active_call_mode|active_call_number|active_call_slot)
+				file_value "$IMS_CALL_STATE" "$1"
+				return
+				;;
+		esac
+	fi
+	value="$(file_value "$VOICE_STATE" "$1")"
+	[ -n "$value" ] || value="$(file_value "$TELECOM_STATE" "$1")"
+	printf '%s\n' "$value"
+}
+
+mark_call_action() {
+	local call_id="$1" state action temporary
+	state="$(call_value active_call_state)"
+	case "$state" in
+		incoming|waiting) action=rejected ;;
+		originating|alerting) action=cancelled ;;
+		*) action=ended ;;
+	esac
+	mkdir -p "$STATE_ROOT"
+	temporary="$CALL_ACTION.$$"
+	printf 'call_id=%s\naction=%s\nepoch=%s\n' "$call_id" "$action" "$(date +%s)" > "$temporary" &&
+		mv "$temporary" "$CALL_ACTION"
+}
+
+json_value() {
+	printf '%s\n' "$1" | jsonfilter -e "$2" 2>/dev/null | head -n 1
+}
+
+ims_aidl_value() {
+	local expression="$1"
+	[ -r "$IMS_AIDL_STATE" ] || return 0
+	jsonfilter -i "$IMS_AIDL_STATE" -e "$expression" 2>/dev/null | head -n 1
+}
+
+ims_aidl_slot_value() {
+	local slot="$1" key="$2" value
+	[ -r "$IMS_AIDL_STATE" ] || return 0
+	value="$(jsonfilter -i "$IMS_AIDL_STATE" -e "@.slots.$slot.$key" 2>/dev/null | head -n 1)"
+	if [ -z "$value" ] && [ "$(ims_aidl_value '@.slot')" = "$slot" ]; then
+		value="$(ims_aidl_value "@.$key")"
+	fi
+	printf '%s\n' "$value"
+}
+
+ims_aidl_ready() {
+	local subscription slot="$1" boot_id
+	if [ -z "$slot" ]; then
+		subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+		case "$subscription" in
+			0) slot=slot1 ;;
+			1) slot=slot2 ;;
+			*) return 1 ;;
+		esac
+	fi
+	boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+	[ -n "$boot_id" ] &&
+	[ "$(ims_aidl_value '@.boot_id')" = "$boot_id" ] &&
+	[ "$(ims_aidl_slot_value "$slot" ready)" = true ] &&
+	[ "$(ims_aidl_slot_value "$slot" sms_format)" = 3gpp ] &&
+	[ "$(ims_aidl_slot_value "$slot" registration_error)" = 1 ] &&
+	[ "$(ims_aidl_slot_value "$slot" registration_state)" = 1 ] &&
+	[ "$(ims_aidl_slot_value "$slot" service_error)" = 1 ] &&
+	[ "$(ims_aidl_slot_value "$slot" sms_service_ready)" = true ]
+}
+
+selected_phone_slot() {
+	local kind="$1" configured subscription slot ready_key
+	configured="$(uci_value "${kind}_slot")"
+	case "$configured" in
+		1) slot=slot1; ready_key=slot1_ready ;;
+		2) slot=slot2; ready_key=slot2_ready ;;
+		auto|'')
+			subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+			case "$subscription" in
+				0) slot=slot1; ready_key=slot1_ready ;;
+				1) slot=slot2; ready_key=slot2_ready ;;
+				*) return 1 ;;
+			esac
+			if [ "$(file_value "$UIM_STATE" "$ready_key")" != 1 ] || ! ims_aidl_ready "$slot"; then
+				case "$slot" in
+					slot1) slot=slot2; ready_key=slot2_ready ;;
+					slot2) slot=slot1; ready_key=slot1_ready ;;
+				esac
+			fi
+			;;
+		*) return 1 ;;
+	esac
+	[ "$(file_value "$UIM_STATE" "$ready_key")" = 1 ] || return 1
+	printf '%s\n' "$slot"
+}
+
+join_lines() {
+	awk 'NF { if (out != "") out = out ", "; out = out $0 } END { print out }'
+}
+
+command_running() {
+	ps w 2>/dev/null | awk -v needle="$1" 'index($0, needle) && !index($0, "awk -v needle=") { found = 1 } END { exit !found }'
+}
+
+qrtr_has() {
+	printf '%s\n' "$1" | awk -v service="$2" '$1 == service && $4 == 0 { found = 1 } END { exit !found }'
+}
+
+mss_state() {
+	local path name
+	for path in /sys/class/remoteproc/remoteproc*; do
+		[ -d "$path" ] || continue
+		name="$(cat "$path/name" 2>/dev/null)"
+		case "$name" in *mss*) cat "$path/state" 2>/dev/null; return ;; esac
+	done
+}
+
+link_is_up() {
+	local dev="$1"
+	[ -n "$dev" ] && ip link show dev "$dev" 2>/dev/null | grep -q '<[^>]*UP[^>]*>'
+}
+
+network_address() {
+	local status="$1"
+	json_value "$status" '@["ipv4-address"][0].address'
+}
+
+network_device() {
+	local status="$1" value
+	value="$(json_value "$status" '@.data.device')"
+	[ -n "$value" ] || value="$(json_value "$status" '@.l3_device')"
+	printf '%s\n' "$value"
+}
+
+json_file_boolean() {
+	local name="$1" file="$2" key="$3" value
+	value="$(file_value "$file" "$key")"
+	case "$value" in
+		1) json_add_boolean "$name" 1 ;;
+		0) json_add_boolean "$name" 0 ;;
+		*) json_add_null "$name" ;;
+	esac
+}
+
+json_int_or_null() {
+	local name="$1" value="$2"
+	case "$value" in
+		''|*[!0-9]*) json_add_null "$name" ;;
+		*) json_add_int "$name" "$value" ;;
+	esac
+}
+
+thermal_named_c() {
+	local wanted="$1" path type value
+	for path in /sys/class/thermal/thermal_zone*; do
+		[ -r "$path/type" ] && [ -r "$path/temp" ] || continue
+		IFS= read -r type < "$path/type" || continue
+		[ "$type" = "$wanted" ] || continue
+		IFS= read -r value < "$path/temp" || return 0
+		case "$value" in ''|*[!0-9-]*) return 0 ;; esac
+		[ "$value" -ge 0 ] 2>/dev/null && [ "$value" -le 200000 ] 2>/dev/null &&
+			awk -v value="$value" 'BEGIN { printf "%.1f", value / 1000 }'
+		return 0
+	done
+}
+
+thermal_cached_c() {
+	local key="$1" sensor="$2" cache="/tmp/xm14pro-${1}-temperature" now saved value
+	now="$(date +%s)"
+	if [ -r "$cache" ]; then
+		read -r saved value < "$cache"
+		if [ -n "$saved" ] && [ -n "$value" ] &&
+		   [ $((now - saved)) -lt 10 ] 2>/dev/null; then
+			printf '%s' "$value"
+			return 0
+		fi
+	fi
+	value="$(thermal_named_c "$sensor")"
+	[ -n "$value" ] || return 0
+	printf '%s %s\n' "$now" "$value" > "$cache"
+	printf '%s' "$value"
+}
+
+cpu_usage_percent() {
+	local cache=/tmp/xm14pro-cpu-stat previous current total1 idle1 total2 idle2 delta_total delta_idle
+	current="$(awk '/^cpu / { total = 0; for (i = 2; i <= NF; i++) total += $i; print total, $5 + $6; exit }' /proc/stat 2>/dev/null)"
+	previous="$(cat "$cache" 2>/dev/null)"
+	printf '%s\n' "$current" > "$cache"
+	[ -n "$previous" ] && [ -n "$current" ] || return 0
+	set -- $previous
+	total1="$1"; idle1="$2"
+	set -- $current
+	total2="$1"; idle2="$2"
+	delta_total=$((total2 - total1))
+	delta_idle=$((idle2 - idle1))
+	[ "$delta_total" -gt 0 ] 2>/dev/null || return 0
+	awk -v total="$delta_total" -v idle="$delta_idle" 'BEGIN { value = 100 * (total - idle) / total; if (value < 0) value = 0; if (value > 100) value = 100; printf "%.0f", value }'
+}
+
+status_json() {
+	local id mm net up pending available autostart address address6 gateway gateway6 prefix prefix6 dns
+	local system_uptime session_uptime power interface runtime_apn qrtr qrtr_count remoteproc modem_present modem_state registration
+	local subscription session_subscription active_slot sim_ready airplane dsi_error rx_bytes tx_bytes rx_packets tx_packets rx_errors tx_errors rx_dropped tx_dropped mtu
+	local wifi_net wifi_iface wifi_up wifi_ip wifi_clients wifi_enabled wifi_country wifi_profile
+	local usb_net usb_mode usb_udc usb_udc_path usb_up usb_ip cpe_enabled cpe_active ip_forward
+	local mm_state mm_registration access operator_name operator_code
+	local cpu_usage cpu_cores load1 load5 load15 mem_total mem_available mem_used mem_usage
+	local cpu_temp modem_temp battery_temp imei imei_sv meid own_numbers
+	local storage_total storage_used storage_available storage_usage storage_fs kernel_release architecture hostname slot_suffix audio_cards voice_bridge
+	local audio_state audio_active audio_route audio_muted audio_volume active_count active_state voice_slot sms_receive_slot selected_voice_slot
+	id="$(modem_id)"
+	mm=
+	[ -z "$id" ] || mm="$(mmcli -m "$id" -K 2>/dev/null)"
+	net="$(network_status)"
+	up="$(json_value "$net" '@.up')"
+	pending="$(json_value "$net" '@.pending')"
+	available="$(json_value "$net" '@.available')"
+	autostart="$(json_value "$net" '@.autostart')"
+	interface="$(json_value "$net" '@.data.device')"
+	address="$(json_value "$net" '@.data.ipv4_address')"
+	address6="$(json_value "$net" '@.data.ipv6_address')"
+	gateway="$(json_value "$net" '@.data.ipv4_gateway')"
+	gateway6="$(json_value "$net" '@.data.ipv6_gateway')"
+	prefix="$(json_value "$net" '@.data.ipv4_prefix')"
+	prefix6="$(json_value "$net" '@.data.ipv6_prefix')"
+	[ -n "$interface" ] || interface="$(file_value "$DSI_STATE" device)"
+	[ -n "$address" ] || address="$(file_value "$DSI_STATE" ipv4_address)"
+	[ -n "$address6" ] || address6="$(file_value "$DSI_STATE" ipv6_address)"
+	[ -n "$gateway" ] || gateway="$(file_value "$DSI_STATE" ipv4_gateway)"
+	[ -n "$gateway6" ] || gateway6="$(file_value "$DSI_STATE" ipv6_gateway)"
+	[ -n "$prefix" ] || prefix="$(file_value "$DSI_STATE" ipv4_prefix)"
+	[ -n "$prefix6" ] || prefix6="$(file_value "$DSI_STATE" ipv6_prefix)"
+	dns="$(printf '%s\n' "$net" | jsonfilter -e '@["dns-server"][@]' 2>/dev/null | join_lines)"
+	[ -n "$dns" ] || dns="$(for key in ipv4_dns1 ipv4_dns2 ipv6_dns1 ipv6_dns2; do file_value "$DSI_STATE" "$key"; done | join_lines)"
+	runtime_apn="$(uci -q get network.cellular.apn)"
+	[ -n "$runtime_apn" ] || runtime_apn="$(sed -n 's/^apn=//p' "$STATE_ROOT/dsi-cellular.log" 2>/dev/null | tail -n 1)"
+	system_uptime="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	session_uptime="$(json_value "$net" '@.uptime')"
+	power="$(mm_value "$mm" 'modem.generic.power-state')"
+	mm_state="$(mm_value "$mm" 'modem.generic.state')"
+	mm_registration="$(mm_value "$mm" 'modem.3gpp.registration-state')"
+	access="$(mm_value "$mm" 'modem.generic.access-technologies')"
+	[ -n "$access" ] || access="$(file_value "$RADIO_STATE" access_technologies)"
+	operator_name="$(mm_value "$mm" 'modem.3gpp.operator-name')"
+	[ -n "$operator_name" ] || operator_name="$(file_value "$RADIO_STATE" operator_name)"
+	operator_code="$(mm_value "$mm" 'modem.3gpp.operator-code')"
+	[ -n "$operator_code" ] || operator_code="$(file_value "$RADIO_STATE" operator_code)"
+	qrtr="$(qrtr-lookup 2>/dev/null)"
+	qrtr_count="$(printf '%s\n' "$qrtr" | awk 'NF && $1 ~ /^[0-9]+$/ { n++ } END { print n + 0 }')"
+	remoteproc="$(mss_state)"
+	modem_present=0
+	if [ "$remoteproc" = running ] && qrtr_has "$qrtr" 2; then modem_present=1; fi
+	if [ -n "$mm_state" ]; then modem_state="$mm_state"
+	elif [ "$up" = true ]; then modem_state=connected
+	elif [ "$pending" = true ]; then modem_state=connecting
+	elif [ "$modem_present" = 1 ]; then modem_state=ready
+	else modem_state=unavailable
+	fi
+	if [ -n "$mm_registration" ]; then registration="$mm_registration"
+	elif [ "$up" = true ]; then registration=attached
+	elif [ -n "$(file_value "$RADIO_STATE" nas_registration_state)" ]; then registration="$(file_value "$RADIO_STATE" nas_registration_state)"
+	else registration=
+	fi
+	subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+	session_subscription="$(file_value "$DSI_STATE" qmi_subscription)"
+	# The DSI subscription is the authoritative live data selection. The UIM
+	# monitor follows it, but its cached file can lag a runtime DDS switch.
+	[ "$up" != true ] || [ -z "$session_subscription" ] || subscription="$session_subscription"
+	case "$subscription" in
+		0) active_slot=1 ;;
+		1) active_slot=2 ;;
+		*) active_slot="$(file_value "$UIM_STATE" active_data_slot)" ;;
+	esac
+	sim_ready=0
+	[ "$up" = true ] && [ -n "$active_slot" ] && sim_ready=1
+	airplane="$(cat "$AIRPLANE_STATE" 2>/dev/null)"
+	if [ "$up" = true ]; then airplane=0
+	elif [ -n "$power" ]; then
+		case "$power" in off|low-power) airplane=1 ;; on) airplane=0 ;; esac
+	fi
+	dsi_error="$(cat "$DSI_ERROR" 2>/dev/null)"
+	rx_bytes="$(cat "/sys/class/net/$interface/statistics/rx_bytes" 2>/dev/null)"
+	tx_bytes="$(cat "/sys/class/net/$interface/statistics/tx_bytes" 2>/dev/null)"
+	rx_packets="$(cat "/sys/class/net/$interface/statistics/rx_packets" 2>/dev/null)"
+	tx_packets="$(cat "/sys/class/net/$interface/statistics/tx_packets" 2>/dev/null)"
+	rx_errors="$(cat "/sys/class/net/$interface/statistics/rx_errors" 2>/dev/null)"
+	tx_errors="$(cat "/sys/class/net/$interface/statistics/tx_errors" 2>/dev/null)"
+	rx_dropped="$(cat "/sys/class/net/$interface/statistics/rx_dropped" 2>/dev/null)"
+	tx_dropped="$(cat "/sys/class/net/$interface/statistics/tx_dropped" 2>/dev/null)"
+	mtu="$(cat "/sys/class/net/$interface/mtu" 2>/dev/null)"
+	cpu_usage="$(cpu_usage_percent)"
+	cpu_cores="$(grep -c '^processor' /proc/cpuinfo 2>/dev/null)"
+	set -- $(cat /proc/loadavg 2>/dev/null)
+	load1="$1"; load5="$2"; load15="$3"
+	mem_total="$(awk '/^MemTotal:/ { print $2; exit }' /proc/meminfo 2>/dev/null)"
+	mem_available="$(awk '/^MemAvailable:/ { print $2; exit }' /proc/meminfo 2>/dev/null)"
+	if [ -n "$mem_total" ] && [ -n "$mem_available" ] && [ "$mem_total" -gt 0 ] 2>/dev/null; then
+		mem_used=$((mem_total - mem_available))
+		mem_usage="$(awk -v used="$mem_used" -v total="$mem_total" 'BEGIN { printf "%.0f", 100 * used / total }')"
+	fi
+	# Dedicated board sensors are real hardware readings.  Avoid sweeping every
+	# TSENS zone on every two-second UI refresh: Xiaomi's downstream minidump
+	# hook logs an error on each such read and creates thousands of short-lived
+	# processes per boot.
+	cpu_temp="$(thermal_cached_c cpu cpu_therm)"
+	modem_temp="$(thermal_cached_c modem mdmss-0)"
+	battery_temp="$(cat /sys/class/power_supply/battery/temp 2>/dev/null)"
+	case "$battery_temp" in
+		''|*[!0-9-]*) battery_temp= ;;
+		*) battery_temp="$(awk -v value="$battery_temp" 'BEGIN { printf "%.1f", value / 10 }')" ;;
+	esac
+	set -- $(df -kP /mnt/nwrt-data 2>/dev/null | awk 'NR == 2 { gsub(/%/, "", $5); print $2, $3, $4, $5 }')
+	storage_total="$1"; storage_used="$2"; storage_available="$3"; storage_usage="$4"
+	storage_fs="$(awk '$2 == "/mnt/nwrt-data" { print $3; exit }' /proc/mounts 2>/dev/null)"
+	kernel_release="$(uname -r 2>/dev/null)"
+	architecture="$(uname -m 2>/dev/null)"
+	hostname="$(cat /proc/sys/kernel/hostname 2>/dev/null)"
+	slot_suffix="$(sed -n 's/.*androidboot.slot_suffix=\([^ ]*\).*/\1/p' /proc/cmdline 2>/dev/null)"
+	audio_cards="$(awk '/^[[:space:]]*[0-9]+[[:space:]]+\[/ { count++ } END { print count + 0 }' /proc/asound/cards 2>/dev/null)"
+	voice_bridge=0
+	if [ -x "$AUDIO_CONTROL" ] && [ -S /dev/socket/xm14pro_audio_control ]; then
+		audio_state="$($AUDIO_CONTROL status 2>/dev/null)"
+		[ "$(json_value "$audio_state" '@.voice_capable')" = true ] && voice_bridge=1
+		active_count="$(call_value active_call_count)"
+		active_state="$(call_value active_call_state)"
+		audio_active="$(json_value "$audio_state" '@.voice_active')"
+		# Reconcile PAL after a remote hang-up, and after an incoming call was
+		# answered while no browser action was pending.
+		if [ "${active_count:-0}" = 0 ] && [ "$audio_active" = true ]; then
+			$AUDIO_CONTROL call-stop >/dev/null 2>&1
+			audio_state="$($AUDIO_CONTROL status 2>/dev/null)"
+		elif [ "$active_state" = conversation ] && [ "$audio_active" != true ]; then
+			voice_slot="$(call_value active_call_slot)"
+			case "$voice_slot" in slot1|slot2) ;; *) voice_slot="$(selected_phone_slot voice 2>/dev/null)" ;; esac
+			$AUDIO_CONTROL call-start earpiece "${voice_slot#slot}" >/dev/null 2>&1
+			audio_state="$($AUDIO_CONTROL status 2>/dev/null)"
+		fi
+		audio_active="$(json_value "$audio_state" '@.voice_active')"
+		audio_route="$(json_value "$audio_state" '@.voice_route')"
+		audio_muted="$(json_value "$audio_state" '@.mic_muted')"
+		audio_volume="$(json_value "$audio_state" '@.call_volume')"
+	fi
+	selected_voice_slot="$(selected_phone_slot voice 2>/dev/null)"
+	sms_receive_slot="$(selected_phone_slot sms 2>/dev/null)"
+	imei="$(mm_value "$mm" 'modem.3gpp.imei')"
+	[ -n "$imei" ] || imei="$(file_value "$TELECOM_STATE" imei)"
+	[ -n "$imei" ] || imei="$(file_value "$RADIO_STATE" imei)"
+	imei_sv="$(file_value "$TELECOM_STATE" imei_sv)"
+	[ -n "$imei_sv" ] || imei_sv="$(file_value "$RADIO_STATE" imei_sv)"
+	meid="$(file_value "$TELECOM_STATE" meid)"
+	[ -n "$meid" ] || meid="$(file_value "$RADIO_STATE" meid)"
+	own_numbers="$(mm_value "$mm" 'modem.generic.own-numbers.value[1]')"
+
+	wifi_net="$(ubus call network.interface.wifi_lan status 2>/dev/null || printf '%s\n' '{}')"
+	wifi_iface="$(uci -q get wireless.nwrt_5g.ifname)"
+	[ -n "$wifi_iface" ] || [ ! -e /sys/class/net/nwrt-ap ] || wifi_iface=nwrt-ap
+	wifi_up=0; link_is_up "$wifi_iface" && wifi_up=1
+	wifi_ip="$(network_address "$wifi_net")"
+	# hostapd owns the association table and exposes it without asking the
+	# downstream WLAN driver to dump one non-existent peer past the last entry.
+	wifi_clients="$(ubus call "hostapd.$wifi_iface" get_clients 2>/dev/null |
+		jsonfilter -e '@.clients.*.authorized' 2>/dev/null |
+		awk '$1 == "true" { n++ } END { print n + 0 }')"
+	wifi_enabled="$(uci -q get xm14wifi.main.enabled)"
+	wifi_country="$(uci -q get xm14wifi.main.country)"
+	wifi_profile="$(uci -q get xm14wifi.main.profile)"
+
+	usb_net="$(ubus call network.interface.usb_lan status 2>/dev/null || printf '%s\n' '{}')"
+	usb_mode="$(uci -q get xm14usb.main.mode)"
+	usb_udc="$(cat /sys/kernel/config/usb_gadget/nwrt/UDC 2>/dev/null)"
+	# The stock Xiaomi USB compatibility layer binds the gadget in the kernel
+	# and does not create the former /config/usb_gadget/nwrt tree.  Report the
+	# active UDC from sysfs, but determine a usable USB data connection from
+	# netifd plus the usb0 carrier.  This is status-only and does not alter the
+	# stock gadget or OpenWrt network setup.
+	if [ -z "$usb_udc" ]; then
+		for usb_udc_path in /sys/class/udc/*; do
+			[ -e "$usb_udc_path" ] || continue
+			usb_udc="${usb_udc_path##*/}"
+			break
+		done
+	fi
+	usb_up=0
+	if [ "$usb_mode" != charge_only ] &&
+	   [ "$(json_value "$usb_net" '@.up')" = true ] &&
+	   link_is_up usb0 && [ "$(cat /sys/class/net/usb0/carrier 2>/dev/null)" = 1 ]; then
+		usb_up=1
+	fi
+	usb_ip="$(network_address "$usb_net")"
+
+	cpe_enabled="$(uci -q get xm14cpe.main.enabled)"
+	ip_forward="$(cat /proc/sys/net/ipv4/ip_forward 2>/dev/null)"
+	cpe_active=0
+	if [ "$cpe_enabled" != 0 ] && [ "$ip_forward" = 1 ] && [ -n "$interface" ] &&
+	   iptables -w 1 -t nat -C XMCPE_NAT -o "$interface" -j MASQUERADE >/dev/null 2>&1; then
+		cpe_active=1
+	fi
+
+	json_init
+	json_add_boolean ok 1
+	json_add_string backend "xiaomi-stock-dsi"
+	json_add_string modem_id "${id:-}"
+	json_add_boolean modem_available "$modem_present"
+	json_add_string modem_state "$modem_state"
+	json_add_string remoteproc_state "$remoteproc"
+	json_add_string power_state "$power"
+	json_add_string access_technologies "$access"
+	json_add_string signal_quality "$(mm_value "$mm" 'modem.generic.signal-quality.value')"
+	json_add_string operator_name "$operator_name"
+	json_add_string operator_code "$operator_code"
+	json_add_string registration_state "$registration"
+	json_add_string nas_registration_state "$(file_value "$RADIO_STATE" nas_registration_state)"
+	json_add_string imei "$imei"
+	json_add_string imei_sv "$imei_sv"
+	json_add_string meid "$meid"
+	json_add_string esn "$(file_value "$TELECOM_STATE" esn)"
+	json_add_string own_numbers "$own_numbers"
+	json_add_string modem_manufacturer "$(file_value "$TELECOM_STATE" modem_manufacturer)"
+	json_add_string modem_model "$(file_value "$TELECOM_STATE" modem_model)"
+	json_add_string modem_revision "$(file_value "$TELECOM_STATE" modem_revision)"
+	json_add_string modem_hardware_revision "$(file_value "$TELECOM_STATE" modem_hardware_revision)"
+	json_add_string modem_software_version "$(file_value "$TELECOM_STATE" modem_software_version)"
+	json_add_string modem_operating_mode "$(file_value "$TELECOM_STATE" modem_operating_mode)"
+	json_add_string modem_hardware_restricted "$(file_value "$TELECOM_STATE" modem_hardware_restricted)"
+	json_add_string modem_power_source "$(file_value "$TELECOM_STATE" modem_power_source)"
+	json_add_string max_tx_rate "$(file_value "$TELECOM_STATE" max_tx_rate)"
+	json_add_string max_rx_rate "$(file_value "$TELECOM_STATE" max_rx_rate)"
+	json_add_string data_service_capability "$(file_value "$TELECOM_STATE" data_service_capability)"
+	json_add_string sim_capability "$(file_value "$TELECOM_STATE" sim_capability)"
+	json_add_string network_capabilities "$(file_value "$TELECOM_STATE" network_capabilities)"
+	json_add_string legacy_band_capabilities "$(file_value "$TELECOM_STATE" legacy_band_capabilities)"
+	json_add_string lte_band_capabilities "$(file_value "$TELECOM_STATE" lte_band_capabilities)"
+	json_add_string nr_band_capabilities "$(file_value "$TELECOM_STATE" nr_band_capabilities)"
+	json_add_string sim_path "$(mm_value "$mm" 'modem.generic.sim')"
+	json_add_string data_slot "$(uci_value data_slot)"
+	json_add_string active_data_slot "$active_slot"
+	json_add_string qmi_subscription "$subscription"
+	json_add_boolean sim_ready "$sim_ready"
+	json_file_boolean sim1_present "$UIM_STATE" slot1_present
+	json_file_boolean sim1_ready "$UIM_STATE" slot1_ready
+	json_file_boolean sim2_present "$UIM_STATE" slot2_present
+	json_file_boolean sim2_ready "$UIM_STATE" slot2_ready
+	json_add_string voice_slot "$(uci_value voice_slot)"
+	json_add_string sms_slot "$(uci_value sms_slot)"
+	json_add_string active_voice_slot "${selected_voice_slot#slot}"
+	json_add_string active_sms_slot "${sms_receive_slot#slot}"
+	json_add_boolean sim1_ims_ready "$(ims_aidl_ready slot1 && echo 1 || echo 0)"
+	json_add_boolean sim2_ims_ready "$(ims_aidl_ready slot2 && echo 1 || echo 0)"
+	json_add_string sim1_apn "$(uci_value sim1_apn)"
+	json_add_string sim2_apn "$(uci_value sim2_apn)"
+	case "$active_slot" in
+		1) json_add_string apn "$(uci_value sim1_apn)" ;;
+		2) json_add_string apn "$(uci_value sim2_apn)" ;;
+		*) json_add_string apn "" ;;
+	esac
+	json_add_string runtime_apn "$runtime_apn"
+	json_add_string ip_type "$(uci_value iptype)"
+	json_add_string allowed_mode "$(uci_value allowedmode)"
+	json_add_string preferred_mode "$(uci_value preferredmode)"
+	json_add_boolean roaming "$([ "$(uci_value roaming)" = 1 ] && echo 1 || echo 0)"
+	case "$airplane" in
+		1) json_add_boolean airplane_mode 1 ;;
+		0) json_add_boolean airplane_mode 0 ;;
+		*) json_add_null airplane_mode ;;
+	esac
+	case "$up" in
+		true) json_add_boolean connected 1 ;;
+		false) json_add_boolean connected 0 ;;
+		*) json_add_null connected ;;
+	esac
+	case "$available" in
+		true) json_add_boolean network_available 1 ;;
+		false) json_add_boolean network_available 0 ;;
+		*) json_add_null network_available ;;
+	esac
+	json_add_boolean autoconnect "$([ "$(uci_value autoconnect)" = 1 ] && echo 1 || echo 0)"
+	json_add_boolean data_slot_control 1
+	json_add_boolean voice_slot_control "$([ -x "$TELEPHONY_LAUNCHER" ] && [ -x "$RADIO_SMS_CLIENT" ] && echo 1 || echo 0)"
+	json_add_boolean sms_slot_control "$([ -x "$TELEPHONY_LAUNCHER" ] && [ -x "$RADIO_SMS_CLIENT" ] && echo 1 || echo 0)"
+	json_add_boolean voice_transport "$([ -x "$TELEPHONY_LAUNCHER" ] && [ -x "$RADIO_SMS_CLIENT" ] && [ -n "$selected_voice_slot" ] && ims_aidl_ready "$selected_voice_slot" && echo 1 || echo 0)"
+	json_add_boolean sms_transport "$([ -x /usr/sbin/xm14pro-telephony ] && [ "$(file_value "$TELECOM_STATE" sms_route_query)" = 1 ] && qrtr_has "$qrtr" 5 && echo 1 || echo 0)"
+	json_add_boolean voice_call_control "$([ -x "$TELEPHONY_LAUNCHER" ] && [ -x "$RADIO_SMS_CLIENT" ] && [ -n "$selected_voice_slot" ] && ims_aidl_ready "$selected_voice_slot" && echo 1 || echo 0)"
+	json_add_boolean sms_send_control "$([ -x "$TELEPHONY_LAUNCHER" ] && [ -x "$RADIO_SMS_CLIENT" ] && [ -n "$sms_receive_slot" ] && ims_aidl_ready "$sms_receive_slot" && echo 1 || echo 0)"
+	json_add_boolean ims_aidl_ready "$([ -n "$selected_voice_slot" ] && ims_aidl_ready "$selected_voice_slot" && echo 1 || echo 0)"
+	json_add_string ims_aidl_slot "$(ims_aidl_value '@.slot')"
+	json_add_string ims_aidl_format "$(ims_aidl_value '@.sms_format')"
+	json_add_string ims_aidl_registration_state "$(ims_aidl_value '@.registration_state')"
+	json_add_string ims_aidl_service_error "$(ims_aidl_value '@.service_error')"
+	json_add_boolean sms_receive_control "$([ -n "$sms_receive_slot" ] && [ -x "$RADIO_SMS_CLIENT" ] && command_running 'xm14pro-radio-sms ims-daemon' && ims_aidl_ready "$sms_receive_slot" && echo 1 || echo 0)"
+	json_file_boolean sms_route_query "$TELECOM_STATE" sms_route_query
+	json_add_string sms_route_count "$(file_value "$TELECOM_STATE" sms_route_count)"
+	json_add_string smsc_address "$(file_value "$SMSC_STATE" smsc_address)"
+	json_add_string smsc_type "$(file_value "$SMSC_STATE" smsc_type)"
+	json_file_boolean sms_uim_storage "$TELECOM_STATE" sms_uim_storage
+	json_file_boolean sms_transfer_route "$TELECOM_STATE" sms_transfer_route
+	json_file_boolean sms_storage_query "$TELECOM_STATE" sms_storage_query
+	json_add_string sms_stored_total "$(file_value "$TELECOM_STATE" sms_stored_total)"
+	json_add_string sms_unread_total "$(file_value "$TELECOM_STATE" sms_unread_total)"
+	json_file_boolean voice_config_query "$TELECOM_STATE" voice_config_query
+	if [ -r "$VOICE_STATE" ]; then json_add_boolean voice_call_query 1; else json_file_boolean voice_call_query "$TELECOM_STATE" voice_call_query; fi
+	json_add_string active_call_count "$(call_value active_call_count)"
+	json_add_string active_call_id "$(call_value active_call_id)"
+	json_add_string active_call_state "$(call_value active_call_state)"
+	json_add_string active_call_type "$(call_value active_call_type)"
+	json_add_string active_call_direction "$(call_value active_call_direction)"
+	json_add_string active_call_mode "$(call_value active_call_mode)"
+	json_add_string active_call_number "$(call_value active_call_number)"
+	json_add_string voice_domain "$(file_value "$TELECOM_STATE" voice_domain)"
+	json_add_string voice_privacy "$(file_value "$TELECOM_STATE" voice_privacy)"
+	json_add_string tty_mode "$(file_value "$TELECOM_STATE" tty_mode)"
+	json_add_string auto_answer "$(file_value "$TELECOM_STATE" auto_answer)"
+	json_file_boolean ims_registration_query "$TELECOM_STATE" ims_registration_query
+	json_add_string ims_registration "$(file_value "$TELECOM_STATE" ims_registration)"
+	json_add_string ims_technology "$(file_value "$TELECOM_STATE" ims_technology)"
+	json_add_string ims_sms_status "$(file_value "$TELECOM_STATE" ims_sms_status)"
+	json_add_string ims_sms_technology "$(file_value "$TELECOM_STATE" ims_sms_technology)"
+	json_add_string ims_voice_status "$(file_value "$TELECOM_STATE" ims_voice_status)"
+	json_add_string ims_voice_technology "$(file_value "$TELECOM_STATE" ims_voice_technology)"
+	json_add_string ims_video_status "$(file_value "$TELECOM_STATE" ims_video_status)"
+	json_add_string ims_video_technology "$(file_value "$TELECOM_STATE" ims_video_technology)"
+	json_add_string ims_ut_status "$(file_value "$TELECOM_STATE" ims_ut_status)"
+	json_add_string ims_ut_technology "$(file_value "$TELECOM_STATE" ims_ut_technology)"
+	json_add_string physical_sim_slots "$(file_value "$TELECOM_STATE" physical_sim_slots)"
+	json_file_boolean esim_supported "$TELECOM_STATE" esim_supported
+	case "$autostart" in
+		true) json_add_boolean interface_autostart 1 ;;
+		false) json_add_boolean interface_autostart 0 ;;
+		*) json_add_null interface_autostart ;;
+	esac
+	json_add_string interface "$interface"
+	json_add_string ipv4 "$address"
+	json_add_string ipv6 "$address6"
+	json_add_string ipv4_gateway "$gateway"
+	json_add_string ipv6_gateway "$gateway6"
+	json_add_string ipv4_prefix "$prefix"
+	json_add_string ipv6_prefix "$prefix6"
+	json_add_string dns_servers "$dns"
+	json_add_string mtu "$mtu"
+	json_add_string rx_bytes "$rx_bytes"
+	json_add_string tx_bytes "$tx_bytes"
+	json_add_string rx_packets "$rx_packets"
+	json_add_string tx_packets "$tx_packets"
+	json_add_string rx_errors "$rx_errors"
+	json_add_string tx_errors "$tx_errors"
+	json_add_string rx_dropped "$rx_dropped"
+	json_add_string tx_dropped "$tx_dropped"
+	json_int_or_null cpu_usage_percent "$cpu_usage"
+	json_int_or_null cpu_cores "$cpu_cores"
+	json_add_string load_1m "$load1"
+	json_add_string load_5m "$load5"
+	json_add_string load_15m "$load15"
+	json_int_or_null memory_total_kb "$mem_total"
+	json_int_or_null memory_available_kb "$mem_available"
+	json_int_or_null memory_used_kb "$mem_used"
+	json_int_or_null memory_usage_percent "$mem_usage"
+	json_add_string cpu_temperature_c "$cpu_temp"
+	json_add_string modem_temperature_c "$modem_temp"
+	json_add_string battery_temperature_c "$battery_temp"
+	json_int_or_null storage_total_kb "$storage_total"
+	json_int_or_null storage_used_kb "$storage_used"
+	json_int_or_null storage_available_kb "$storage_available"
+	json_int_or_null storage_usage_percent "$storage_usage"
+	json_add_string storage_filesystem "$storage_fs"
+	json_add_string kernel_release "$kernel_release"
+	json_add_string architecture "$architecture"
+	json_add_string hostname "$hostname"
+	json_add_string boot_slot "$slot_suffix"
+	json_add_int audio_card_count "${audio_cards:-0}"
+	json_add_boolean voice_listener_running "$(command_running 'xm14pro-telephony voice-listen' && echo 1 || echo 0)"
+	json_add_boolean voice_audio_bridge "$voice_bridge"
+	json_add_boolean voice_audio_active "$([ "$audio_active" = true ] && echo 1 || echo 0)"
+	json_add_string voice_audio_route "$audio_route"
+	json_add_boolean voice_mic_muted "$([ "$audio_muted" = true ] && echo 1 || echo 0)"
+	json_int_or_null voice_call_volume "$audio_volume"
+	json_add_boolean screen_telephony_pages "$([ "$(uci -q get xm14display.main.telephony_pages)" = 1 ] && echo 1 || echo 0)"
+	json_add_string last_error "$dsi_error"
+	json_add_int uptime "${system_uptime:-0}"
+	json_add_int session_uptime "${session_uptime:-0}"
+	json_add_int qrtr_services "$qrtr_count"
+	json_add_boolean dms_service "$(qrtr_has "$qrtr" 2 && echo 1 || echo 0)"
+	json_add_boolean nas_service "$(qrtr_has "$qrtr" 3 && echo 1 || echo 0)"
+	json_add_boolean wms_service "$(qrtr_has "$qrtr" 5 && echo 1 || echo 0)"
+	json_add_boolean voice_service "$(qrtr_has "$qrtr" 9 && echo 1 || echo 0)"
+	json_add_boolean uim_service "$(qrtr_has "$qrtr" 11 && echo 1 || echo 0)"
+	json_add_boolean dpm_service "$(qrtr_has "$qrtr" 47 && echo 1 || echo 0)"
+	json_add_boolean ims_service "$(qrtr_has "$qrtr" 33 && echo 1 || echo 0)"
+	json_add_boolean qwes_running "$(command_running /vendor/bin/qwesd && echo 1 || echo 0)"
+	json_add_boolean nicm_running "$(command_running /vendor/bin/nicmd && echo 1 || echo 0)"
+	json_add_boolean modemmanager_running "$(command_running /usr/sbin/ModemManager && echo 1 || echo 0)"
+	json_add_boolean modemmanager_object "$([ -n "$id" ] && echo 1 || echo 0)"
+	json_add_boolean wifi_enabled "$([ "$wifi_enabled" != 0 ] && echo 1 || echo 0)"
+	json_add_boolean wifi_up "$wifi_up"
+	json_add_string wifi_interface "$wifi_iface"
+	json_add_string wifi_ipv4 "$wifi_ip"
+	json_add_string wifi_country "$wifi_country"
+	json_add_string wifi_profile "$wifi_profile"
+	json_add_string wifi_ssid_24g "$(uci -q get xm14wifi.main.ssid_24g)"
+	json_add_string wifi_ssid_5g "$(uci -q get xm14wifi.main.ssid_5g)"
+	json_add_string wifi_ssid_6g "$(uci -q get xm14wifi.main.ssid_6g)"
+	json_add_int wifi_clients "${wifi_clients:-0}"
+	json_add_string usb_mode "$usb_mode"
+	json_add_boolean usb_up "$usb_up"
+	json_add_string usb_interface "$([ -e /sys/class/net/usb0 ] && echo usb0)"
+	json_add_string usb_udc "$usb_udc"
+	json_add_string usb_ipv4 "$usb_ip"
+	json_add_boolean cpe_enabled "$([ "$cpe_enabled" != 0 ] && echo 1 || echo 0)"
+	json_add_boolean cpe_active "$cpe_active"
+	json_add_boolean cpe_wifi_forward "$([ "$(uci -q get xm14cpe.main.wifi_forward)" != 0 ] && echo 1 || echo 0)"
+	json_add_boolean cpe_usb_forward "$([ "$(uci -q get xm14cpe.main.usb_forward)" != 0 ] && echo 1 || echo 0)"
+	json_add_string rsrp "$(file_value "$RADIO_STATE" rsrp)"
+	json_add_string rsrq "$(file_value "$RADIO_STATE" rsrq)"
+	json_add_string sinr "$(file_value "$RADIO_STATE" sinr)"
+	json_add_string rssi "$(file_value "$RADIO_STATE" rssi)"
+	json_add_string nr_rsrp "$(file_value "$RADIO_STATE" nr_rsrp)"
+	json_add_string nr_rsrq "$(file_value "$RADIO_STATE" nr_rsrq)"
+	json_add_string nr_sinr "$(file_value "$RADIO_STATE" nr_sinr)"
+	json_add_string cell_id "$(file_value "$RADIO_STATE" cell_id)"
+	json_add_string tac "$(file_value "$RADIO_STATE" tac)"
+	json_add_string location_area_code "$(file_value "$RADIO_STATE" location_area_code)"
+	json_add_string pci "$(file_value "$RADIO_STATE" pci)"
+	json_add_string arfcn "$(file_value "$RADIO_STATE" arfcn)"
+	json_add_string lte_arfcn "$(file_value "$RADIO_STATE" lte_arfcn)"
+	json_add_string nr_arfcn "$(file_value "$RADIO_STATE" nr_arfcn)"
+	json_add_string active_bands "$(file_value "$RADIO_STATE" active_bands)"
+	json_add_string lte_bands "$(file_value "$RADIO_STATE" lte_bands)"
+	json_add_string nr_bands "$(file_value "$RADIO_STATE" nr_bands)"
+	json_add_string carrier_aggregation "$(file_value "$RADIO_STATE" carrier_aggregation)"
+	json_add_string carrier_aggregation_state "$(file_value "$RADIO_STATE" carrier_aggregation_state)"
+	json_add_string carrier_aggregation_capability "$(file_value "$RADIO_STATE" carrier_aggregation_capability)"
+	json_add_string carrier_aggregation_max_sub6_cc "$(file_value "$RADIO_STATE" carrier_aggregation_max_sub6_cc)"
+	json_add_string carrier_count "$(file_value "$RADIO_STATE" carrier_count)"
+	json_add_string carrier_components "$(file_value "$RADIO_STATE" carrier_components)"
+	json_add_string active_channels "$(file_value "$RADIO_STATE" active_channels)"
+	json_add_string channel_bandwidths "$(file_value "$RADIO_STATE" channel_bandwidths)"
+	json_add_string nr_mode "$(file_value "$RADIO_STATE" nr_mode)"
+	json_add_string radio_updated_uptime "$(file_value "$RADIO_STATE" updated_uptime)"
+	json_add_boolean radio_refresh_available "$(qmicli --help-nas 2>/dev/null | grep -q -- --nas-bind-subscription && echo 1 || echo 0)"
+	json_dump
+}
+
+set_data() {
+	local sim1_apn="$1" sim2_apn="$2" iptype="$3" roaming="$4" autoconnect="$5"
+	case "$sim1_apn" in
+		*[!A-Za-z0-9._-]*) fail "卡槽 1 APN 包含不支持的字符" ;;
+	esac
+	case "$sim2_apn" in
+		*[!A-Za-z0-9._-]*) fail "卡槽 2 APN 包含不支持的字符" ;;
+	esac
+	case "$iptype" in ipv4|ipv6|ipv4v6) ;; *) fail "PDP 类型无效" ;; esac
+	case "$roaming" in 0|1) ;; *) fail "漫游参数无效" ;; esac
+	case "$autoconnect" in 0|1) ;; *) fail "自动连接参数无效" ;; esac
+
+	uci set "xm14cellular.main.sim1_apn=$sim1_apn" || fail "保存卡槽 1 APN 失败"
+	uci set "xm14cellular.main.sim2_apn=$sim2_apn" || fail "保存卡槽 2 APN 失败"
+	uci -q delete xm14cellular.main.apn
+	uci set "xm14cellular.main.iptype=$iptype" || fail "保存 PDP 类型失败"
+	uci set "xm14cellular.main.roaming=$roaming" || fail "保存漫游设置失败"
+	uci set "xm14cellular.main.autoconnect=$autoconnect" || fail "保存自动连接失败"
+	uci commit xm14cellular || fail "提交拨号设置失败"
+
+	# Keep netifd's real interface parameters in sync without restarting the
+	# modem stack. resolve-apn selects the active SIM's APN before dialing.
+	uci set "network.cellular.iptype=$iptype" || fail "更新网络 PDP 类型失败"
+	uci set "network.cellular.allow_roaming=$roaming" || fail "更新网络漫游设置失败"
+	# Automatic ifup belongs exclusively to xm14pro-modem/autoconnect, after
+	# the embedded modem and selected UIM subscription are ready.
+	uci set "network.cellular.auto=0" || fail "更新网络自动连接策略失败"
+	uci commit network || fail "提交网络设置失败"
+	logger -t "$TAG" "updated per-SIM cellular dial settings; empty APN uses that SIM's home carrier profile"
+	status_json
+}
+
+set_slot() {
+	local kind="$1" slot="$2" option target subscription dds_command expected_dds switched=0
+	local current_subscription current_session_subscription current_dds output net tmp count up pending error
+	case "$kind" in
+		data) option=data_slot ;;
+		voice) option=voice_slot ;;
+		sms) option=sms_slot ;;
+		*) fail "未知的卡槽用途：$kind" ;;
+	esac
+	case "$slot" in
+		auto|1|2) ;;
+		*) fail "卡槽只能是 auto、1 或 2" ;;
+	esac
+
+	if [ "$kind" = data ]; then
+		[ -x "$DDS_CONTROL" ] || fail "数据卡切换程序未安装"
+		case "$slot" in
+			1|2)
+				target="$slot"
+				[ "$(file_value "$UIM_STATE" "slot${target}_ready")" = 1 ] ||
+					fail "卡槽 ${target} 未就绪"
+				;;
+			auto)
+				current_subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+				case "$current_subscription" in
+					0) [ "$(file_value "$UIM_STATE" slot1_ready)" = 1 ] && target=1 ;;
+					1) [ "$(file_value "$UIM_STATE" slot2_ready)" = 1 ] && target=2 ;;
+				esac
+				if [ -z "$target" ]; then
+					if [ "$(file_value "$UIM_STATE" slot1_ready)" = 1 ]; then target=1
+					elif [ "$(file_value "$UIM_STATE" slot2_ready)" = 1 ]; then target=2
+					else fail "没有已就绪的 SIM 卡"
+					fi
+				fi
+				;;
+		esac
+
+		case "$target" in
+			1) subscription=0; dds_command=primary; expected_dds=1 ;;
+			2) subscription=1; dds_command=secondary; expected_dds=2 ;;
+		esac
+		# Persist the user's selection before touching the live session.  This is
+		# also the cold-boot source of truth.  Keeping the old value until after a
+		# long DDS transition allowed the startup worker to redial the old card.
+		uci set "xm14cellular.main.$option=$slot" || fail "保存卡槽设置失败"
+		uci commit xm14cellular || fail "提交卡槽设置失败"
+		logger -t "$TAG" "configured $kind default slot: $slot"
+		current_subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+		current_session_subscription="$(file_value "$DSI_STATE" qmi_subscription)"
+		net="$(network_status)"
+		up="$(json_value "$net" '@.up')"
+		pending="$(json_value "$net" '@.pending')"
+		output="$(timeout -k 2 25 "$DDS_CONTROL" "$ANDROID_COMPAT_ROOT" get 2>&1)" ||
+			fail "读取当前上网卡失败：$output"
+		current_dds="$(printf '%s\n' "$output" | sed -n 's/^dds=//p' | tail -n 1)"
+
+		if [ "$current_subscription" != "$subscription" ] ||
+		   [ "$current_dds" != "$expected_dds" ] ||
+		   { { [ "$up" = true ] || [ "$pending" = true ]; } &&
+		     [ "$current_session_subscription" != "$subscription" ]; }; then
+			switched=1
+			mkdir -p "$STATE_ROOT" || fail "创建运行状态目录失败"
+			: > "$DATA_SWITCH_FILE" || fail "创建数据卡切换状态失败"
+			trap 'rm -f "$DATA_SWITCH_FILE"' EXIT INT TERM
+			/sbin/ifdown cellular >/dev/null 2>&1 || fail "停止当前数据连接失败"
+			count=0
+			while [ -d "$STATE_ROOT/dsi-cellular.lock" ] && [ "$count" -lt 15 ]; do
+				count=$((count + 1))
+				sleep 1
+			done
+			[ ! -d "$STATE_ROOT/dsi-cellular.lock" ] || fail "当前数据连接未能及时停止"
+
+			output="$(timeout -k 2 30 "$DDS_CONTROL" "$ANDROID_COMPAT_ROOT" "$dds_command" 2>&1)" ||
+				fail "切换到卡槽 ${target} 失败：$output"
+			[ "$(printf '%s\n' "$output" | sed -n 's/^after=//p' | tail -n 1)" = "$expected_dds" ] ||
+				fail "基带未确认切换到卡槽 ${target}"
+
+			tmp="$STATE_ROOT/qmi-subscription.$$"
+			printf '%s\n' "$subscription" > "$tmp" && mv -f "$tmp" "$STATE_ROOT/qmi-subscription" || {
+				rm -f "$tmp"
+				fail "更新数据卡订阅失败"
+			}
+		fi
+	else
+		uci set "xm14cellular.main.$option=$slot" || fail "保存卡槽设置失败"
+		uci commit xm14cellular || fail "提交卡槽设置失败"
+		logger -t "$TAG" "configured $kind default slot: $slot"
+	fi
+
+	if [ "$kind" = data ] && [ "$switched" = 1 ] &&
+	   [ "$(uci_value enabled)" != 0 ] && [ "$(uci_value autoconnect)" != 0 ]; then
+		/usr/libexec/xm14pro-modem/resolve-apn >/dev/null 2>&1 ||
+			fail "已切换到卡槽 ${target}，但未获取到可用 APN"
+		rm -f "$DSI_ERROR"
+		/sbin/ifup cellular >/dev/null 2>&1 ||
+			fail "已切换到卡槽 ${target}，但启动数据连接失败"
+		count=0
+		while [ "$count" -lt 60 ]; do
+			output="$(network_status)"
+			up="$(json_value "$output" '@.up')"
+			[ "$up" = true ] && break
+			error="$(cat "$DSI_ERROR" 2>/dev/null)"
+			[ -z "$error" ] || fail "已切换到卡槽 ${target}，但数据拨号失败：$error"
+			count=$((count + 1))
+			sleep 1
+		done
+		[ "$up" = true ] || fail "已切换到卡槽 ${target}，但数据连接超时"
+		/usr/libexec/xm14pro-modem/radio-status >/dev/null 2>&1 &
+		/usr/libexec/xm14pro-modem/telecom-status >/dev/null 2>&1 &
+	fi
+	status_json
+}
+
+set_airplane() {
+	local enabled="$1" state
+	case "$enabled" in
+		1|true|on) state=low-power ;;
+		0|false|off) state=on ;;
+		*) fail "飞行模式参数无效" ;;
+	esac
+	if [ "$state" = low-power ]; then
+		/sbin/ifdown cellular >/dev/null 2>&1 || true
+		timeout -k 2 15 qmicli -d qrtr://0 --dms-set-operating-mode=low-power >/dev/null 2>&1 || {
+			/sbin/ifup cellular >/dev/null 2>&1 || true
+			fail "切换基带到低功耗模式失败"
+		}
+		printf '1\n' > "$AIRPLANE_STATE"
+	else
+		timeout -k 2 15 qmicli -d qrtr://0 --dms-set-operating-mode=online >/dev/null 2>&1 ||
+			fail "恢复基带在线模式失败"
+		printf '0\n' > "$AIRPLANE_STATE"
+		/sbin/ifup cellular >/dev/null 2>&1 || fail "恢复蜂窝数据连接失败"
+	fi
+	logger -t "$TAG" "airplane mode request: $enabled"
+	status_json
+}
+
+connection() {
+	case "$1" in
+		connect)
+			/usr/libexec/xm14pro-modem/resolve-apn >/dev/null 2>&1 || fail "当前 SIM 没有可用的真实 APN/运营商配置"
+			/sbin/ifup cellular >/dev/null 2>&1 || fail "启动蜂窝接口失败"
+			;;
+		disconnect) /sbin/ifdown cellular >/dev/null 2>&1 || fail "停止蜂窝接口失败" ;;
+	esac
+	status_json
+}
+
+logs_json() {
+	local lines
+	lines="$(logread 2>/dev/null | grep -E 'xm14|ModemManager|modemmanager|qmi|qrtr|rmnet|rmtfs|mpss' | tail -n 250)"
+	json_init
+	json_add_boolean ok 1
+	json_add_string logs "$lines"
+	json_dump
+}
+
+refresh_radio() {
+	[ -x /usr/libexec/xm14pro-modem/radio-status ] || fail "实时无线状态工具未安装"
+	/usr/libexec/xm14pro-modem/radio-status >/dev/null 2>&1 || fail "读取当前 SIM 的无线状态失败"
+	status_json
+}
+
+refresh_telecom() {
+	[ -x /usr/libexec/xm14pro-modem/telecom-status ] || fail "电话与短信状态工具未安装"
+	/usr/libexec/xm14pro-modem/telecom-status >/dev/null 2>&1 || fail "读取当前 SIM 的电话与短信状态失败"
+	status_json
+}
+
+phone_number_valid() {
+	printf '%s\n' "$1" | grep -Eq '^\+?[0-9*#]{2,32}$'
+}
+
+telephony_action() {
+	local action="$1" value="$2" tone="$3" output slot call_id
+	[ -x "$TELEPHONY_LAUNCHER" ] || fail "Android 无线电启动器未安装"
+	[ -x "$RADIO_SMS_CLIENT" ] || fail "Qualcomm IMS 控制程序未安装"
+	case "$action" in
+		call-dial) slot="$(selected_phone_slot voice)" ;;
+		call-answer|call-end|call-dtmf)
+			slot="$(call_value active_call_slot)"
+			case "$slot" in slot1|slot2) ;; *) slot="$(selected_phone_slot voice)" ;; esac
+			;;
+	esac
+	[ -n "$slot" ] || fail "语音默认卡未插卡或未就绪"
+	ims_aidl_ready "$slot" || fail "语音 IMS 尚未在选定卡上注册完成"
+	case "$action" in
+		call-dial)
+			phone_number_valid "$value" || fail "电话号码格式无效"
+			output="$(timeout -k 2 45 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms call-dial "$slot" "$value" 2>&1)" || fail "$output"
+			call_id="$(printf '%s\n' "$output" | jsonfilter -e '@.call_id' 2>/dev/null)"
+			if ! [ -x "$AUDIO_CONTROL" ] ||
+			   ! $AUDIO_CONTROL call-start earpiece "${slot#slot}" >/dev/null 2>&1; then
+				case "$call_id" in ''|*[!0-9]*) ;; *)
+					timeout -k 2 15 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms call-end "$slot" "$call_id" >/dev/null 2>&1
+				;; esac
+				fail "通话声路启动失败，已安全取消拨号"
+			fi
+			;;
+		call-answer|call-end)
+			case "$value" in ''|*[!0-9]*) fail "通话 ID 无效" ;; esac
+			if [ "$action" = call-answer ]; then
+				output="$(timeout -k 2 45 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms call-answer "$slot" 2>&1)" || fail "$output"
+				if ! [ -x "$AUDIO_CONTROL" ] ||
+				   ! $AUDIO_CONTROL call-start earpiece "${slot#slot}" >/dev/null 2>&1; then
+					timeout -k 2 15 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms call-end "$slot" "$value" >/dev/null 2>&1
+					fail "通话声路启动失败，已挂断本次通话"
+				fi
+			else
+				mark_call_action "$value"
+				if ! output="$(timeout -k 2 45 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms call-end "$slot" "$value" 2>&1)"; then
+					rm -f "$CALL_ACTION"
+					fail "$output"
+				fi
+				[ ! -x "$AUDIO_CONTROL" ] || $AUDIO_CONTROL call-stop >/dev/null 2>&1
+			fi
+			;;
+		call-dtmf)
+			case "$value" in ''|*[!0-9]*) fail "通话 ID 无效" ;; esac
+			case "$tone" in [0-9]|\*|\#|A|B|C|D) ;; *) fail "DTMF 按键无效" ;; esac
+			output="$(timeout -k 2 35 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms call-dtmf "$slot" "$value" "$tone" 2>&1)" || fail "$output"
+			;;
+		*) fail "不支持的电话操作" ;;
+	esac
+	printf '%s\n' "$output"
+}
+
+call_audio_action() {
+	local action="$1" value="$2" output
+	[ -x "$AUDIO_CONTROL" ] || fail "通话音频控制程序未安装"
+	case "$action:$value" in
+		call-audio-route:earpiece) output="$($AUDIO_CONTROL call-route earpiece 2>&1)" || fail "$output" ;;
+		call-audio-route:speaker) output="$($AUDIO_CONTROL call-route speaker 2>&1)" || fail "$output" ;;
+		call-audio-mute:0) output="$($AUDIO_CONTROL call-mute 0 2>&1)" || fail "$output" ;;
+		call-audio-mute:1) output="$($AUDIO_CONTROL call-mute 1 2>&1)" || fail "$output" ;;
+		call-audio-volume:*)
+			case "$value" in ''|*[!0-9]*) fail "通话音量无效" ;; esac
+			[ "$value" -le 100 ] 2>/dev/null || fail "通话音量必须为 0-100"
+			output="$($AUDIO_CONTROL volume call "$value" 2>&1)" || fail "$output"
+			;;
+		*) fail "不支持的通话音频操作" ;;
+	esac
+	printf '%s\n' "$output"
+}
+
+sms_send() {
+	local number="$1" message="$2" output message_id message_ids segments timestamp timestamp_epoch record slot transport ref
+	[ -x "$TELEPHONY_LAUNCHER" ] || fail "Android 无线电启动器未安装"
+	[ -x "$RADIO_SMS_CLIENT" ] || fail "Android Radio Messaging 客户端未安装"
+	phone_number_valid "$number" || fail "收件人号码格式无效"
+	[ -n "$message" ] || fail "短信内容不能为空"
+	slot="$(selected_phone_slot sms)" || fail "短信默认卡未插卡或未就绪"
+	ims_aidl_ready "$slot" || fail "IMS 应用层尚未在选定卡上完成本次冷启动注册，已禁止发送"
+	transport=ims
+	output="$(timeout -k 2 330 "$TELEPHONY_LAUNCHER" "$ANDROID_COMPAT_ROOT" radio-sms send "$slot" "$transport" "$number" "$message" 2>&1)" || fail "$output"
+	message_id="$(printf '%s\n' "$output" | jsonfilter -e '@.message_id' 2>/dev/null)"
+	message_ids="$(printf '%s\n' "$output" | jsonfilter -e '@.message_ids[@]' 2>/dev/null)"
+	segments="$(printf '%s\n' "$output" | jsonfilter -e '@.segments' 2>/dev/null)"
+	transport="$(printf '%s\n' "$output" | jsonfilter -e '@.transport' 2>/dev/null)"
+	[ "$(printf '%s\n' "$output" | jsonfilter -e '@.ok' 2>/dev/null)" = true ] || fail "Radio Messaging 未返回真实发送成功结果"
+	timestamp="$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
+	timestamp_epoch="$(date +%s 2>/dev/null)"
+	mkdir -p /var/lib/xm14pro/sms
+	record="/var/lib/xm14pro/sms/$(date +%s 2>/dev/null)-$$.sent.json"
+	json_init
+	json_add_boolean ok 1
+	json_add_string direction out
+	json_add_string number "$number"
+	json_add_string timestamp "$timestamp"
+	json_add_int timestamp_epoch "$timestamp_epoch"
+	json_add_string text "$message"
+	json_add_string message_id "$message_id"
+	json_add_array message_ids
+	for ref in $message_ids; do
+		case "$ref" in ''|*[!0-9]*) continue ;; esac
+		json_add_int "" "$ref"
+	done
+	json_close_array
+	json_add_string delivery pending
+	json_add_string transport "$transport"
+	json_add_string slot "$slot"
+	json_int_or_null segments "$segments"
+	json_dump > "$record"
+	printf '%s\n' "$output"
+}
+
+message_decode_file() {
+	case "$1" in
+		*.pdu) /usr/sbin/xm14pro-telephony pdu-decode "$(cat "$1" 2>/dev/null)" 2>/dev/null ;;
+		*.sent.json) cat "$1" 2>/dev/null ;;
+		*) return 1 ;;
+	esac
+}
+
+message_record_id() {
+	local file="$1" prefix=local
+	case "$file" in "$DELIVERY_ROOT"/*) prefix=ims ;; esac
+	printf '%s:%s\n' "$prefix" "${file##*/}"
+}
+
+message_record_path() {
+	local id="$1" prefix name path
+	prefix="${id%%:*}"
+	name="${id#*:}"
+	[ "$prefix" != "$id" ] || return 1
+	[ -n "$name" ] || return 1
+	[ "${name##*/}" = "$name" ] || return 1
+	case "$name" in *..*) return 1 ;; esac
+	printf '%s\n' "$name" | LC_ALL=C grep -Eq '^[A-Za-z0-9._-]+$' || return 1
+	case "$prefix" in
+		local) path="/var/lib/xm14pro/sms/$name" ;;
+		ims) path="$DELIVERY_ROOT/$name" ;;
+		*) return 1 ;;
+	esac
+	case "$path" in *.pdu|*.sent.json) ;; *) return 1 ;; esac
+	[ -f "$path" ] || return 1
+	printf '%s\n' "$path"
+}
+
+message_state_path() {
+	local id="$1" name
+	case "$id" in local:*|ims:*) ;; *) return 1 ;; esac
+	name="$(printf '%s' "$id" | tr ':' '_')"
+	printf '%s\n' "$name" | LC_ALL=C grep -Eq '^[A-Za-z0-9._-]+$' || return 1
+	printf '%s/%s.read\n' "$MESSAGE_STATE" "$name"
+}
+
+message_set_read() {
+	local id="$1" state="$2" marker temporary
+	marker="$(message_state_path "$id")" || return 1
+	case "$state" in
+		1)
+			mkdir -p "$MESSAGE_STATE" || return 1
+			temporary="$marker.$$"
+			printf '%s\n' "$(date +%s)" > "$temporary" && mv "$temporary" "$marker"
+			;;
+		0) rm -f -- "$marker" ;;
+		*) return 1 ;;
+	esac
+}
+
+normalized_message_number() {
+	printf '%s' "$1" | tr -cd '0-9+*#'
+}
+
+sms_delete_json() {
+	local mode="$1" value="$2" id path marker file decoded number target deleted=0 old_ifs
+	case "$mode" in
+		record)
+			old_ifs="$IFS"
+			IFS=,
+			for id in $value; do
+				path="$(message_record_path "$id")" || { IFS="$old_ifs"; fail "短信记录不存在或标识无效"; }
+				rm -f -- "$path" || { IFS="$old_ifs"; fail "删除短信记录失败"; }
+				marker="$(message_state_path "$id" 2>/dev/null)" && rm -f -- "$marker"
+				deleted=$((deleted + 1))
+			done
+			IFS="$old_ifs"
+			[ "$deleted" -gt 0 ] || fail "没有选择要删除的短信"
+			;;
+		thread)
+			target="$(normalized_message_number "$value")"
+			[ -n "$target" ] || fail "短信号码无效"
+			for file in /var/lib/xm14pro/sms/*.pdu /var/lib/xm14pro/sms/*.sent.json "$DELIVERY_ROOT"/incoming-*.pdu; do
+				[ -f "$file" ] || continue
+				decoded="$(message_decode_file "$file")" || continue
+				number="$(printf '%s\n' "$decoded" | jsonfilter -e '@.number' 2>/dev/null)"
+				[ "$(normalized_message_number "$number")" = "$target" ] || continue
+				id="$(message_record_id "$file")"
+				rm -f -- "$file" || fail "删除同号码短信记录失败"
+				marker="$(message_state_path "$id" 2>/dev/null)" && rm -f -- "$marker"
+				deleted=$((deleted + 1))
+			done
+			;;
+		all)
+			for file in /var/lib/xm14pro/sms/*.pdu /var/lib/xm14pro/sms/*.sent.json "$DELIVERY_ROOT"/incoming-*.pdu "$DELIVERY_ROOT"/delivery-*.json; do
+				[ -f "$file" ] || continue
+				rm -f -- "$file" || fail "清空短信记录失败"
+				deleted=$((deleted + 1))
+			done
+			for marker in "$MESSAGE_STATE"/*.read; do
+				[ -f "$marker" ] || continue
+				rm -f -- "$marker" || fail "清空短信已读状态失败"
+			done
+			;;
+		*) fail "不支持的短信删除操作" ;;
+	esac
+	printf '{"ok":true,"deleted":%d}\n' "$deleted"
+}
+
+sms_read_json() {
+	local mode="$1" value="$2" state="$3" id path file decoded number direction target changed=0 old_ifs
+	case "$state" in 0|1) ;; *) fail "短信已读状态无效" ;; esac
+	case "$mode" in
+		record)
+			old_ifs="$IFS"
+			IFS=,
+			for id in $value; do
+				path="$(message_record_path "$id")" || { IFS="$old_ifs"; fail "短信记录不存在或标识无效"; }
+				message_set_read "$id" "$state" || { IFS="$old_ifs"; fail "保存短信已读状态失败"; }
+				changed=$((changed + 1))
+			done
+			IFS="$old_ifs"
+			;;
+		thread)
+			target="$(normalized_message_number "$value")"
+			[ -n "$target" ] || fail "短信号码无效"
+			for file in /var/lib/xm14pro/sms/*.pdu /var/lib/xm14pro/sms/*.sent.json "$DELIVERY_ROOT"/incoming-*.pdu; do
+				[ -f "$file" ] || continue
+				decoded="$(message_decode_file "$file")" || continue
+				number="$(printf '%s\n' "$decoded" | jsonfilter -e '@.number' 2>/dev/null)"
+				[ "$(normalized_message_number "$number")" = "$target" ] || continue
+				direction="$(printf '%s\n' "$decoded" | jsonfilter -e '@.direction' 2>/dev/null)"
+				[ "$direction" = in ] || continue
+				id="$(message_record_id "$file")"
+				message_set_read "$id" "$state" || fail "保存同号码短信已读状态失败"
+				changed=$((changed + 1))
+			done
+			;;
+		*) fail "不支持的短信已读操作" ;;
+	esac
+	printf '{"ok":true,"changed":%d,"read":%s}\n' "$changed" "$([ "$state" = 1 ] && printf true || printf false)"
+}
+
+messages_json() {
+	local file decoded record_id marker direction read_state comma= active=0 slot
+	slot="$(selected_phone_slot sms 2>/dev/null)"
+	[ -n "$slot" ] && command_running 'xm14pro-radio-sms ims-daemon' && ims_aidl_ready "$slot" && active=1
+	printf '{"ok":true,"receive_active":%s,"messages":[' "$([ "$active" = 1 ] && printf true || printf false)"
+	for file in $(ls -1t /var/lib/xm14pro/sms/*.pdu /var/lib/xm14pro/sms/*.sent.json "$DELIVERY_ROOT"/incoming-*.pdu 2>/dev/null | head -n 200); do
+		decoded="$(message_decode_file "$file")" || continue
+		[ -n "$decoded" ] || continue
+		[ "$(printf '%s\n' "$decoded" | jsonfilter -e '@.ok' 2>/dev/null)" = true ] || continue
+		record_id="$(message_record_id "$file")"
+		direction="$(printf '%s\n' "$decoded" | jsonfilter -e '@.direction' 2>/dev/null)"
+		marker="$(message_state_path "$record_id" 2>/dev/null)"
+		if [ "$direction" != in ] || [ -f "$marker" ]; then read_state=true; else read_state=false; fi
+		decoded="$(printf '%s\n' "$decoded" | sed "s/^{/{\"record_id\":\"$record_id\",\"read\":$read_state,/")"
+		printf '%s%s' "$comma" "$decoded"
+		comma=,
+	done
+	printf '],"receipts":['
+	comma=
+	for file in $(ls -1t "$DELIVERY_ROOT"/delivery-*.json 2>/dev/null | head -n 200); do
+		decoded="$(cat "$file" 2>/dev/null)"
+		[ -n "$decoded" ] || continue
+		printf '%s%s' "$comma" "$decoded"
+		comma=,
+	done
+	printf ']}\n'
+}
+
+call_history_json() {
+	local file record comma=
+	printf '{"ok":true,"calls":['
+	for file in $(ls -1t "$CALL_HISTORY"/*.json 2>/dev/null | head -n 500); do
+		record="$(cat "$file" 2>/dev/null)"
+		[ -n "$record" ] || continue
+		[ -n "$(printf '%s\n' "$record" | jsonfilter -e '@.id' 2>/dev/null)" ] || continue
+		printf '%s%s' "$comma" "$record"
+		comma=,
+	done
+	printf ']}\n'
+}
+
+screen_telephony() {
+	local enabled="$1" output
+	case "$enabled" in 0|1) ;; *) fail "屏幕短信电话开关参数无效" ;; esac
+	uci -q set "xm14display.main.telephony_pages=$enabled" || fail "写入屏幕设置失败"
+	uci -q commit xm14display || fail "保存屏幕设置失败"
+	if [ -x /usr/libexec/xm14pro-display ]; then
+		output="$(/usr/libexec/xm14pro-display apply 2>&1)" || fail "$output"
+	fi
+	printf '{"ok":true,"screen_telephony_pages":%s}\n' "$([ "$enabled" = 1 ] && printf true || printf false)"
+}
+
+case "${1:-status}" in
+	status) status_json ;;
+	set-data) set_data "$2" "$3" "$4" "$5" "$6" ;;
+	set-slot) set_slot "$2" "$3" ;;
+	set-airplane) set_airplane "$2" ;;
+	connect|disconnect) connection "$1" ;;
+	refresh-radio) refresh_radio ;;
+	refresh-telecom) refresh_telecom ;;
+	call-dial|call-answer|call-end|call-dtmf) telephony_action "$1" "$2" "$3" ;;
+	call-audio-route|call-audio-mute|call-audio-volume) call_audio_action "$1" "$2" ;;
+	screen-telephony) screen_telephony "$2" ;;
+	sms-send) sms_send "$2" "$3" ;;
+	messages) messages_json ;;
+	sms-delete) sms_delete_json record "$2" ;;
+	sms-delete-thread) sms_delete_json thread "$2" ;;
+	sms-delete-all) sms_delete_json all ;;
+	sms-read) sms_read_json record "$2" "$3" ;;
+	sms-read-thread) sms_read_json thread "$2" "$3" ;;
+	call-history) call_history_json ;;
+	logs) logs_json ;;
+	*) fail "不支持的操作：$1" ;;
+esac

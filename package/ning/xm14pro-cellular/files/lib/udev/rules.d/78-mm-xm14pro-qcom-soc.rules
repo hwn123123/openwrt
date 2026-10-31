@@ -1,0 +1,12 @@
+# Xiaomi downstream IPA parent is a driverless virtual netdevice.
+# ModemManager's non-udev rule loader only reads 77-mm-* through 80-mm-*;
+# keep this file in that range so rmnet_ipa0 joins the QRTR qcom-soc modem.
+ACTION!="add|change|move|bind", GOTO="mm_xm14pro_qcom_soc_end"
+SUBSYSTEM!="net", GOTO="mm_xm14pro_qcom_soc_end"
+KERNEL!="rmnet_ipa0", GOTO="mm_xm14pro_qcom_soc_end"
+
+ENV{ID_MM_CANDIDATE}="1"
+ENV{ID_MM_QCOM_SOC}="1"
+ENV{ID_MM_PHYSDEV_UID}="qcom-soc"
+
+LABEL="mm_xm14pro_qcom_soc_end"

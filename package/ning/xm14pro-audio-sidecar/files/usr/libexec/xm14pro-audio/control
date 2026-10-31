@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+[ -S /dev/socket/xm14pro_audio_control ] || {
+	printf '%s\n' 'stock PAL control socket is unavailable' >&2
+	exit 127
+}
+
+response="$(/usr/libexec/xm14pro-audio/control-client "$@")" || exit $?
+printf '%s\n' "$response"
+case "$response" in
+	*'"ok":false'*) exit 1 ;;
+esac
+
+# Volume is a user setting, so keep successful changes across reboot.  Tone
+# tests and status reads remain side-effect free.
+if [ "$#" -eq 3 ] && [ "$1" = volume ]; then
+	case "$2:$3:$response" in
+		media:[0-9]*:*'"ok":true'*) option=media_volume ;;
+		call:[0-9]*:*'"ok":true'*) option=call_volume ;;
+		*) exit 0 ;;
+	esac
+	case "$3" in ''|*[!0-9]*) exit 0 ;; esac
+	[ "$3" -le 100 ] 2>/dev/null || exit 0
+	uci -q set "xm14audio.main.$option=$3"
+	uci -q commit xm14audio
+fi

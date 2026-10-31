@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+
+START=79
+STOP=17
+USE_PROCD=1
+
+start_service() {
+	/usr/sbin/xm14pro-cpe-firewall apply
+}
+
+reload_service() {
+	/usr/sbin/xm14pro-cpe-firewall apply
+}
+
+stop_service() {
+	/usr/sbin/xm14pro-cpe-firewall clear
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14cpe
+}

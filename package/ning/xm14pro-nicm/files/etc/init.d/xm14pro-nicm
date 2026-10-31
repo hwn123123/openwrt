@@ -1,0 +1,138 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+START=61
+STOP=39
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+CONNECTIVITY_NATIVE="$ANDROID_ROOT/system/lib64/libcom.android.tethering.connectivity_native.so"
+MODULE_SOURCE=/usr/libexec/xm14pro-nicm/modules
+
+prepare_tipc() {
+	local kernel_release module_dir
+
+	grep -Fqs 'TIPC' /proc/net/protocols && return 0
+
+	kernel_release="$(uname -r)"
+	module_dir="/lib/modules/$kernel_release"
+	mkdir -p "$module_dir" || return 1
+	cp "$MODULE_SOURCE/tipc.ko" "$module_dir/tipc.ko" || return 1
+	cp "$MODULE_SOURCE/tipc_diag.ko" "$module_dir/tipc_diag.ko" || return 1
+	printf '%s\n' 'tipc.ko:' 'tipc_diag.ko: tipc.ko' > "$module_dir/modules.dep" || return 1
+
+	# Xiaomi's stock DSI/NICM B2G transport uses AF_TIPC.  The phone kernel
+	# builds it as a module and Android loads these exact system_dlkm modules.
+	# kmodloader requires a directory matching uname before it accepts an
+	# absolute module path, so stage only the two matching stock modules here.
+	/sbin/insmod "$module_dir/tipc.ko" || return 1
+	/sbin/insmod "$module_dir/tipc_diag.ko" || return 1
+	grep -Fqs 'TIPC' /proc/net/protocols || return 1
+}
+
+bind_once() {
+	local source="$1"
+	local target="$2"
+
+	grep -Fqs " $target " /proc/mounts && return 0
+	mkdir -p "$target"
+	mount -o bind "$source" "$target"
+}
+
+prepare_binder_link() {
+	local link="$1"
+	local target="$2"
+
+	if [ -L "$link" ]; then
+		[ "$(readlink "$link")" = "$target" ] || {
+			logger -t xm14pro-nicm "$link points to an unexpected Binder device"
+			return 1
+		}
+	elif [ -e "$link" ]; then
+		logger -t xm14pro-nicm "$link exists and was not created by xm14pro-nicm"
+		return 1
+	else
+		ln -s "$target" "$link" || return 1
+	fi
+}
+
+prepare_binder_nodes() {
+	mkdir -p /dev/binderfs || return 1
+	grep -Fqs ' /dev/binderfs ' /proc/mounts ||
+		mount -t binder binder /dev/binderfs || return 1
+
+	# The Xiaomi kernel exposes the configured binder,hwbinder,vndbinder
+	# instances through BinderFS. binder-control occupies its own minor, so
+	# never manufacture device numbers; use the nodes created by the driver.
+	for name in binder hwbinder vndbinder; do
+		[ -c "/dev/binderfs/$name" ] || {
+			logger -t xm14pro-nicm "BinderFS did not create $name"
+			return 1
+		}
+		chown 0:0 "/dev/binderfs/$name" || return 1
+		chmod 0666 "/dev/binderfs/$name" || return 1
+		prepare_binder_link "/dev/$name" "/dev/binderfs/$name" || return 1
+	done
+}
+
+prepare_root() {
+	[ -x "$ANDROID_ROOT/vendor/bin/nicmd" ] || {
+		logger -t xm14pro-nicm 'stock nicmd is missing'
+		return 1
+	}
+	[ -r "$CONNECTIVITY_NATIVE" ] || {
+		logger -t xm14pro-nicm 'real Android connectivity_native library is missing'
+		return 1
+	}
+	[ ! -e "$CONNECTIVITY_NATIVE.linkcheck-only" ] || {
+		logger -t xm14pro-nicm 'refusing to start with the link-check-only ABI placeholder'
+		return 1
+	}
+
+	prepare_binder_nodes || return 1
+	bind_once /dev "$ANDROID_ROOT/dev" || return 1
+	# A regular bind of /dev does not propagate the BinderFS submount into an
+	# already mounted compatibility root. Bind it explicitly for both hot
+	# package tests and cold boots.
+	bind_once /dev/binderfs "$ANDROID_ROOT/dev/binderfs" || return 1
+	bind_once /proc "$ANDROID_ROOT/proc" || return 1
+	bind_once /sys "$ANDROID_ROOT/sys" || return 1
+	mkdir -p /var/run/xm14pro "$ANDROID_ROOT/var/run/xm14pro" || return 1
+	bind_once /var/run/xm14pro "$ANDROID_ROOT/var/run/xm14pro" || return 1
+
+	mkdir -p /dev/socket/nicmd "$ANDROID_ROOT/data/vendor/nicmd"
+	chown 1001:1001 /dev/socket/nicmd
+	chmod 0750 /dev/socket/nicmd
+	chown 1001:1000 "$ANDROID_ROOT/data/vendor/nicmd"
+	chmod 2750 "$ANDROID_ROOT/data/vendor/nicmd"
+	: > "$ANDROID_ROOT/data/vendor/nicmd/nicm_recovery"
+	chown 1001:1001 "$ANDROID_ROOT/data/vendor/nicmd/nicm_recovery"
+	chmod 0640 "$ANDROID_ROOT/data/vendor/nicmd/nicm_recovery"
+
+	# Exact ceilings from Xiaomi's stock nicmd.rc.
+	sysctl -q -w net.core.rmem_max=16777216 || return 1
+	sysctl -q -w net.core.wmem_max=8388608 || return 1
+}
+
+start_service() {
+	[ "$(uci -q get xm14nicm.main.enabled)" = 1 ] || {
+		logger -t xm14pro-nicm 'disabled; stock data plane was not started'
+		return 0
+	}
+	prepare_tipc || {
+		logger -t xm14pro-nicm 'failed to load Xiaomi stock TIPC transport modules'
+		return 1
+	}
+	prepare_root || return 1
+
+	procd_open_instance nicmd
+	procd_set_param command /usr/libexec/xm14pro-nicm/nicmd-launcher "$ANDROID_ROOT"
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14nicm
+}

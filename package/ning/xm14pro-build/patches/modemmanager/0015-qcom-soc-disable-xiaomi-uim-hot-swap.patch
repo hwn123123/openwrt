@@ -1,0 +1,63 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qcom-soc: disable Xiaomi UIM hot-swap reprobes
+
+The downstream phone modem exposes the physical slot and ICCID but reports
+UimUninitialized when ModemManager reads the SIM application before Android's
+RIL-style provisioning session exists.  The hot-swap code interprets the
+temporary identifier read failure as a changed SIM, queues an override
+disable, unexports the modem and starts an endless reprobe loop whenever the
+modem is enabled.
+
+The qcom-soc plugin in this target package is used only for the Xiaomi embedded
+phone modem, so disable its generic hot-swap monitoring unconditionally.  A SIM
+change is picked up when the cellular service is restarted.
+
+ModemManager 1.24 does not use the SIM_HOT_SWAP_SUPPORTED property to gate its
+initial setup call; it checks whether the interface methods are present.  Give
+the qcom-soc subclass its own modem interface and clear both the inherited
+setup hooks and the enable-time SIM swap check, as well as the public support
+property.
+
+--- a/src/plugins/qcom-soc/mm-broadband-modem-qmi-qcom-soc.c
++++ b/src/plugins/qcom-soc/mm-broadband-modem-qmi-qcom-soc.c
+@@ -26,7 +26,10 @@
+ #include "mm-iface-modem.h"
+ #include "mm-broadband-modem-qmi-qcom-soc.h"
+ 
+-G_DEFINE_TYPE (MMBroadbandModemQmiQcomSoc, mm_broadband_modem_qmi_qcom_soc, MM_TYPE_BROADBAND_MODEM_QMI)
++static void iface_modem_init (MMIfaceModemInterface *iface);
++
++G_DEFINE_TYPE_EXTENDED (MMBroadbandModemQmiQcomSoc, mm_broadband_modem_qmi_qcom_soc, MM_TYPE_BROADBAND_MODEM_QMI, 0,
++                        G_IMPLEMENT_INTERFACE (MM_TYPE_IFACE_MODEM, iface_modem_init))
+ 
+ /*****************************************************************************/
+ 
+@@ -165,7 +168,10 @@ mm_broadband_modem_qmi_qcom_soc_new (const gchar  *device,
+                          /* QMI bearer supports NET only */
+                          MM_BASE_MODEM_DATA_NET_SUPPORTED, TRUE,
+                          MM_BASE_MODEM_DATA_TTY_SUPPORTED, FALSE,
+-                         MM_IFACE_MODEM_SIM_HOT_SWAP_SUPPORTED, TRUE,
++                         /* Xiaomi reports UimUninitialized during SIM file
++                          * reads and the generic hot-swap handler treats that
++                          * as a card replacement, forcing endless reprobes. */
++                         MM_IFACE_MODEM_SIM_HOT_SWAP_SUPPORTED, FALSE,
+                          NULL);
+ }
+ 
+@@ -176,6 +182,16 @@ mm_broadband_modem_qmi_qcom_soc_init (MMBroadbandModemQmiQcomSoc *self)
+ {
+ }
+ 
++static void
++iface_modem_init (MMIfaceModemInterface *iface)
++{
++    iface->check_for_sim_swap = NULL;
++    iface->check_for_sim_swap_finish = NULL;
++    iface->setup_sim_hot_swap = NULL;
++    iface->setup_sim_hot_swap_finish = NULL;
++    iface->cleanup_sim_hot_swap = NULL;
++}
++
+ static void
+ mm_broadband_modem_qmi_qcom_soc_class_init (MMBroadbandModemQmiQcomSocClass *klass)
+ {

@@ -1,0 +1,47 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qcom-soc: initialize downstream IPA endpoint metadata
+
+The Xiaomi downstream kernel exposes rmnet_ipa0 as a driverless virtual
+netdevice.  Treat this exact interface as IPA when configuring the associated
+QRTR QMI port so that the embedded endpoint type and QMAP link management are
+selected.
+
+The modem returns InvalidArgument, instead of MissingArgument, when WDA Get
+Data Format omits the endpoint TLV.  Retry with the known embedded endpoint for
+that response as well.  The DPM software port is opened by xm14pro-cellular
+before ModemManager probes the device.
+
+--- a/src/mm-port-qmi.c
++++ b/src/mm-port-qmi.c
+@@ -1732,6 +1732,7 @@ get_data_format_ready (QmiClientWda *client,
+          * GET_WDA_DATA_FORMAT step.
+          */
+-        if (g_error_matches (error, QMI_PROTOCOL_ERROR, QMI_PROTOCOL_ERROR_MISSING_ARGUMENT) &&
++        if ((g_error_matches (error, QMI_PROTOCOL_ERROR, QMI_PROTOCOL_ERROR_MISSING_ARGUMENT) ||
++             g_error_matches (error, QMI_PROTOCOL_ERROR, QMI_PROTOCOL_ERROR_INVALID_ARGUMENT)) &&
+             (self->priv->endpoint_type != QMI_DATA_ENDPOINT_TYPE_UNDEFINED)) {
+             /* retry same step with endpoint info */
+             ctx->use_endpoint = TRUE;
+@@ -2708,13 +2709,21 @@ mm_port_qmi_set_net_details (MMPortQmi *self,
+                              MMPort    *first_net)
+ {
+     MMKernelDevice *first_net_dev;
++    const gchar    *net_driver;
+ 
+     first_net_dev = mm_port_peek_kernel_device (first_net);
+ 
+     g_assert (MM_IS_PORT_QMI (self));
+ 
+     g_assert (!self->priv->net_driver);
+-    self->priv->net_driver = g_strdup (mm_kernel_device_get_driver (first_net_dev));
++    net_driver = mm_kernel_device_get_driver (first_net_dev);
++    if (!net_driver &&
++        g_strcmp0 (mm_port_get_device (first_net), "rmnet_ipa0") == 0) {
++        /* Downstream Qualcomm Android kernels expose the IPA parent as a
++         * driverless virtual netdevice.  It still uses embedded endpoint 1. */
++        net_driver = "ipa";
++    }
++    self->priv->net_driver = g_strdup (net_driver);
+ 
+     g_assert (!self->priv->net_sysfs_path);
+     self->priv->net_sysfs_path = g_strdup (mm_kernel_device_get_sysfs_path (first_net_dev));

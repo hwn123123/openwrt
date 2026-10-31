@@ -1,0 +1,7 @@
+config compat 'main'
+	option enabled '1'
+	option network 'wifi_lan'
+	option local_networks 'wifi_lan usb_lan'
+	option fallback_device 'nwrt-ap'
+	option wait_timeout '90'
+	option managed_interface ''

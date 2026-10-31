@@ -1,0 +1,144 @@
+#!/bin/sh
+
+IPT="${XM14PRO_IPTABLES:-/usr/sbin/iptables}"
+SYS_CLASS_NET="${XM14PRO_SYS_CLASS_NET:-/sys/class/net}"
+LOCK_DIR="${XM14PRO_FIREWALL_LOCK:-/var/lock/xm14pro-cpe-firewall.lock}"
+TAG=xm14pro-cpe
+FWD=XMCPE_FWD
+INPUT=XMCPE_IN
+NAT=XMCPE_NAT
+MSS=XMCPE_MSS
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+acquire_lock() {
+	local attempts=0 owner
+	while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+		owner="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+		if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
+			rm -f "$LOCK_DIR/pid"
+			rmdir "$LOCK_DIR" 2>/dev/null || true
+			continue
+		fi
+		attempts=$((attempts + 1))
+		[ "$attempts" -lt 20 ] || {
+			log "another firewall update is still running"
+			return 1
+		}
+		sleep 1
+	done
+	printf '%s\n' "$$" >"$LOCK_DIR/pid"
+	trap 'rm -f "$LOCK_DIR/pid"; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT INT TERM
+}
+
+run() {
+	"$IPT" -w 5 "$@"
+}
+
+remove_jump() {
+	local table="$1" chain="$2" target="$3"
+	while run -t "$table" -C "$chain" -j "$target" >/dev/null 2>&1; do
+		run -t "$table" -D "$chain" -j "$target" >/dev/null 2>&1 || break
+	done
+}
+
+clear_rules() {
+	remove_jump filter FORWARD "$FWD"
+	remove_jump filter INPUT "$INPUT"
+	remove_jump nat POSTROUTING "$NAT"
+	remove_jump mangle FORWARD "$MSS"
+	for spec in "filter $FWD" "filter $INPUT" "nat $NAT" "mangle $MSS"; do
+		set -- $spec
+		run -t "$1" -F "$2" >/dev/null 2>&1 || true
+		run -t "$1" -X "$2" >/dev/null 2>&1 || true
+	done
+}
+
+interface_device() {
+	local interface="$1" device status
+	status="$(ubus -S call "network.interface.$interface" status 2>/dev/null)"
+	device="$(printf '%s\n' "$status" |
+		jsonfilter -e '@.data.device' 2>/dev/null)"
+	[ -n "$device" ] || device="$(printf '%s\n' "$status" |
+		jsonfilter -e '@.l3_device' 2>/dev/null)"
+	[ -n "$device" ] || device="$(uci -q get "network.$interface.device")"
+	[ -n "$device" ] && [ -e "$SYS_CLASS_NET/$device" ] && printf '%s\n' "$device"
+}
+
+cellular_device() {
+	local device path
+	device="$(interface_device cellular)"
+	[ -n "$device" ] && { printf '%s\n' "$device"; return 0; }
+	for path in "$SYS_CLASS_NET"/rmnet_data* "$SYS_CLASS_NET"/qmapmux* "$SYS_CLASS_NET"/wwan*; do
+		[ -e "$path" ] || continue
+		printf '%s\n' "${path##*/}"
+		return 0
+	done
+	return 1
+}
+
+add_lan_forwarding() {
+	local lan="$1" wan="$2"
+	[ -n "$lan" ] && [ -e "$SYS_CLASS_NET/$lan" ] || return 0
+	run -A "$FWD" -i "$lan" -o "$wan" -j ACCEPT
+	run -A "$FWD" -i "$wan" -o "$lan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+}
+
+apply_rules() {
+	local wan wifi usb
+	[ "$(uci -q get xm14cpe.main.enabled)" != 0 ] || { clear_rules; return 0; }
+	[ -x "$IPT" ] || { log "iptables userspace is unavailable"; return 1; }
+
+	wan="$(cellular_device)"
+	[ -n "$wan" ] || { clear_rules; log "cellular data interface is not ready"; return 0; }
+
+	clear_rules
+	run -t filter -N "$FWD"
+	run -t filter -N "$INPUT"
+	run -t nat -N "$NAT"
+	run -t mangle -N "$MSS"
+	run -t filter -I FORWARD 1 -j "$FWD"
+	run -t filter -I INPUT 1 -j "$INPUT"
+	run -t nat -I POSTROUTING 1 -j "$NAT"
+	run -t mangle -I FORWARD 1 -j "$MSS"
+
+	run -A "$FWD" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+	if [ "$(uci -q get xm14cpe.main.wifi_forward)" != 0 ]; then
+		wifi="$(interface_device wifi_lan)"
+		[ -n "$wifi" ] || wifi="$(ls "$SYS_CLASS_NET" 2>/dev/null | sed -n '/^wlan[0-9]*$/p' | head -n 1)"
+		add_lan_forwarding "$wifi" "$wan"
+	fi
+	if [ "$(uci -q get xm14cpe.main.usb_forward)" != 0 ]; then
+		usb="$(interface_device usb_lan)"
+		[ -n "$usb" ] || [ ! -e "$SYS_CLASS_NET/usb0" ] || usb=usb0
+		add_lan_forwarding "$usb" "$wan"
+	fi
+	run -A "$FWD" -i "$wan" -j DROP
+	run -A "$FWD" -j RETURN
+
+	if [ "$(uci -q get xm14cpe.main.block_wan_management)" != 0 ]; then
+		run -A "$INPUT" -i "$wan" -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+		[ "$(uci -q get xm14cpe.main.allow_wan_ping)" = 0 ] || run -A "$INPUT" -i "$wan" -p icmp -j ACCEPT
+		run -A "$INPUT" -i "$wan" -j DROP
+	fi
+	run -A "$INPUT" -j RETURN
+
+	run -t nat -A "$NAT" -o "$wan" -j MASQUERADE
+	if [ "$(uci -q get xm14cpe.main.tcp_mss_clamp)" != 0 ]; then
+		run -t mangle -A "$MSS" -o "$wan" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+	fi
+	run -t mangle -A "$MSS" -j RETURN
+
+	sysctl -qw net.ipv4.ip_forward=1
+	log "IPv4 CPE forwarding active through $wan"
+}
+
+acquire_lock || exit 1
+
+case "${1:-apply}" in
+	apply|reload) apply_rules ;;
+	clear|stop) clear_rules ;;
+	*) echo "usage: $0 {apply|clear}" >&2; exit 2 ;;
+esac

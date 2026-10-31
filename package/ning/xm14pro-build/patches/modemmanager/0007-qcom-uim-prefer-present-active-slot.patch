@@ -1,0 +1,23 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qmi: prefer a populated active UIM slot
+
+The Xiaomi dual-SIM firmware reports both physical slots as active even when
+the second slot is empty.  The generic loop kept overwriting the primary slot
+with the last active entry and therefore selected the empty slot, while the
+actual USIM is on slot 1.
+
+Keep each SIM object's active flag, but select the first active slot carrying
+an ICCID as the primary slot.  This also avoids issuing a destructive slot
+switch merely to work around inconsistent firmware status.
+
+--- a/src/mm-shared-qmi.c
++++ b/src/mm-shared-qmi.c
+@@ -3392,2 +3392,6 @@
+-            ctx->active_logical_id = slot_status->logical_slot;
+-            ctx->active_slot_number = i + 1;
++            /* Some DSDS firmware marks an empty slot active.  Prefer the
++             * first populated active slot instead of the final active entry. */
++            if (!ctx->active_slot_number && slot_status->iccid->len) {
++                ctx->active_logical_id = slot_status->logical_slot;
++                ctx->active_slot_number = i + 1;
++            }

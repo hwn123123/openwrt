@@ -1,0 +1,136 @@
+From: nwrt Xiaomi 14 Pro support <ning@localhost>
+Subject: [PATCH] qmicli: expose NAS Bind Subscription
+
+The Xiaomi 14 Pro uses Qualcomm DSDS.  A fresh NAS client defaults to the
+primary subscription even when mobile data belongs to the secondary SIM, so
+read-only signal and cell queries otherwise report the wrong radio stack.
+Expose the Bind Subscription request added by the preceding libqmi patch.
+
+--- a/src/qmicli/qmicli-nas.c
++++ b/src/qmicli/qmicli-nas.c
+@@ -52,5 +52,6 @@ static Context *ctx;
+ 
+ /* Options */
++static gchar *bind_subscription_str;
+ static gboolean get_signal_strength_flag;
+ static gboolean get_signal_info_flag;
+ static gchar *get_tx_rx_info_str;
+@@ -113,6 +114,12 @@ static gboolean noop_flag;
+ #endif
+ 
+ static GOptionEntry entries[] = {
++#if defined HAVE_QMI_MESSAGE_NAS_BIND_SUBSCRIPTION
++    { "nas-bind-subscription", 0, 0, G_OPTION_ARG_STRING, &bind_subscription_str,
++      "Bind the NAS client to a modem subscription",
++      "[primary|secondary|tertiary]"
++    },
++#endif
+ #if defined HAVE_QMI_MESSAGE_NAS_GET_SIGNAL_STRENGTH
+     { "nas-get-signal-strength", 0, 0, G_OPTION_ARG_NONE, &get_signal_strength_flag,
+       "Get signal strength",
+@@ -295,7 +302,8 @@ qmicli_nas_options_enabled (void)
+     if (checked)
+         return !!n_actions;
+ 
+-    n_actions = (get_signal_strength_flag +
++    n_actions = (!!bind_subscription_str +
++                 get_signal_strength_flag +
+                  get_signal_info_flag +
+                  !!get_tx_rx_info_str +
+                  get_home_network_flag +
+@@ -361,6 +369,66 @@ operation_shutdown (gboolean operation_status)
+     qmicli_async_operation_done (operation_status, FALSE);
+ }
+ 
++#if defined HAVE_QMI_MESSAGE_NAS_BIND_SUBSCRIPTION
++
++static void
++bind_subscription_ready (QmiClientNas *client,
++                         GAsyncResult *res)
++{
++    g_autoptr(QmiMessageNasBindSubscriptionOutput) output = NULL;
++    g_autoptr(GError)                              error = NULL;
++
++    output = qmi_client_nas_bind_subscription_finish (client, res, &error);
++    if (!output) {
++        g_printerr ("error: operation failed: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (!qmi_message_nas_bind_subscription_output_get_result (output, &error)) {
++        g_printerr ("error: couldn't bind NAS subscription: %s\n", error->message);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    g_print ("[%s] Successfully bound NAS subscription: '%s'\n",
++             qmi_device_get_path_display (ctx->device),
++             bind_subscription_str);
++    operation_shutdown (TRUE);
++}
++
++static QmiMessageNasBindSubscriptionInput *
++bind_subscription_input_create (const gchar *str)
++{
++    QmiMessageNasBindSubscriptionInput *input;
++    guint8 subscription;
++    GError *error = NULL;
++
++    if (g_str_equal (str, "primary"))
++        subscription = 0;
++    else if (g_str_equal (str, "secondary"))
++        subscription = 1;
++    else if (g_str_equal (str, "tertiary"))
++        subscription = 2;
++    else {
++        g_printerr ("error: invalid NAS subscription '%s'\n", str);
++        return NULL;
++    }
++
++    input = qmi_message_nas_bind_subscription_input_new ();
++    if (!qmi_message_nas_bind_subscription_input_set_subscription_type (input,
++                                                                         subscription,
++                                                                         &error)) {
++        g_printerr ("error: couldn't create NAS bind input: %s\n", error->message);
++        g_error_free (error);
++        qmi_message_nas_bind_subscription_input_unref (input);
++        return NULL;
++    }
++    return input;
++}
++
++#endif /* HAVE_QMI_MESSAGE_NAS_BIND_SUBSCRIPTION */
++
+ #if defined HAVE_QMI_MESSAGE_NAS_GET_SIGNAL_STRENGTH
+ 
+ static QmiMessageNasGetSignalStrengthInput *
+@@ -4865,6 +4933,28 @@ qmicli_nas_run (QmiDevice *device,
+     ctx->client = g_object_ref (client);
+     ctx->cancellable = g_object_ref (cancellable);
+ 
++#if defined HAVE_QMI_MESSAGE_NAS_BIND_SUBSCRIPTION
++    if (bind_subscription_str) {
++        QmiMessageNasBindSubscriptionInput *input;
++
++        input = bind_subscription_input_create (bind_subscription_str);
++        if (!input) {
++            operation_shutdown (FALSE);
++            return;
++        }
++
++        g_debug ("Asynchronously binding NAS subscription...");
++        qmi_client_nas_bind_subscription (ctx->client,
++                                          input,
++                                          10,
++                                          ctx->cancellable,
++                                          (GAsyncReadyCallback)bind_subscription_ready,
++                                          NULL);
++        qmi_message_nas_bind_subscription_input_unref (input);
++        return;
++    }
++#endif
++
+ #if defined HAVE_QMI_MESSAGE_NAS_GET_SIGNAL_STRENGTH
+     if (get_signal_strength_flag) {
+         QmiMessageNasGetSignalStrengthInput *input;

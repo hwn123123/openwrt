@@ -1,0 +1,63 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+START=58
+STOP=42
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
+
+manager_running() {
+	local command="$1"
+
+	ps w | awk -v command="$command" '
+		index($0, command) && $0 !~ /awk -v command=/ { found = 1 }
+		END { exit found ? 0 : 1 }
+	'
+}
+
+wait_for_binder_managers() {
+	local attempt=0
+
+	while [ "$attempt" -lt 15 ]; do
+		if manager_running '/system/bin/servicemanager' &&
+		   manager_running '/system_ext/bin/hwservicemanager' &&
+		   manager_running '/vendor/bin/vndservicemanager /dev/vndbinder'; then
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+add_instance() {
+	procd_open_instance pm-service
+	procd_set_param command "$LAUNCHER" "$ANDROID_ROOT" pm-service
+	procd_set_param respawn 3600 5 3
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+start_service() {
+	local enabled
+
+	config_load xm14telephony
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+	wait_for_binder_managers || {
+		logger -t xm14pro-peripheral 'Binder service managers failed to become ready'
+		return 1
+	}
+
+	# Stock init starts only pm-service at this stage.  The following S59
+	# service mirrors Android's init.svc.vendor.per_mgr=running trigger and
+	# releases pm-proxy only after this process is actually alive.
+	add_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14telephony
+}

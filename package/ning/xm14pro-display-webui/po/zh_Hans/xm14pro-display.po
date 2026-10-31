@@ -1,0 +1,275 @@
+msgid "Screen"
+msgstr "屏幕"
+
+msgid "NFC"
+msgstr "NFC"
+
+msgid "Share Wi-Fi and manage card-copy mode"
+msgstr "分享 Wi-Fi 并管理复制卡模式"
+
+msgid "Infrared"
+msgstr "红外"
+
+msgid "Saved remotes and complete air-conditioner control"
+msgstr "已保存遥控器与完整空调控制"
+
+msgid "Messages"
+msgstr "短信"
+
+msgid "Read, compose, send and inspect delivery receipts"
+msgstr "读取、编辑、发送短信并查看送达回执"
+
+msgid "Phone"
+msgstr "电话"
+
+msgid "Dialpad, calls, microphone, earpiece and speaker"
+msgstr "拨号键盘、通话、麦克风、听筒与扬声器"
+
+msgid "Cellular details"
+msgstr "蜂窝详情"
+
+msgid "Serving cell, carrier aggregation and device identity"
+msgstr "服务小区、载波聚合与设备标识"
+
+msgid "Overview"
+msgstr "概览"
+
+msgid "Connection, signal and live traffic"
+msgstr "连接、信号与实时流量"
+
+msgid "Mobile network"
+msgstr "蜂窝网络"
+
+msgid "Operator, radio and cell details"
+msgstr "运营商、无线信号与小区详情"
+
+msgid "Aggregate speed test"
+msgstr "聚合测速"
+
+msgid "Domestic multi-server, multi-thread IPv4 throughput"
+msgstr "国内多节点、多线程 IPv4 真实吞吐"
+
+msgid "Traffic"
+msgstr "流量"
+
+msgid "Live rate, totals and link quality"
+msgstr "实时速率、累计流量与链路质量"
+
+msgid "Device"
+msgstr "设备"
+
+msgid "Load, memory, temperature, battery and sharing"
+msgstr "负载、内存、温度、电池与共享服务"
+
+msgid "Quick connect"
+msgstr "快速连接"
+
+msgid "Real Wi-Fi QR code and management addresses"
+msgstr "真实 Wi-Fi 二维码与管理地址"
+
+msgid "Battery"
+msgstr "电池"
+
+msgid "Capacity, charging, Type-C and protection status"
+msgstr "容量、充电、Type-C 与保护状态"
+
+msgid "DRM display"
+msgstr "DRM 显示"
+
+msgid "Backlight"
+msgstr "背光"
+
+msgid "Touch panel"
+msgstr "触摸面板"
+
+msgid "Screen service"
+msgstr "屏幕服务"
+
+msgid "Ready"
+msgstr "就绪"
+
+msgid "Unavailable"
+msgstr "不可用"
+
+msgid "Driver pending"
+msgstr "驱动待完成"
+
+msgid "Running"
+msgstr "运行中"
+
+msgid "Stopped"
+msgstr "已停止"
+
+msgid "Enabled"
+msgstr "已开启"
+
+msgid "Disabled"
+msgstr "已关闭"
+
+msgid "Setting applied"
+msgstr "设置已立即生效"
+
+msgid "Immediate control"
+msgstr "即时控制"
+
+msgid "Wake screen"
+msgstr "点亮屏幕"
+
+msgid "Turn off screen"
+msgstr "熄灭屏幕"
+
+msgid "Start service"
+msgstr "启动屏幕服务"
+
+msgid "Stop service"
+msgstr "停止屏幕服务"
+
+msgid "Restart service"
+msgstr "重启屏幕服务"
+
+msgid "Screen awakened"
+msgstr "屏幕已点亮"
+
+msgid "Screen turned off"
+msgstr "屏幕已熄灭"
+
+msgid "Screen service started"
+msgstr "屏幕服务已启动"
+
+msgid "Screen service stopped"
+msgstr "屏幕服务已停止"
+
+msgid "Screen service restarting"
+msgstr "屏幕服务正在重启"
+
+msgid "Display settings"
+msgstr "显示设置"
+
+msgid "Enable phone screen"
+msgstr "启用手机屏幕"
+
+msgid "Start the native display service at boot"
+msgstr "开机自动启动原生屏幕服务"
+
+msgid "Show messages and phone on screen"
+msgstr "在屏幕显示短信与电话"
+
+msgid "Hidden by default; enables local SMS and full call controls on the physical screen"
+msgstr "默认隐藏；开启后可在实体屏幕收发短信并完整控制通话"
+
+msgid "Keep screen always on"
+msgstr "屏幕始终亮起"
+
+msgid "Ignore the automatic screen timeout"
+msgstr "忽略自动息屏时间"
+
+msgid "Brightness"
+msgstr "亮度"
+
+msgid "Native panel backlight level"
+msgstr "原生屏幕背光亮度"
+
+msgid "Screen timeout"
+msgstr "息屏时间"
+
+msgid " s"
+msgstr " 秒"
+
+msgid "Turn off after the last touch"
+msgstr "最后一次触摸后自动熄屏"
+
+msgid "Live refresh"
+msgstr "实时刷新"
+
+msgid "Hardware and network data interval"
+msgstr "硬件与网络数据刷新间隔"
+
+msgid "Physical buttons and wake"
+msgstr "实体按键与唤醒"
+
+msgid "Power button controls screen"
+msgstr "电源键控制屏幕"
+
+msgid "Short press turns the panel off or on"
+msgstr "短按电源键熄屏或点亮屏幕"
+
+msgid "One press turns a lit screen off; consecutive presses wake it"
+msgstr "亮屏时单按熄屏，熄屏时连续按键唤醒"
+
+msgid "Wake press count"
+msgstr "唤醒按键次数"
+
+msgid "Number of consecutive power-button presses required while the screen is off"
+msgstr "屏幕熄灭后需要连续按电源键的次数"
+
+msgid "Wake press interval"
+msgstr "连续按键间隔"
+
+msgid "Maximum interval allowed between consecutive presses"
+msgstr "连续两次按键允许的最大间隔"
+
+msgid " times"
+msgstr " 次"
+
+msgid " ms"
+msgstr " 毫秒"
+
+msgid "Touch to wake"
+msgstr "触摸唤醒"
+
+msgid "Allow a new touch to wake an extinguished panel"
+msgstr "允许新的触摸操作点亮已熄灭的屏幕"
+
+msgid "Raise to wake"
+msgstr "抬起唤醒"
+
+msgid "Motion sensor is unavailable"
+msgstr "动作传感器不可用"
+
+msgid "Motion-sensor compatibility is not enabled yet"
+msgstr "动作传感器兼容层尚未开放"
+
+msgid "Volume overlay"
+msgstr "音量浮层"
+
+msgid "Show the top-level volume panel for physical volume keys"
+msgstr "按实体音量键时在顶层显示音量面板"
+
+msgid "Speed-test settings"
+msgstr "测速设置"
+
+msgid "Duration"
+msgstr "测速时长"
+
+msgid "Seconds for each download or upload phase"
+msgstr "下载和上传各自的测试秒数"
+
+msgid "Parallel threads"
+msgstr "并发线程"
+
+msgid "Aggregate workers across domestic IPv4 mirrors"
+msgstr "国内 IPv4 镜像聚合并发数"
+
+msgid " s/direction"
+msgstr " 秒/方向"
+
+msgid "Physical screen shortcuts"
+msgstr "实体屏幕快捷切换"
+
+msgid "Show on screen"
+msgstr "在实体屏幕显示"
+
+msgid "Physical screen switched"
+msgstr "实体屏幕页面已切换"
+
+msgid "Start test"
+msgstr "开始测速"
+
+msgid "Aggregate speed test started"
+msgstr "聚合测速已开始"
+
+msgid "Screen backend returned invalid data"
+msgstr "屏幕后端返回了无效数据"
+
+msgid "Screen operation failed"
+msgstr "屏幕操作失败"

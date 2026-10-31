@@ -1,0 +1,35 @@
+#!/bin/sh
+
+# Versioned migration for existing nwrt overlays.  Only add the phone CPE
+# interfaces when absent; preserve every user-selected package and setting.
+if ! uci -q get network.wifi_lan >/dev/null; then
+	uci -q batch <<'EOF'
+set network.wifi_lan='interface'
+set network.wifi_lan.proto='static'
+set network.wifi_lan.ipaddr='192.168.67.1'
+set network.wifi_lan.netmask='255.255.255.0'
+commit network
+EOF
+fi
+
+if ! uci -q get dhcp.wifi_lan >/dev/null; then
+	uci -q batch <<'EOF'
+set dhcp.wifi_lan='dhcp'
+set dhcp.wifi_lan.interface='wifi_lan'
+set dhcp.wifi_lan.start='100'
+set dhcp.wifi_lan.limit='100'
+set dhcp.wifi_lan.leasetime='12h'
+set dhcp.wifi_lan.dhcpv4='server'
+set dhcp.wifi_lan.ignore='0'
+commit dhcp
+EOF
+fi
+
+# USB is a routed CPE LAN, not a gateway-free maintenance-only link.  Serve
+# addresses on usb0 so a newly attached computer never falls back to APIPA
+# 169.254/16 and receives the nwrt router/DNS automatically.
+uci -q set dhcp.usb_lan.ignore='0'
+uci -q commit dhcp
+/etc/init.d/dnsmasq enable >/dev/null 2>&1 || true
+
+exit 0

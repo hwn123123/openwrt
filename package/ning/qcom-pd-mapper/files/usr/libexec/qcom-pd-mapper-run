@@ -1,0 +1,15 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-3-Clause
+
+attempt=0
+while [ "$attempt" -lt 60 ]; do
+	if find /lib/firmware -maxdepth 2 -type f \( -name '*.jsn' -o -name '*.jsn.xz' \) \
+		2>/dev/null | grep -q .; then
+		exec /usr/bin/pd-mapper
+	fi
+	attempt=$((attempt + 1))
+	sleep 1
+done
+
+logger -t qcom-pd-mapper "no protection-domain JSON appeared under /lib/firmware"
+exit 1

@@ -1,0 +1,117 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+# Use the same entry point as Xiaomi recovery.  adsp-loader owns the complete
+# ADSP/DTB/power sequence; writing remoteproc/state directly bypasses that
+# coordination and is unsafe on this device.
+START=11
+STOP=87
+
+TAG=xm14pro-adsp
+
+log() {
+	logger -t "$TAG" -- "$*"
+}
+
+find_adsp() {
+	local path name
+	for path in /sys/class/remoteproc/remoteproc*; do
+		[ -d "$path" ] || continue
+		name="$(cat "$path/name" 2>/dev/null)"
+		case "$name" in
+			*remoteproc-adsp) printf '%s\n' "$path"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+wait_for_state() {
+	local path="$1" wanted="$2" count=0
+	while [ "$count" -lt 20 ]; do
+		[ "$(cat "$path/state" 2>/dev/null)" = "$wanted" ] && return 0
+		count=$((count + 1))
+		sleep 1
+	done
+	return 1
+}
+
+wait_for_loader() {
+	local count=0
+	while [ "$count" -lt 20 ]; do
+		[ -w /sys/kernel/boot_adsp/boot ] && \
+			[ -r /vendor/firmware_mnt/image/adsp.mdt ] && return 0
+		count=$((count + 1))
+		sleep 1
+	done
+	return 1
+}
+
+wait_for_power_supply() {
+	local count=0
+	while [ "$count" -lt 20 ]; do
+		[ -d /sys/class/power_supply/battery ] && return 0
+		count=$((count + 1))
+		sleep 1
+	done
+	return 1
+}
+
+wait_for_audio_card() {
+	local count=0 pcm_count
+	while [ "$count" -lt 10 ]; do
+		if grep -q 'pineapple-mtp-snd-card' /proc/asound/cards 2>/dev/null; then
+			pcm_count="$(wc -l < /proc/asound/pcm 2>/dev/null)"
+			[ "$pcm_count" -eq 53 ] && return 0
+		fi
+		count=$((count + 1))
+		sleep 1
+	done
+	return 1
+}
+
+start() {
+	local remoteproc state
+
+	remoteproc="$(find_adsp)" || {
+		log "ADSP remote processor was not found"
+		return 1
+	}
+
+	state="$(cat "$remoteproc/state" 2>/dev/null)"
+	if [ "$state" = running ]; then
+		log "ADSP is already running"
+		return 0
+	fi
+
+	wait_for_loader || {
+		log "stock adsp-loader or firmware did not become ready; keeping ADSP stopped"
+		return 1
+	}
+
+	printf '1\n' > /sys/kernel/boot_adsp/boot || {
+		log "stock adsp-loader rejected the boot request"
+		return 1
+	}
+	wait_for_state "$remoteproc" running || {
+		log "ADSP did not reach running state after the stock loader request"
+		return 1
+	}
+
+	if wait_for_audio_card; then
+		log "stock audio card is online with 53 PCM links"
+	else
+		log "ADSP is running but the complete 53-link stock audio card is unavailable"
+	fi
+
+	if wait_for_power_supply; then
+		log "ADSP is running and the battery power-supply is available"
+	else
+		log "ADSP is running; battery power-supply did not appear within 20 seconds"
+	fi
+}
+
+stop() {
+	# The ADSP owns the live charger/Type-C channel.  Do not tear it down while
+	# userspace is stopping; a controlled reboot resets the remote processor.
+	return 0
+}

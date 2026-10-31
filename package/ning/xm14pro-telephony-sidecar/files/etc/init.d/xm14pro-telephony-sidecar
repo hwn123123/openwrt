@@ -1,0 +1,248 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+# S57 starts the three Binder managers, S58 starts pm-service and S59 releases
+# pm-proxy after the manager is alive. S61 NICM and S63 cellular perform the
+# phone's B2G/UIM/data preparation which publishes the complete QRTR registry.
+# QCRIL/IMS must start only after those services and the real registry are ready.
+START=64
+STOP=40
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+STATE_ROOT=/mnt/nwrt-data/device-state/telephony
+LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
+
+bind_once() {
+	local source="$1"
+	local target="$2"
+
+	grep -Fqs " $target " /proc/mounts && return 0
+	mkdir -p "$source" "$target" || return 1
+	mount -o bind "$source" "$target"
+}
+
+prepare_radio_state() {
+	local radio="$STATE_ROOT/radio"
+	local imslogs="$STATE_ROOT/imslogs"
+	local modem="$STATE_ROOT/modem"
+	local modem_config="$ANDROID_ROOT/data/vendor/modem_config"
+	local properties="$radio/.xm14pro-properties"
+
+	# The earlier Binder-manager service owns this mount. Keep this idempotent
+	# check so a manual telephony restart cannot run against an incomplete root.
+	bind_once /sys/fs/selinux "$ANDROID_ROOT/sys/fs/selinux" || return 1
+
+	mkdir -p "$radio/apkmbnconfig" "$radio/sha256" "$radio/efs" \
+		"$properties" \
+		"$imslogs" "$modem" "$ANDROID_ROOT/dev/socket/qcrild" \
+		"$ANDROID_ROOT/dev/socket/qmux_radio" || return 1
+	# Stock qcrilNrd.rc creates this directory as 0750 radio:radio. QCRIL owns
+	# the per-slot legacy control sockets below it; a root-owned 0755 directory
+	# lets the process traverse the path but prevents it from creating sockets.
+	chown 1001:1001 "$ANDROID_ROOT/dev/socket/qcrild" || return 1
+	chmod 0750 "$ANDROID_ROOT/dev/socket/qcrild" || return 1
+	# Stock init.qcom.rc creates qmux_radio as radio:radio 0770 and then sets
+	# the setgid bit. libqcrilNrQtiBus uses its ril_ipc socket to coordinate
+	# both QCRIL processes; without the directory its monitor aborts each RIL
+	# after the fixed 100/200-second connection timeout.
+	chown 1001:1001 "$ANDROID_ROOT/dev/socket/qmux_radio" || return 1
+	chmod 2770 "$ANDROID_ROOT/dev/socket/qmux_radio" || return 1
+	chown -R 1001:1001 "$radio" "$imslogs" "$modem" || return 1
+	chmod 0770 "$radio" "$imslogs" || return 1
+	# Android creates this writable tree as radio:radio before QCRIL starts.
+	# The package contains only the hardware profile selected by this device.
+	# Keep it as a real nwrt path; no bind mount or cross-slot dependency.
+	mkdir -p "$modem_config/mcfg_hw/generic/common/Lanai/STANDALONE/LA/DSDA_Hybrid" || return 1
+	chown -R 1001:1001 "$modem_config" || return 1
+	find "$modem_config" -type d -exec chmod 0770 {} + || return 1
+	find "$modem_config" -type f -exec chmod 0660 {} + || return 1
+
+	# Android property_service normally resets these process-coordination
+	# properties for a new radio stack and serializes QCRIL's updates.  The
+	# compatibility preload exposes the files only to the stock telephony
+	# processes.  Keep rild_init_num absent/empty initially, matching Android,
+	# start the pre-init lock released and reset the shared database state before
+	# either QCRIL instance starts.
+	: > "$properties/rild_init_num" || return 1
+	printf '0' > "$properties/qcril_pre_init_lock_held" || return 1
+	printf '0' > "$properties/db_state" || return 1
+	chown -R 1001:1001 "$properties" || return 1
+	chmod 0770 "$properties" || return 1
+	chmod 0660 "$properties/rild_init_num" \
+		"$properties/qcril_pre_init_lock_held" \
+		"$properties/db_state" || return 1
+
+	if [ ! -s "$radio/qcrilNr_prebuilt.db" ]; then
+		cp "$ANDROID_ROOT/vendor/etc/qcril_database/qcrilNr.db" \
+			"$radio/qcrilNr_prebuilt.db" || return 1
+		chown 1001:1001 "$radio/qcrilNr_prebuilt.db"
+		chmod 0660 "$radio/qcrilNr_prebuilt.db"
+	fi
+	[ -e "$radio/copy_complete" ] || echo 1 > "$radio/copy_complete"
+	[ -e "$radio/prebuilt_db_support" ] || echo 1 > "$radio/prebuilt_db_support"
+	[ -e "$radio/db_check_done" ] || echo 0 > "$radio/db_check_done"
+	chown 1001:1001 "$radio/copy_complete" "$radio/prebuilt_db_support" \
+		"$radio/db_check_done"
+	chmod 0660 "$radio/copy_complete" "$radio/db_check_done"
+	chmod 0400 "$radio/prebuilt_db_support"
+
+	bind_once "$radio" "$ANDROID_ROOT/data/vendor/radio" || return 1
+	bind_once "$imslogs" "$ANDROID_ROOT/data/vendor/imslogs" || return 1
+	bind_once "$modem" "$ANDROID_ROOT/data/vendor/modem" || return 1
+}
+
+add_instance() {
+	local name="$1"
+
+	procd_open_instance "$name"
+	procd_set_param command "$LAUNCHER" "$ANDROID_ROOT" "$name"
+	procd_set_param respawn 3600 5 3
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+manager_running() {
+	local command="$1"
+
+	ps w | awk -v command="$command" '
+		index($0, command) && $0 !~ /awk -v command=/ { found = 1 }
+		END { exit found ? 0 : 1 }
+	'
+}
+
+wait_for_binder_managers() {
+	local attempt=0
+
+	# The managers are registered by the preceding S57 service after BinderFS
+	# exists.  Keep only a short bounded wait for procd to exec all instances;
+	# a long wait here would delay the rest of rcS if a real dependency failed.
+	while [ "$attempt" -lt 15 ]; do
+		if manager_running '/system/bin/servicemanager' &&
+		   manager_running '/system_ext/bin/hwservicemanager' &&
+		   manager_running '/vendor/bin/vndservicemanager /dev/vndbinder'; then
+			# Do not release QCRIL/IMS against a manager that has only just
+			# execed and may still fail its SELinux/VINTF initialization.
+			sleep 1
+			manager_running '/system/bin/servicemanager' &&
+			manager_running '/system_ext/bin/hwservicemanager' &&
+			manager_running '/vendor/bin/vndservicemanager /dev/vndbinder'
+			return $?
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+wait_for_peripheral_services() {
+	local attempt=0
+
+	while [ "$attempt" -lt 15 ]; do
+		if manager_running '/vendor/bin/pm-service' &&
+		   manager_running '/vendor/bin/pm-proxy'; then
+			# Both processes must survive one complete scheduler interval before
+			# QCRIL is released. This mirrors Android's per_mgr=running trigger.
+			sleep 1
+			manager_running '/vendor/bin/pm-service' &&
+			manager_running '/vendor/bin/pm-proxy'
+			return $?
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+modem_qmi_ready() {
+	# QCRIL does not recover its complete RIL/AIDL initialization if it is
+	# released before MPSS has published the core QRTR services.  Check the
+	# real modem service registry rather than guessing from a fixed delay.
+	# These are protocol services, not operator, SIM, APN or subscription data:
+	# DMS=2, NAS=3, WMS=5, Voice=9 and UIM=11.
+	qrtr-lookup 2>/dev/null | awk '
+		$1 == 2  { dms = 1 }
+		$1 == 3  { nas = 1 }
+		$1 == 5  { wms = 1 }
+		$1 == 9  { voice = 1 }
+		$1 == 11 { uim = 1 }
+		END { exit !(dms && nas && wms && voice && uim) }
+	'
+}
+
+wait_for_modem_qmi() {
+	local attempt=0
+
+	# A Xiaomi 14 Pro cold boot normally publishes these services at roughly
+	# 34 seconds.  Keep rcS blocked until the actual services exist so QCRIL,
+	# IMS and all downstream controllers observe one coherent cold-start path.
+	while [ "$attempt" -lt 90 ]; do
+		modem_qmi_ready && return 0
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+factory_service_ready() {
+	"$LAUNCHER" "$ANDROID_ROOT" factory-probe \
+		'vendor.qti.data.factoryservice.IFactory/default' >/dev/null 2>&1
+}
+
+wait_for_data_factory() {
+	local attempt=0
+
+	# cnd is a separate S64 service and registers the stock Stable-AIDL data
+	# factory. Gate QCRIL/IMS on the real Binder object, not on a delay or a
+	# fabricated property, so a failed cnd can never produce a false-ready UI.
+	while [ "$attempt" -lt 45 ]; do
+		factory_service_ready && return 0
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+start_service() {
+	local enabled
+
+	config_load xm14telephony
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+
+	/etc/init.d/xm14pro-qwes running || /etc/init.d/xm14pro-qwes start
+	prepare_radio_state || {
+		logger -t xm14pro-telephony 'failed to prepare persistent radio state'
+		return 1
+	}
+
+	# These managers belong to the preceding, independent procd service. Waiting
+	# here is valid because that service has already returned and procd has
+	# actually spawned its instances.
+	wait_for_binder_managers || {
+		logger -t xm14pro-telephony 'Binder service managers failed to become ready'
+		return 1
+	}
+	wait_for_peripheral_services || {
+		logger -t xm14pro-telephony 'Qualcomm peripheral services failed to become ready'
+		return 1
+	}
+	wait_for_modem_qmi || {
+		logger -t xm14pro-telephony 'MPSS core QMI services failed to become ready'
+		return 1
+	}
+	wait_for_data_factory || {
+		logger -t xm14pro-telephony 'Qualcomm data factory service failed to become ready'
+		return 1
+	}
+	add_instance qcril1
+	add_instance qcril2
+	add_instance imsdaemon
+	add_instance ims-data
+	add_instance ims-rtp
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14telephony
+}

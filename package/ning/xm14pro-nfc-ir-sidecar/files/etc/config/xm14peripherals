@@ -1,0 +1,5 @@
+config peripherals 'main'
+	option enabled '1'
+	option nfc '1'
+	option nfc_mode 'share'
+	option infrared '1'

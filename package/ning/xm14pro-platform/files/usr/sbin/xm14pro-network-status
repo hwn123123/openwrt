@@ -1,0 +1,83 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+. /usr/share/libubox/jshn.sh
+
+mounted() {
+	grep -qs "[[:space:]]$1[[:space:]]" /proc/mounts
+}
+
+module_loaded() {
+	grep -qs "^$1 " /proc/modules
+}
+
+interface_exists() {
+	[ -d "/sys/class/net/$1" ]
+}
+
+first_matching_interface() {
+	local path
+	for path in /sys/class/net/$1; do
+		[ -e "$path" ] || continue
+		basename "$path"
+		return 0
+	done
+	return 1
+}
+
+json_init
+json_add_string platform "Xiaomi 14 Pro (shennong)"
+json_add_string kernel "$(uname -r)"
+
+json_add_object firmware
+mounted /vendor/firmware_mnt && json_add_boolean modem 1 || json_add_boolean modem 0
+mounted /vendor/modem_firmware && json_add_boolean modem_config 1 || json_add_boolean modem_config 0
+mounted /vendor/dsp && json_add_boolean dsp 1 || json_add_boolean dsp 0
+mounted /vendor/bt_firmware && json_add_boolean bluetooth 1 || json_add_boolean bluetooth 0
+json_close_object
+
+json_add_object drivers
+module_loaded qca_cld3_kiwi_v2 && json_add_boolean wifi 1 || json_add_boolean wifi 0
+module_loaded cnss2 && json_add_boolean cnss 1 || json_add_boolean cnss 0
+module_loaded ipam && json_add_boolean ipa 1 || json_add_boolean ipa 0
+module_loaded rmnet_core && json_add_boolean rmnet 1 || json_add_boolean rmnet 0
+module_loaded qrtr && json_add_boolean qrtr 1 || json_add_boolean qrtr 0
+json_close_object
+
+json_add_object interfaces
+json_add_string wifi "$(first_matching_interface 'wlan*')"
+json_add_string cellular "$(first_matching_interface 'rmnet_data*')"
+interface_exists usb0 && json_add_string usb usb0 || json_add_string usb ""
+json_close_object
+
+json_add_object wifi
+json_add_string configured_country "$(uci -q get xm14wifi.main.country)"
+json_add_string kernel_country "$(iw reg get 2>/dev/null | sed -n 's/^country \([A-Z][A-Z]\):.*/\1/p' | head -n 1)"
+json_add_string profile "$(uci -q get xm14wifi.main.profile)"
+json_add_int ap_count "$(iw dev 2>/dev/null | awk '$1 == "type" && $2 == "AP" { count++ } END { print count + 0 }')"
+json_close_object
+
+json_add_object services
+pidof rmtfs >/dev/null 2>&1 && json_add_boolean rmtfs 1 || json_add_boolean rmtfs 0
+pidof pd-mapper >/dev/null 2>&1 && json_add_boolean pd_mapper 1 || json_add_boolean pd_mapper 0
+pidof tqftpserv >/dev/null 2>&1 && json_add_boolean tqftpserv 1 || json_add_boolean tqftpserv 0
+if command -v mmcli >/dev/null 2>&1 && mmcli -L 2>/dev/null | grep -q '/Modem/'; then
+	json_add_boolean modemmanager 1
+else
+	json_add_boolean modemmanager 0
+fi
+if ubus -S call network.interface.cellular status 2>/dev/null |
+		jsonfilter -q -e '@.up' 2>/dev/null | grep -qx true; then
+	json_add_boolean cellular_connected 1
+else
+	json_add_boolean cellular_connected 0
+fi
+if [ -x /usr/sbin/iptables ] &&
+		/usr/sbin/iptables -w 1 -t nat -C POSTROUTING -j XMCPE_NAT >/dev/null 2>&1; then
+	json_add_boolean cpe_forwarding 1
+else
+	json_add_boolean cpe_forwarding 0
+fi
+json_close_object
+
+json_dump

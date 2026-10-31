@@ -1,0 +1,194 @@
+#!/bin/sh
+
+TAG=xm14-cellular
+STATE_ROOT=/var/run/xm14pro
+interface="$1"
+qmi_subscription="$2"
+apn="$3"
+
+case "$interface" in
+	''|*[!A-Za-z0-9_.-]*) exit 2 ;;
+esac
+case "$qmi_subscription" in
+	''|0|1|2) ;;
+	*) exit 2 ;;
+esac
+case "$apn" in
+	*[!A-Za-z0-9._-]*) exit 2 ;;
+esac
+
+log_file="$STATE_ROOT/dsi-${interface}.log"
+state_file="$STATE_ROOT/dsi-${interface}.state"
+error_file="$STATE_ROOT/dsi-${interface}.error"
+pid_file="$STATE_ROOT/dsi-${interface}.pid"
+lock_dir="$STATE_ROOT/dsi-${interface}.lock"
+lock_pid_file="$lock_dir/pid"
+stop_file="$STATE_ROOT/dsi-stop-${interface}"
+dial_pid=
+
+value() {
+	sed -n "s/^$1=//p" "$log_file" | tail -n 1
+}
+
+valid_ipv4() {
+	case "$1" in ''|*[!0-9.]*) return 1 ;; *) return 0 ;; esac
+}
+
+valid_ipv6() {
+	case "$1" in ''|*[!0-9A-Fa-f:]*) return 1 ;; *) return 0 ;; esac
+}
+
+stop_dial() {
+	local count=0
+	: > "$stop_file"
+	while [ -n "$dial_pid" ] && kill -0 "$dial_pid" 2>/dev/null &&
+	      [ "$count" -lt 10 ]; do
+		count=$((count + 1))
+		sleep 1
+	done
+	if [ -n "$dial_pid" ] && kill -0 "$dial_pid" 2>/dev/null; then
+		kill "$dial_pid" 2>/dev/null || true
+	fi
+}
+
+cleanup() {
+	stop_dial
+	rm -f "$pid_file" "$stop_file" "$state_file"
+	rm -f "$lock_pid_file"
+	rmdir "$lock_dir" 2>/dev/null || true
+}
+
+acquire_lock() {
+	local owner command
+
+	if mkdir "$lock_dir" 2>/dev/null; then
+		printf '%s\n' "$$" > "$lock_pid_file"
+		return 0
+	fi
+
+	owner="$(cat "$lock_pid_file" 2>/dev/null || true)"
+	case "$owner" in
+		''|*[!0-9]*) ;;
+		*)
+			if kill -0 "$owner" 2>/dev/null; then
+				command="$(tr '\000' ' ' < "/proc/$owner/cmdline" 2>/dev/null || true)"
+				case "$command" in
+					*'/usr/libexec/xm14pro-modem/dsi-session'*) return 1 ;;
+				esac
+			fi
+			;;
+	esac
+
+	# A netifd reload may SIGKILL the protocol command before its EXIT trap.
+	# Remove only a lock whose recorded owner is no longer this helper.
+	rm -f "$lock_pid_file"
+	rmdir "$lock_dir" 2>/dev/null || return 1
+	mkdir "$lock_dir" 2>/dev/null || return 1
+	printf '%s\n' "$$" > "$lock_pid_file"
+}
+
+publish_state() {
+	local index family tmp device qmi_subscription have_address=0
+	local ipv4_address ipv4_prefix ipv4_gateway ipv4_dns1 ipv4_dns2
+	local ipv6_address ipv6_prefix ipv6_gateway ipv6_dns1 ipv6_dns2
+
+	grep -q '^XM14_DSI_DIAL_CONNECTED$' "$log_file" || return 1
+	[ "$(value dsi_get_ip_addr)" = 0 ] || return 1
+	device="$(value device_name)"
+	case "$device" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
+	case "$(value dsi_subscription)" in
+		1) qmi_subscription=0 ;;
+		2) qmi_subscription=1 ;;
+		3) qmi_subscription=2 ;;
+		*) return 1 ;;
+	esac
+
+	for index in 0 1 2 3; do
+		family="$(value dsi_ip_${index}_interface_family)"
+		case "$family" in
+			2)
+				[ "$(value dsi_ip_${index}_interface_valid)" = 1 ] || continue
+				ipv4_address="$(value dsi_ip_${index}_interface)"
+				ipv4_prefix="$(value dsi_ip_${index}_interface_mask)"
+				if [ "$(value dsi_ip_${index}_gateway_valid)" = 1 ]; then ipv4_gateway="$(value dsi_ip_${index}_gateway)"; else ipv4_gateway=; fi
+				if [ "$(value dsi_ip_${index}_dns_primary_valid)" = 1 ]; then ipv4_dns1="$(value dsi_ip_${index}_dns_primary)"; else ipv4_dns1=; fi
+				if [ "$(value dsi_ip_${index}_dns_secondary_valid)" = 1 ]; then ipv4_dns2="$(value dsi_ip_${index}_dns_secondary)"; else ipv4_dns2=; fi
+				valid_ipv4 "$ipv4_address" || return 1
+				case "$ipv4_prefix" in ''|*[!0-9]*) return 1 ;; esac
+				[ "$ipv4_prefix" -le 32 ] || return 1
+				[ -z "$ipv4_gateway" ] || valid_ipv4 "$ipv4_gateway" || return 1
+				[ -z "$ipv4_dns1" ] || valid_ipv4 "$ipv4_dns1" || return 1
+				[ -z "$ipv4_dns2" ] || valid_ipv4 "$ipv4_dns2" || return 1
+				have_address=1
+				;;
+			10)
+				[ "$(value dsi_ip_${index}_interface_valid)" = 1 ] || continue
+				ipv6_address="$(value dsi_ip_${index}_interface)"
+				ipv6_prefix="$(value dsi_ip_${index}_interface_mask)"
+				if [ "$(value dsi_ip_${index}_gateway_valid)" = 1 ]; then ipv6_gateway="$(value dsi_ip_${index}_gateway)"; else ipv6_gateway=; fi
+				if [ "$(value dsi_ip_${index}_dns_primary_valid)" = 1 ]; then ipv6_dns1="$(value dsi_ip_${index}_dns_primary)"; else ipv6_dns1=; fi
+				if [ "$(value dsi_ip_${index}_dns_secondary_valid)" = 1 ]; then ipv6_dns2="$(value dsi_ip_${index}_dns_secondary)"; else ipv6_dns2=; fi
+				valid_ipv6 "$ipv6_address" || return 1
+				case "$ipv6_prefix" in ''|*[!0-9]*) return 1 ;; esac
+				[ "$ipv6_prefix" -le 128 ] || return 1
+				[ -z "$ipv6_gateway" ] || valid_ipv6 "$ipv6_gateway" || return 1
+				[ -z "$ipv6_dns1" ] || valid_ipv6 "$ipv6_dns1" || return 1
+				[ -z "$ipv6_dns2" ] || valid_ipv6 "$ipv6_dns2" || return 1
+				have_address=1
+				;;
+		esac
+	done
+	[ "$have_address" = 1 ] || return 1
+
+	tmp="$state_file.$$"
+	{
+		printf 'device=%s\n' "$device"
+		printf 'qmi_subscription=%s\n' "$qmi_subscription"
+		[ -z "$ipv4_address" ] || printf 'ipv4_address=%s\nipv4_prefix=%s\n' "$ipv4_address" "$ipv4_prefix"
+		[ -z "$ipv4_gateway" ] || printf 'ipv4_gateway=%s\n' "$ipv4_gateway"
+		[ -z "$ipv4_dns1" ] || printf 'ipv4_dns1=%s\n' "$ipv4_dns1"
+		[ -z "$ipv4_dns2" ] || printf 'ipv4_dns2=%s\n' "$ipv4_dns2"
+		[ -z "$ipv6_address" ] || printf 'ipv6_address=%s\nipv6_prefix=%s\n' "$ipv6_address" "$ipv6_prefix"
+		[ -z "$ipv6_gateway" ] || printf 'ipv6_gateway=%s\n' "$ipv6_gateway"
+		[ -z "$ipv6_dns1" ] || printf 'ipv6_dns1=%s\n' "$ipv6_dns1"
+		[ -z "$ipv6_dns2" ] || printf 'ipv6_dns2=%s\n' "$ipv6_dns2"
+	} > "$tmp" || return 1
+	mv -f "$tmp" "$state_file"
+	logger -t "$TAG" "stock DSI session connected on $device"
+}
+
+mkdir -p "$STATE_ROOT" || exit 1
+if ! acquire_lock; then
+	printf '%s\n' 'another DSI data session is already running' > "$error_file"
+	exit 1
+fi
+trap 'cleanup; exit 0' INT TERM
+trap cleanup EXIT
+rm -f "$state_file" "$error_file" "$pid_file" "$stop_file"
+: > "$log_file"
+
+/usr/libexec/xm14pro-nicm/dsi-dial "$apn" 2147483647 \
+	"$qmi_subscription" "$interface" > "$log_file" 2>&1 &
+dial_pid=$!
+printf '%s\n' "$dial_pid" > "$pid_file"
+
+published=0
+while kill -0 "$dial_pid" 2>/dev/null; do
+	if [ "$published" = 0 ] && publish_state; then
+		published=1
+	fi
+	sleep 1
+done
+wait "$dial_pid"
+result=$?
+if [ "$published" = 0 ]; then
+	printf 'DSI exited with status %s; event=%s; ipv4_reason=%s/%s; ipv6_reason=%s/%s\n' \
+		"$result" "$(value dsi_last_event)" \
+		"$(value dsi_call_end_ipv4_type)" "$(value dsi_call_end_ipv4_code)" \
+		"$(value dsi_call_end_ipv6_type)" "$(value dsi_call_end_ipv6_code)" \
+		> "$error_file"
+	# Give the setup handler time to publish a netifd error and block automatic
+	# restart before the supervised command disappears.
+	sleep 2
+fi
+exit "$result"

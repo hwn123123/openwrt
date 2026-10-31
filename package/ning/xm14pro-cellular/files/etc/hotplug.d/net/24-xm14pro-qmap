@@ -1,0 +1,27 @@
+#!/bin/sh
+
+# ModemManager creates rmnet_data links dynamically for Qualcomm IPA data
+# calls. OpenWrt's generic hotplug event has no physical-device UID for these
+# virtual links, so attach them to the already known qcom-soc modem. Keep the
+# old qmapmux name only for cleanup compatibility with earlier test builds.
+case "$INTERFACE" in
+	rmnet_data*|qmapmux*) ;;
+	*) exit 0 ;;
+esac
+
+case "$ACTION" in
+	add|remove) ;;
+	*) exit 0 ;;
+esac
+
+[ -x /usr/bin/mmcli ] || exit 0
+
+result=$(mmcli --report-kernel-event="action=$ACTION,name=$INTERFACE,subsystem=net,uid=qcom-soc" 2>&1)
+status=$?
+if [ "$status" -eq 0 ]; then
+	logger -t xm14-qmap "$ACTION $INTERFACE assigned to qcom-soc"
+else
+	logger -t xm14-qmap "$ACTION $INTERFACE report failed: $result"
+fi
+
+exit "$status"

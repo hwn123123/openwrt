@@ -1,0 +1,8 @@
+{
+	"admin/services/xm14pro-audio": {
+		"title": "音频",
+		"order": 27,
+		"action": { "type": "view", "path": "services/xm14pro-audio" },
+		"depends": { "acl": [ "xm14pro-audio" ] }
+	}
+}

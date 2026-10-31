@@ -1,0 +1,5 @@
+#!/bin/sh
+case " $* " in
+	*" -C "*) exit 1 ;;
+esac
+printf 'iptables %s\n' "$*" >>"$XM14PRO_TEST_LOG"

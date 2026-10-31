@@ -1,0 +1,236 @@
+#!/bin/sh
+
+TAG=xm14-uim
+DEVICE=qrtr://0
+MONITOR_PID=
+STATE_DIR=/var/run/xm14pro
+SUBSCRIPTION_FILE=$STATE_DIR/qmi-subscription
+UIM_STATE_FILE=$STATE_DIR/uim-state
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+cleanup() {
+	[ -n "$MONITOR_PID" ] && kill "$MONITOR_PID" 2>/dev/null
+	wait "$MONITOR_PID" 2>/dev/null
+}
+
+trap cleanup INT TERM EXIT
+
+publish_subscription() {
+	local value="$1" tmp
+
+	mkdir -p "$STATE_DIR" || return 1
+	tmp="$SUBSCRIPTION_FILE.$$"
+	printf '%s\n' "$value" > "$tmp" || return 1
+	mv -f "$tmp" "$SUBSCRIPTION_FILE"
+}
+
+publish_uim_state() {
+	local raw="$1" active_slot="$2" subscription="$3" tmp
+
+	mkdir -p "$STATE_DIR" || return 1
+	tmp="$UIM_STATE_FILE.$$"
+	{
+		printf 'active_data_slot=%s\nsubscription=%s\n' "$active_slot" "$subscription"
+		printf '%s\n' "$raw" | awk '
+			BEGIN {
+				present[1] = 0; present[2] = 0
+				ready[1] = 0; ready[2] = 0
+			}
+			/^Slot \[[0-9]+\]:/ {
+				slot = $2
+				gsub(/\[|\]|:/, "", slot)
+			}
+			/Card state:.*present/ { if (slot == 1 || slot == 2) present[slot] = 1 }
+			/Application state:.*ready/ { if (slot == 1 || slot == 2) ready[slot] = 1 }
+			END {
+				for (i = 1; i <= 2; i++) {
+					printf "slot%d_present=%d\n", i, present[i]
+					printf "slot%d_ready=%d\n", i, ready[i]
+				}
+			}'
+		printf 'updated_uptime=%s\n' "$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	} > "$tmp" || return 1
+	mv -f "$tmp" "$UIM_STATE_FILE"
+}
+
+reload_radio_stack() {
+	# A provisioning-session change is not consumed by NAS until the radio
+	# leaves online mode once.  This is a radio-only cycle; it neither reboots
+	# Linux nor starts a packet-data session.
+	timeout -k 2 12 qmicli -d "$DEVICE" --dms-set-operating-mode=low-power \
+		>/dev/null 2>&1 || return 1
+	sleep 2
+	timeout -k 2 12 qmicli -d "$DEVICE" --dms-set-operating-mode=online \
+		>/dev/null 2>&1 || return 1
+	sleep 3
+}
+
+activate_selected_gw() {
+	local status target slot aid session label subscription active wrong_session wrong_label wrong_active wanted attempt=0
+
+	wanted="$(uci -q get xm14cellular.main.data_slot)"
+	case "$wanted" in
+		auto|1|2) ;;
+		*) wanted=auto ;;
+	esac
+
+	# Preserve the stock DSDS mapping: physical slot 1 belongs to Primary GW and
+	# physical slot 2 belongs to Secondary GW. Moving a slot-2 card to Primary
+	# makes control-plane registration appear to work but leaves the data call on
+	# the wrong Qualcomm stack.
+	while [ "$attempt" -lt 30 ]; do
+		status="$(qmicli -d "$DEVICE" --uim-get-card-status 2>/dev/null)" || status=
+		target="$(printf '%s\n' "$status" | awk -v wanted="$wanted" '
+			/^Slot \[[0-9]+\]:/ {
+				slot = $2
+				gsub(/\[|\]|:/, "", slot)
+				present = 0
+				usim = 0
+			}
+			/Card state:.*present/ { present = 1 }
+			/Application type:.*usim/ { if (present) usim = 1 }
+			usim && /Application ID:/ {
+				if ((getline aidline) > 0) {
+					gsub(/[[:space:]]/, "", aidline)
+					if (wanted == "auto" || wanted == slot) {
+						print slot "|" aidline
+						exit
+					}
+				}
+			}
+		')"
+
+		if [ -n "$target" ]; then
+			slot="${target%%|*}"
+			aid="${target#*|}"
+			case "$slot" in
+				1)
+					session=primary-gw-provisioning
+					label='Primary GW'
+					subscription=0
+					wrong_session=secondary-gw-provisioning
+					wrong_label='Secondary GW'
+					;;
+				2)
+					session=secondary-gw-provisioning
+					label='Secondary GW'
+					subscription=1
+					wrong_session=primary-gw-provisioning
+					wrong_label='Primary GW'
+					;;
+				*) log "unsupported physical SIM slot $slot"; return 1 ;;
+			esac
+			active="$(printf '%s\n' "$status" | sed -n "s/.*$label:.*slot '\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+			wrong_active="$(printf '%s\n' "$status" | sed -n "s/.*$wrong_label:.*slot '\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+
+			if [ "$active" = "$slot" ]; then
+				publish_subscription "$subscription" || {
+					log "could not publish QMI subscription $subscription"
+					return 1
+				}
+				publish_uim_state "$status" "$slot" "$subscription" ||
+					log "could not publish cached UIM state"
+				log "$label already follows the ready USIM in physical slot $slot"
+				return 0
+			fi
+
+			# Older nwrt builds forced every card into Primary GW.  Undo only the
+			# provably wrong mapping for this same physical slot; never disturb a
+			# valid provisioning session owned by the other SIM in a dual-SIM setup.
+			if [ "$wrong_active" = "$slot" ]; then
+				if ! qmicli -d "$DEVICE" \
+					--uim-change-provisioning-session="session-type=$wrong_session,activate=no" \
+					>/dev/null 2>&1; then
+					log "could not deactivate stale $wrong_label session for physical slot $slot; retrying"
+					attempt=$((attempt + 1))
+					sleep 2
+					continue
+				fi
+				log "deactivated stale $wrong_label session for physical slot $slot"
+				sleep 1
+			fi
+
+			if qmicli -d "$DEVICE" \
+				--uim-change-provisioning-session="session-type=$session,activate=yes,slot=$slot,aid=$aid" \
+				>/dev/null 2>&1; then
+				log "activated physical slot $slot as the $label provisioning session"
+				publish_subscription "$subscription" || {
+					log "could not publish QMI subscription $subscription"
+					return 1
+				}
+				publish_uim_state "$status" "$slot" "$subscription" ||
+					log "could not publish cached UIM state"
+				reload_radio_stack || {
+					log "could not reload the radio after changing GW provisioning session"
+					return 1
+				}
+				return 0
+			fi
+
+			log "$label activation for physical slot $slot failed; retrying"
+		fi
+
+		attempt=$((attempt + 1))
+		sleep 2
+	done
+
+	if [ "$wanted" = auto ]; then
+		log "no ready USIM could be bound to its stock GW provisioning session"
+	else
+		log "configured data SIM slot $wanted is not ready; refusing to select another slot"
+	fi
+	return 1
+}
+
+# Wait for the stock modem remote processor to publish UIM.  bringup runs in
+# the sibling service instance and is responsible for starting remoteproc.
+count=0
+while [ "$count" -lt 90 ]; do
+	if qrtr-lookup 2>/dev/null | awk '$1 == 11 && $4 == 0 { found = 1 } END { exit !found }'; then
+		break
+	fi
+	count=$((count + 1))
+	sleep 1
+done
+
+[ "$count" -lt 90 ] || {
+	log "UIM service did not appear on QRTR node 0"
+	exit 1
+}
+
+# Restore the selected ready SIM on the same GW subscription used by Android.
+activate_selected_gw || exit 1
+
+# The init service uses this bounded mode before ModemManager starts so a cold
+# boot cannot race WDS/NAS client creation against SIM provisioning.
+[ "$1" = "--prepare-only" ] && exit 0
+
+# Keep one read-only slot-status monitor connected directly to QRTR for the
+# whole nwrt session.  The generic qmi-proxy is not stable with this phone's
+# in-SoC modem.
+qmicli -d "$DEVICE" --uim-monitor-slot-status &
+MONITOR_PID=$!
+sleep 2
+kill -0 "$MONITOR_PID" 2>/dev/null || {
+	log "could not start persistent UIM monitor"
+	exit 1
+}
+
+log "persistent UIM monitor active after stock GW subscription selection"
+while kill -0 "$MONITOR_PID" 2>/dev/null; do
+	sleep 5
+	status="$(qmicli -d "$DEVICE" --uim-get-card-status 2>/dev/null)" || continue
+	subscription="$(cat "$SUBSCRIPTION_FILE" 2>/dev/null)"
+	case "$subscription" in
+		0) active_slot=1 ;;
+		1) active_slot=2 ;;
+		*) continue ;;
+	esac
+	publish_uim_state "$status" "$active_slot" "$subscription" ||
+		log "could not refresh cached dual-SIM state"
+done
+wait "$MONITOR_PID"
+exit $?

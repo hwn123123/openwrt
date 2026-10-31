@@ -1,0 +1,5 @@
+#!/bin/sh
+case "$*" in
+	*'@.data.device'*) sed -n 's/.*"data":{"device":"\([^"]*\)"}.*/\1/p' ;;
+	*) sed -n 's/.*"l3_device":"\([^"]*\)".*/\1/p' ;;
+esac

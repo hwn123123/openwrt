@@ -1,0 +1,229 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+. /usr/share/libubox/jshn.sh
+
+BACKLIGHT=/sys/class/backlight/panel0-backlight
+RUN=/var/run/xm14display
+MODEM=/usr/libexec/xm14pro-modem/control
+
+config_value() {
+	uci -q get "xm14display.main.$1"
+}
+
+touch_device() {
+	local event name lower abs
+	for event in /dev/input/event*; do
+		[ -c "$event" ] || continue
+		name="$(cat "/sys/class/input/${event##*/}/device/name" 2>/dev/null)"
+		lower="$(printf '%s' "$name" | tr A-Z a-z)"
+		abs="$(cat "/sys/class/input/${event##*/}/device/capabilities/abs" 2>/dev/null)"
+		[ "$abs" != 0 ] || continue
+		case "$lower" in
+			*synaptics*|*xiaomi*touch*|*goodix*touch*) printf '%s' "$event"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+set_brightness() {
+	local percent="$1" max value
+	case "$percent" in *[!0-9]*|'') return 1 ;; esac
+	[ "$percent" -ge 0 ] && [ "$percent" -le 100 ] || return 1
+	[ -w "$BACKLIGHT/brightness" ] || return 1
+	max="$(cat "$BACKLIGHT/max_brightness" 2>/dev/null)"
+	[ "$max" -gt 0 ] 2>/dev/null || return 1
+	value=$((max * percent / 100))
+	[ "$percent" -eq 0 ] || [ "$value" -gt 0 ] || value=1
+	printf '%s\n' "$value" > "$BACKLIGHT/brightness"
+}
+
+status() {
+	local connector=/sys/class/drm/card0-DSI-1 max current percent device modem battery_base
+	local connected operator technology signal memory cpu_usage cpu_temp modem_temp wifi_clients usb_up cpe_active battery_capacity battery_status
+	local interface_name runtime_apn active_band active_slot wifi_ssid rx_bytes tx_bytes
+	max="$(cat "$BACKLIGHT/max_brightness" 2>/dev/null)"
+	current="$(cat "$BACKLIGHT/brightness" 2>/dev/null)"
+	percent=0
+	[ "$max" -gt 0 ] 2>/dev/null && percent=$((current * 100 / max))
+	device="$(touch_device 2>/dev/null)"
+	modem="$([ -x "$MODEM" ] && timeout 3 "$MODEM" status 2>/dev/null)"
+	connected="$(printf '%s' "$modem" | jsonfilter -e '@.connected' 2>/dev/null)"
+	operator="$(printf '%s' "$modem" | jsonfilter -e '@.operator_name' 2>/dev/null)"
+	technology="$(printf '%s' "$modem" | jsonfilter -e '@.access_technologies' 2>/dev/null)"
+	signal="$(printf '%s' "$modem" | jsonfilter -e '@.nr_rsrp' 2>/dev/null)"
+	[ -n "$signal" ] || signal="$(printf '%s' "$modem" | jsonfilter -e '@.signal_quality' 2>/dev/null)"
+	memory="$(printf '%s' "$modem" | jsonfilter -e '@.memory_usage_percent' 2>/dev/null)"
+	cpu_usage="$(printf '%s' "$modem" | jsonfilter -e '@.cpu_usage_percent' 2>/dev/null)"
+	cpu_temp="$(printf '%s' "$modem" | jsonfilter -e '@.cpu_temperature_c' 2>/dev/null)"
+	modem_temp="$(printf '%s' "$modem" | jsonfilter -e '@.modem_temperature_c' 2>/dev/null)"
+	wifi_clients="$(printf '%s' "$modem" | jsonfilter -e '@.wifi_clients' 2>/dev/null)"
+	usb_up="$(printf '%s' "$modem" | jsonfilter -e '@.usb_up' 2>/dev/null)"
+	cpe_active="$(printf '%s' "$modem" | jsonfilter -e '@.cpe_active' 2>/dev/null)"
+	interface_name="$(printf '%s' "$modem" | jsonfilter -e '@.interface' 2>/dev/null)"
+	runtime_apn="$(printf '%s' "$modem" | jsonfilter -e '@.runtime_apn' 2>/dev/null)"
+	active_band="$(printf '%s' "$modem" | jsonfilter -e '@.active_bands' 2>/dev/null)"
+	active_slot="$(printf '%s' "$modem" | jsonfilter -e '@.active_data_slot' 2>/dev/null)"
+	wifi_ssid="$(printf '%s' "$modem" | jsonfilter -e '@.wifi_ssid_5g' 2>/dev/null)"
+	rx_bytes="$(printf '%s' "$modem" | jsonfilter -e '@.rx_bytes' 2>/dev/null)"
+	tx_bytes="$(printf '%s' "$modem" | jsonfilter -e '@.tx_bytes' 2>/dev/null)"
+	battery_base=/sys/class/power_supply/battery
+	battery_capacity="$(cat "$battery_base/capacity" 2>/dev/null)"
+	battery_status="$(cat "$battery_base/status" 2>/dev/null)"
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean drm_available "$([ -c /dev/dri/card0 ] && printf 1 || printf 0)"
+	json_add_string connector_status "$(cat "$connector/status" 2>/dev/null)"
+	json_add_string connector_enabled "$(cat "$connector/enabled" 2>/dev/null)"
+	json_add_array modes
+	while IFS= read -r mode; do [ -n "$mode" ] && json_add_string "" "$mode"; done < "$connector/modes" 2>/dev/null
+	json_close_array
+	json_add_boolean backlight_available "$([ -w "$BACKLIGHT/brightness" ] && printf 1 || printf 0)"
+	json_add_int brightness "$percent"
+	json_add_int max_brightness "${max:-0}"
+	json_add_string touch_device "$device"
+	json_add_boolean touch_available "$([ -n "$device" ] && printf 1 || printf 0)"
+	json_add_boolean service_running "$(pgrep -f '/usr/sbin/xm14pro-screen' >/dev/null && printf 1 || printf 0)"
+	json_add_boolean power_button "$( [ "$(config_value power_button)" != 0 ] && printf 1 || printf 0 )"
+	json_add_int power_wake_presses "$(config_value power_wake_presses)"
+	json_add_int power_wake_window_ms "$(config_value power_wake_window_ms)"
+	json_add_boolean touch_wake "$( [ "$(config_value touch_wake)" = 1 ] && printf 1 || printf 0 )"
+	json_add_boolean raise_wake "$( [ "$(config_value raise_wake)" = 1 ] && printf 1 || printf 0 )"
+	json_add_boolean raise_wake_available 0
+	json_add_boolean volume_overlay "$( [ "$(config_value volume_overlay)" != 0 ] && printf 1 || printf 0 )"
+	json_add_boolean telephony_pages "$( [ "$(config_value telephony_pages)" = 1 ] && printf 1 || printf 0 )"
+	json_add_boolean enabled "$( [ "$(config_value enabled)" != 0 ] && printf 1 || printf 0 )"
+	json_add_boolean boot_animation "$( [ "$(config_value boot_animation)" != 0 ] && printf 1 || printf 0 )"
+	json_add_boolean always_on "$( [ "$(config_value always_on)" = 1 ] && printf 1 || printf 0 )"
+	json_add_int screen_timeout "$(config_value screen_timeout)"
+	json_add_int refresh_interval "$(config_value refresh_interval)"
+	json_add_string pages "$(config_value pages)"
+	json_add_string theme "$(config_value theme)"
+	json_add_object live
+	json_add_boolean connected "$([ "$connected" = true ] && printf 1 || printf 0)"
+	json_add_string operator "$operator"
+	json_add_string technology "$technology"
+	json_add_string signal "$signal"
+	json_add_int memory_percent "${memory:-0}"
+	json_add_int cpu_percent "${cpu_usage:-0}"
+	json_add_string cpu_temperature "$cpu_temp"
+	json_add_string modem_temperature "$modem_temp"
+	json_add_int wifi_clients "${wifi_clients:-0}"
+	json_add_string wifi_ssid "$wifi_ssid"
+	json_add_boolean usb_up "$([ "$usb_up" = true ] && printf 1 || printf 0)"
+	json_add_boolean cpe_active "$([ "$cpe_active" = true ] && printf 1 || printf 0)"
+	json_add_string interface "$interface_name"
+	json_add_string apn "$runtime_apn"
+	json_add_string band "$active_band"
+	json_add_string active_slot "$active_slot"
+	json_add_string rx_bytes "$rx_bytes"
+	json_add_string tx_bytes "$tx_bytes"
+	json_add_int battery_capacity "${battery_capacity:-0}"
+	json_add_boolean battery_available "$([ -d "$battery_base" ] && printf 1 || printf 0)"
+	json_add_string battery_status "$battery_status"
+	if [ -r "$RUN/speedtest" ]; then
+		json_add_string speed_state "$(sed -n 's/^state=//p' "$RUN/speedtest" | head -n 1)"
+		json_add_string speed_download_mbps "$(sed -n 's/^download_mbps=//p' "$RUN/speedtest" | head -n 1)"
+		json_add_string speed_upload_mbps "$(sed -n 's/^upload_mbps=//p' "$RUN/speedtest" | head -n 1)"
+	fi
+	json_close_object
+	json_dump
+}
+
+apply_config() {
+	local brightness timeout refresh duration threads wake_presses wake_window telephony current_page current_brightness
+	brightness="$(config_value brightness)"
+	timeout="$(config_value screen_timeout)"
+	refresh="$(config_value refresh_interval)"
+	duration="$(config_value speed_duration)"
+	threads="$(config_value speed_threads)"
+	wake_presses="$(config_value power_wake_presses)"
+	wake_window="$(config_value power_wake_window_ms)"
+	telephony="$(config_value telephony_pages)"
+	case "$brightness:$timeout:$refresh:$duration:$threads:$wake_presses:$wake_window" in *[!0-9:]*|'')
+		printf '{"ok":false,"error":"display configuration contains a non-numeric value"}\n'; return 1 ;;
+	esac
+	[ "$brightness" -ge 1 ] && [ "$brightness" -le 100 ] &&
+	[ "$timeout" -ge 5 ] && [ "$timeout" -le 3600 ] &&
+	[ "$refresh" -ge 1 ] && [ "$refresh" -le 30 ] &&
+	[ "$duration" -ge 3 ] && [ "$duration" -le 30 ] &&
+	[ "$threads" -ge 2 ] && [ "$threads" -le 16 ] &&
+	[ "$wake_presses" -ge 1 ] && [ "$wake_presses" -le 4 ] &&
+	[ "$wake_window" -ge 300 ] && [ "$wake_window" -le 2000 ] || {
+		printf '{"ok":false,"error":"display configuration is outside the safe range"}\n'; return 1
+	}
+	case "$telephony" in 0|1) ;; *)
+		printf '{"ok":false,"error":"telephony page setting is invalid"}\n'; return 1 ;;
+	esac
+	mkdir -p "$RUN"
+	if [ "$telephony" = 0 ]; then
+		current_page="$(cat "$RUN/page" 2>/dev/null)"
+		case "$current_page" in 10|11) printf '0\n' > "$RUN/page" ;; esac
+		printf '5\n' > "$RUN/footer-start"
+		printf '%s\n' $((5 * 288)) > "$RUN/footer-position"
+	fi
+	current_brightness="$(cat "$BACKLIGHT/brightness" 2>/dev/null)"
+	if [ ! -e "$RUN/off" ] && [ "${current_brightness:-0}" -gt 0 ] 2>/dev/null; then
+		# Applying settings while the panel is already lit counts as activity,
+		# but it must never wake a sleeping panel on its own.
+		touch "$RUN/wake"
+		set_brightness "$brightness" || true
+	fi
+	pkill -HUP -f '/usr/sbin/xm14pro-screen' >/dev/null 2>&1 || true
+	printf '{"ok":true}\n'
+}
+
+wake_screen() {
+	mkdir -p "$RUN"
+	rm -f "$RUN/off"
+	touch "$RUN/wake"
+	set_brightness "$(config_value brightness)" || true
+	printf '{"ok":true}\n'
+}
+
+sleep_screen() {
+	mkdir -p "$RUN"
+	touch "$RUN/off"
+	set_brightness 0 || true
+	printf '{"ok":true}\n'
+}
+
+select_page() {
+	case "$1" in *[!0-9]*|'') printf '{"ok":false,"error":"invalid page"}\n'; return 1 ;; esac
+	[ "$1" -le 9 ] 2>/dev/null || {
+		[ "$(config_value telephony_pages)" = 1 ] && [ "$1" -le 11 ] 2>/dev/null || {
+			printf '{"ok":false,"error":"telephony pages are hidden"}\n'; return 1
+		}
+	}
+	mkdir -p "$RUN"
+	printf '%s\n' "$1" > "$RUN/page"
+	rm -f "$RUN/off"
+	touch "$RUN/wake"
+	printf '{"ok":true}\n'
+}
+
+case "${1:-status}" in
+	status) status ;;
+	apply) apply_config ;;
+	wake) wake_screen ;;
+	sleep) sleep_screen ;;
+	page) select_page "$2" ;;
+	start)
+		/etc/init.d/xm14pro-display start >/dev/null 2>&1 &
+		printf '{"ok":true}\n'
+		;;
+	stop)
+		/etc/init.d/xm14pro-display stop >/dev/null 2>&1 &
+		printf '{"ok":true}\n'
+		;;
+	restart)
+		/etc/init.d/xm14pro-display restart >/dev/null 2>&1 &
+		printf '{"ok":true}\n'
+		;;
+	speedtest)
+		/usr/libexec/xm14pro-speedtest start >/dev/null 2>&1
+		printf '{"ok":true}\n'
+		;;
+	*) printf '{"ok":false,"error":"usage: xm14pro-display {status|apply|wake|sleep|page N|start|stop|restart|speedtest}"}\n'; exit 2 ;;
+esac
+

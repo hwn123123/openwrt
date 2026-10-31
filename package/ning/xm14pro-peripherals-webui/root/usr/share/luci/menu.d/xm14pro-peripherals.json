@@ -1,0 +1,8 @@
+{
+	"admin/services/xm14pro-peripherals": {
+		"title": "NFC 与红外",
+		"order": 28,
+		"action": { "type": "view", "path": "services/xm14pro-peripherals" },
+		"depends": { "acl": [ "xm14pro-peripherals" ] }
+	}
+}

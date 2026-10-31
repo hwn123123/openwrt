@@ -1,0 +1,121 @@
+From: nwrt Xiaomi 14 Pro support <ning@localhost>
+Subject: [PATCH] qcom-soc: bind NAS client to the selected Xiaomi SIM stack
+
+The internal Qualcomm modem keeps independent NAS state for each DSDS
+subscription.  Binding only UIM and WDS leaves ModemManager's default NAS
+client watching the primary stack even when physical slot 2 is selected.
+
+The device bring-up service publishes the selected zero-based subscription in
+/var/run/xm14pro/qmi-subscription before ModemManager starts.  For qcom-soc
+devices carrying that marker, bind the newly allocated NAS client before any
+registration state is queried.  Other QMI devices and qcom-soc devices without
+the Xiaomi marker retain the upstream path unchanged.
+
+--- a/src/mm-broadband-modem-qmi.c
++++ b/src/mm-broadband-modem-qmi.c
+@@ -13796,8 +13796,59 @@
+ }
+ 
+ static void allocate_next_client (GTask *task);
++
++static gboolean
++xiaomi_qcom_read_nas_subscription (MMBroadbandModemQmi *self,
++                                   guint8              *subscription)
++{
++    g_autofree gchar *contents = NULL;
++
++    if (g_strcmp0 (mm_base_modem_get_plugin (MM_BASE_MODEM (self)), "qcom-soc") != 0)
++        return FALSE;
++
++    if (!g_file_get_contents ("/var/run/xm14pro/qmi-subscription", &contents, NULL, NULL))
++        return FALSE;
+ 
++    g_strstrip (contents);
++    if (g_str_equal (contents, "0"))
++        *subscription = 0;
++    else if (g_str_equal (contents, "1"))
++        *subscription = 1;
++    else {
++        mm_obj_warn (self, "ignoring invalid Xiaomi NAS subscription '%s'", contents);
++        return FALSE;
++    }
++
++    return TRUE;
++}
++
+ static void
++nas_bind_subscription_ready (QmiClientNas *client,
++                             GAsyncResult *res,
++                             GTask        *task)
++{
++    MMBroadbandModemQmi         *self;
++    InitializationStartedContext *ctx;
++    g_autoptr(GError)             error = NULL;
++    g_autoptr(QmiMessageNasBindSubscriptionOutput) output = NULL;
++
++    self = g_task_get_source_object (task);
++    ctx = g_task_get_task_data (task);
++
++    output = qmi_client_nas_bind_subscription_finish (client, res, &error);
++    if (!output || !qmi_message_nas_bind_subscription_output_get_result (output, &error)) {
++        g_prefix_error (&error, "couldn't bind Xiaomi NAS client to selected SIM subscription: ");
++        g_task_return_error (task, g_steal_pointer (&error));
++        g_object_unref (task);
++        return;
++    }
++
++    mm_obj_msg (self, "NAS client bound to the selected Xiaomi SIM subscription");
++    ctx->service_index++;
++    allocate_next_client (task);
++}
++
++static void
+ qmi_port_allocate_client_ready (MMPortQmi *qmi,
+                                 GAsyncResult *res,
+                                 GTask *task)
+@@ -13805,6 +13856,7 @@
+     MMBroadbandModemQmi *self;
+     InitializationStartedContext *ctx;
+     GError *error = NULL;
++    guint8 subscription;
+ 
+     self = g_task_get_source_object (task);
+     ctx  = g_task_get_task_data (task);
+@@ -13814,6 +13866,37 @@
+                     qmi_service_get_string (qmi_services[ctx->service_index]),
+                     error->message);
+         g_error_free (error);
++    } else if (qmi_services[ctx->service_index] == QMI_SERVICE_NAS &&
++               xiaomi_qcom_read_nas_subscription (self, &subscription)) {
++        QmiClient *client;
++        g_autoptr(QmiMessageNasBindSubscriptionInput) input = NULL;
++
++        client = mm_port_qmi_peek_client (ctx->qmi,
++                                          QMI_SERVICE_NAS,
++                                          MM_PORT_QMI_FLAG_DEFAULT);
++        if (!client) {
++            g_task_return_new_error (task,
++                                     MM_CORE_ERROR,
++                                     MM_CORE_ERROR_FAILED,
++                                     "couldn't retrieve allocated Xiaomi NAS client");
++            g_object_unref (task);
++            return;
++        }
++
++        mm_obj_msg (self,
++                    "binding NAS client to Xiaomi SIM subscription %u",
++                    subscription + 1);
++        input = qmi_message_nas_bind_subscription_input_new ();
++        qmi_message_nas_bind_subscription_input_set_subscription_type (input,
++                                                                       subscription,
++                                                                       NULL);
++        qmi_client_nas_bind_subscription (QMI_CLIENT_NAS (client),
++                                          input,
++                                          10,
++                                          NULL,
++                                          (GAsyncReadyCallback)nas_bind_subscription_ready,
++                                          task);
++        return;
+     }
+ 
+     ctx->service_index++;

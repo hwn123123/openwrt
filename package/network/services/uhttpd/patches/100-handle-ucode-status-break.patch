@@ -1,0 +1,13 @@
+--- a/ucode.c
++++ b/ucode.c
+@@ -300,6 +300,10 @@ uh_ucode_state_init(struct dispatch_handler *d)
+ 		fprintf(stderr, "Error: The ucode handler invoked exit(%d)\n", exitcode);
+ 		exit(exitcode ? exitcode : 1);
+ 
++	case STATUS_BREAK:
++		fprintf(stderr, "Error: Unexpected debugger break while executing ucode handler\n");
++		exit(2);
++
+ 	case ERROR_COMPILE:
+ 		fprintf(stderr, "Error: Compilation error while executing ucode handler\n");
+ 		exit(1);

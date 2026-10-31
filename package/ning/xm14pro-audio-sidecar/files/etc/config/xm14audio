@@ -1,0 +1,7 @@
+config audio 'main'
+	option enabled '1'
+	option start_hal '1'
+	option start_adsprpc '1'
+	option media_volume '60'
+	option call_volume '50'
+	option volume_step '5'

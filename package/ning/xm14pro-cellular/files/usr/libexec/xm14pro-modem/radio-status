@@ -1,0 +1,319 @@
+#!/bin/sh
+
+# Refresh the read-only NAS cache for the SIM selected by uim-keeper.  The
+# qmicli extension used here binds one NAS client to the matching DSDS
+# subscription before any measurements are requested.
+
+STATE_ROOT=/var/run/xm14pro
+STATE_FILE=$STATE_ROOT/radio-state
+LOCK_DIR=$STATE_ROOT/radio-status.lock
+DEVICE=qrtr://0
+cleanup() {
+	rm -f "$LOCK_DIR/pid"
+	rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+acquire_lock() {
+	local owner
+	if mkdir "$LOCK_DIR" 2>/dev/null; then
+		printf '%s\n' "$$" > "$LOCK_DIR/pid"
+		return 0
+	fi
+	owner="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+	case "$owner" in
+		''|*[!0-9]*) ;;
+		*) kill -0 "$owner" 2>/dev/null && return 1 ;;
+	esac
+	# The previous one-shot query was interrupted.  Remove only its stale PID
+	# file and empty lock directory, then retry once.
+	rm -f "$LOCK_DIR/pid"
+	rmdir "$LOCK_DIR" 2>/dev/null || return 1
+	mkdir "$LOCK_DIR" 2>/dev/null || return 1
+	printf '%s\n' "$$" > "$LOCK_DIR/pid"
+}
+
+mkdir -p "$STATE_ROOT" || exit 1
+acquire_lock || {
+	printf '%s\n' 'radio status refresh is already running' >&2
+	exit 1
+}
+trap cleanup EXIT INT TERM
+
+subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+case "$subscription" in
+	0) subscription_name=primary ;;
+	1) subscription_name=secondary ;;
+	2) subscription_name=tertiary ;;
+	*) printf '%s\n' 'no selected QMI subscription is available' >&2; exit 1 ;;
+esac
+
+query() {
+	timeout -k 2 15 qmicli -d "$DEVICE" \
+		--nas-bind-subscription="$subscription_name" "$1" 2>&1 || true
+}
+
+# DMS identity is device-wide, not tied to the selected NAS subscription.  It
+# is intentionally fetched here with one lightweight request so IMEI remains
+# available even when the much heavier telecom-status snapshot has not run.
+query_device() {
+	timeout -k 2 15 qmicli -d "$DEVICE" "$1" 2>&1 || true
+}
+
+signal="$(query --nas-get-signal-info)"
+serving="$(query --nas-get-serving-system)"
+system="$(query --nas-get-system-info)"
+operator="$(query --nas-get-operator-name)"
+cell="$(query --nas-get-cell-location-info)"
+ca="$(query --nas-get-lte-cphy-ca-info)"
+band="$(query --nas-get-rf-band-info)"
+dms_ids="$(query_device --dms-get-ids)"
+
+field() {
+	local raw="$1" label="$2"
+	printf '%s\n' "$raw" | awk -F"'" -v label="$label:" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, label) == 1 && NF >= 2) { print $2; exit }
+		}'
+}
+
+section_field() {
+	local raw="$1" section="$2" label="$3"
+	printf '%s\n' "$raw" | awk -F"'" -v section="$section:" -v label="$label:" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (line == section) { active = 1; next }
+			if (active && line ~ /^(CDMA|HDR|GSM|WCDMA|LTE|TDMA|5G):$/) active = 0
+			if (active && index(line, label) == 1 && NF >= 2) { print $2; exit }
+		}'
+}
+
+service_field() {
+	local raw="$1" service="$2" label="$3"
+	printf '%s\n' "$raw" | awk -F"'" -v service="$service service:" -v label="$label" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (line == service) { active = 1; next }
+			if (active && line ~ / service:$/) active = 0
+			if (active && index(line, label) == 1) {
+				rest = substr(line, length(label) + 1)
+				if (rest ~ /^[[:space:]]*:/ && NF >= 2) { print $2; exit }
+			}
+		}'
+}
+
+first_value() {
+	local value
+	for value in "$@"; do
+		[ -n "$value" ] && { printf '%s\n' "$value"; return; }
+	done
+}
+
+radio_interfaces="$(printf '%s\n' "$serving" | awk -F"'" '
+	/Radio interfaces:/ { active = 1; next }
+	/Data service capabilities:/ { active = 0 }
+	active && /^[[:space:]]*\[[0-9]+\]:/ && NF >= 2 {
+		if ($2 != "none") { if (out != "") out = out ", "; out = out $2 }
+	}
+	END { print out }')"
+available_interfaces="$(printf '%s\n' "$system" | awk -F"'" '
+	/^[[:space:]]*(GSM|WCDMA|LTE|5G SA|5G NSA) service:/ {
+		name = $0
+		sub(/^[[:space:]]*/, "", name)
+		sub(/ service:.*/, "", name)
+		active = 1
+		next
+	}
+	active && /^[[:space:]]*Status:/ {
+		if ($2 == "available") {
+			if (out != "") out = out ", "
+			out = out name
+		}
+		active = 0
+	}
+	END { print out }')"
+[ -n "$radio_interfaces" ] || radio_interfaces="$available_interfaces"
+mcc="$(field "$operator" MCC)"
+mnc="$(field "$operator" MNC)"
+operator_name="$(field "$operator" 'Long name')"
+[ -n "$operator_name" ] || operator_name="$(field "$operator" 'Short name')"
+[ -n "$operator_name" ] || operator_name="$(printf '%s\n' "$operator" | awk -F"'" '/^[[:space:]]*Name[[:space:]]*:/ && NF >= 2 { print $2; exit }')"
+for service_name in '5G SA' '5G NSA' LTE WCDMA GSM; do
+	[ -n "$mcc" ] || mcc="$(service_field "$system" "$service_name" MCC)"
+	[ -n "$mnc" ] || mnc="$(service_field "$system" "$service_name" MNC)"
+done
+
+lte_rssi="$(section_field "$signal" LTE RSSI)"
+lte_rsrp="$(section_field "$signal" LTE RSRP)"
+lte_rsrq="$(section_field "$signal" LTE RSRQ)"
+lte_sinr="$(section_field "$signal" LTE SNR)"
+nr_rsrp="$(section_field "$signal" 5G RSRP)"
+nr_rsrq="$(section_field "$signal" 5G RSRQ)"
+nr_sinr="$(section_field "$signal" 5G SNR)"
+rssi="$(first_value \
+	"$lte_rssi" \
+	"$(section_field "$signal" 5G RSSI)" \
+	"$(section_field "$signal" WCDMA RSSI)" \
+	"$(section_field "$signal" GSM RSSI)" \
+	"$(section_field "$signal" CDMA RSSI)")"
+rf_nr_arfcn="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Band Information \(Extended\):/ { extended = 1; next }
+	/^Bandwidth:/ { extended = 0 }
+	extended && /Radio Interface:/ { interface = $2 }
+	extended && /Active Channel:/ && interface == "5gnr" && NF >= 2 { print $2; exit }
+')"
+rf_lte_arfcn="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Band Information \(Extended\):/ { extended = 1; next }
+	/^Bandwidth:/ { extended = 0 }
+	extended && /Radio Interface:/ { interface = $2 }
+	extended && /Active Channel:/ && interface == "lte" && NF >= 2 { print $2; exit }
+')"
+lte_arfcn="$(first_value \
+	"$(field "$cell" 'EUTRA Absolute RF Channel Number')" \
+	"$(field "$cell" EARFCN)" \
+	"$rf_lte_arfcn")"
+nr_arfcn="$(first_value "$(field "$cell" 'NR5G ARFCN')" "$rf_nr_arfcn")"
+arfcn="$(first_value "$nr_arfcn" "$lte_arfcn" \
+	"$(field "$cell" UARFCN)" \
+	"$(field "$cell" 'GERAN Absolute RF Channel Number')")"
+cell_id="$(first_value \
+	"$(field "$cell" 'Global Cell ID')" \
+	"$(section_field "$system" LTE 'Cell ID')" \
+	"$(field "$cell" 'Cell ID')")"
+
+# Qualcomm reports NSA availability inside the LTE section instead of as a
+# standalone service.  Only call it active when the modem also reports an NR
+# measurement; this distinguishes the current serving RAT from mere support.
+nr_mode=
+if [ "$(field "$system" '5G NSA Available')" = yes ] && [ -n "$nr_rsrp" ]; then
+	nr_mode=NSA
+elif [ "$(service_field "$system" '5G SA' Status)" = available ]; then
+	nr_mode=SA
+fi
+
+# QMI names the generic NR radio interface "5gnr".  Publish the registered
+# architecture when NAS system information distinguishes standalone from NSA,
+# and keep raw protocol spellings out of user-facing status.
+radio_interfaces="$(printf '%s\n' "$radio_interfaces" | sed 's/5gnr/5G NR/g; s/lte/LTE/g')"
+case "$nr_mode" in
+	SA)
+		radio_interfaces="$(printf '%s\n' "$radio_interfaces" | sed 's/5G NR/5G SA/g')"
+		[ -n "$radio_interfaces" ] || radio_interfaces='5G SA'
+		;;
+	NSA)
+		radio_interfaces="$(printf '%s\n' "$radio_interfaces" | sed 's/5G NR/5G NSA/g')"
+		case "$radio_interfaces" in *'5G NSA'*) ;; '') radio_interfaces='5G NSA' ;; *) radio_interfaces="$radio_interfaces + 5G NSA" ;; esac
+		;;
+esac
+active_bands="$(printf '%s\n' "$band" | awk -F"'" '
+	/Active Band Class:/ && NF >= 2 && !seen[$2]++ {
+		if (out != "") out = out ", "
+		out = out $2
+	}
+	END { print out }')"
+
+# NAS LTE CPHY only describes LTE/NSA aggregation and legitimately returns
+# InformationUnavailable on a pure 5G-SA serving cell.  RF-band information is
+# therefore used as the cross-RAT source for the currently allocated component
+# carriers.  Keep capability and live allocation as separate facts: the X75
+# hardware supports CA even when the network currently assigns one carrier.
+extended_carriers="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Band Information \(Extended\):/ { active = 1; next }
+	/^Bandwidth:/ { active = 0 }
+	active && /Radio Interface:/ { count++ }
+	END { print count + 0 }')"
+basic_carriers="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Band Information:$/ { active = 1; next }
+	/^Band Information \(Extended\):/ { active = 0 }
+	active && /Radio Interface:/ { count++ }
+	END { print count + 0 }')"
+carrier_count="$extended_carriers"
+[ "$carrier_count" -gt 0 ] 2>/dev/null || carrier_count="$basic_carriers"
+
+active_channels="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Band Information \(Extended\):/ { active = 1; next }
+	/^Bandwidth:/ { active = 0 }
+	active && /Active Channel:/ && NF >= 2 {
+		if (out != "") out = out ", "
+		out = out $2
+	}
+	END { print out }')"
+channel_bandwidths="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Bandwidth:/ { active = 1; next }
+	active && /^[[:space:]]*Bandwidth:/ && NF >= 2 {
+		value = $2
+		sub(/^5gnr-/, "", value)
+		sub(/^lte-/, "", value)
+		if (value ~ /^[0-9.]+$/) value = value " MHz"
+		if (out != "") out = out ", "
+		out = out value
+	}
+	END { print out }')"
+carrier_components="$(printf '%s\n' "$band" | awk -F"'" '
+	/^Band Information \(Extended\):/ { active = 1; next }
+	/^Bandwidth:/ { active = 0 }
+	active && /Radio Interface:/ { interface = $2 }
+	active && /Active Band Class:/ { band = $2 }
+	active && /Active Channel:/ && NF >= 2 {
+		if (out != "") out = out ", "
+		out = band "@" $2
+	}
+	END { print out }')"
+
+carrier_aggregation_state=unavailable
+if printf '%s\n' "$ca" | grep -q 'Secondary Cell'; then
+	carrier_aggregation_state=active
+	[ "$carrier_count" -ge 2 ] 2>/dev/null || carrier_count=2
+elif [ "$carrier_count" -gt 1 ] 2>/dev/null; then
+	carrier_aggregation_state=active
+elif [ "$carrier_count" -eq 1 ] 2>/dev/null; then
+	carrier_aggregation_state=single
+fi
+
+tmp="$STATE_FILE.$$"
+emit() {
+	[ -n "$2" ] && printf '%s=%s\n' "$1" "$2"
+	return 0
+}
+{
+	printf 'subscription=%s\nupdated_uptime=%s\n' "$subscription" "$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	emit nas_registration_state "$(field "$serving" 'Registration state')"
+	emit packet_service "$(field "$serving" PS)"
+	emit access_technologies "$radio_interfaces"
+	emit operator_name "$operator_name"
+	[ -z "$mcc$mnc" ] || emit operator_code "$mcc$mnc"
+	emit rssi "$rssi"
+	emit rsrp "$lte_rsrp"
+	emit rsrq "$lte_rsrq"
+	emit sinr "$lte_sinr"
+	emit nr_rsrp "$nr_rsrp"
+	emit nr_rsrq "$nr_rsrq"
+	emit nr_sinr "$nr_sinr"
+	emit cell_id "$cell_id"
+	emit tac "$(field "$cell" 'Tracking Area Code')"
+	emit location_area_code "$(field "$cell" 'Location Area Code')"
+	emit pci "$(field "$cell" 'Physical Cell ID')"
+	emit arfcn "$arfcn"
+	emit lte_arfcn "$lte_arfcn"
+	emit nr_arfcn "$nr_arfcn"
+	emit active_bands "$active_bands"
+	emit lte_bands "$(printf '%s\n' "$band" | awk -F"'" '/Active Band Class:/ && $2 ~ /(eutran|lte)/ { if (out != "") out = out ", "; out = out $2 } END { print out }')"
+	emit nr_bands "$(printf '%s\n' "$band" | awk -F"'" '/Active Band Class:/ && $2 ~ /(nr5g|n[0-9])/ && !seen[$2]++ { if (out != "") out = out ", "; out = out $2 } END { print out }')"
+	emit carrier_aggregation "$carrier_aggregation_state"
+	emit carrier_aggregation_state "$carrier_aggregation_state"
+	emit carrier_aggregation_capability supported
+	emit carrier_aggregation_max_sub6_cc 5
+	emit carrier_count "$carrier_count"
+	emit carrier_components "$carrier_components"
+	emit active_channels "$active_channels"
+	emit channel_bandwidths "$channel_bandwidths"
+	emit imei "$(field "$dms_ids" IMEI)"
+	emit imei_sv "$(field "$dms_ids" 'IMEI SV')"
+	emit meid "$(field "$dms_ids" MEID)"
+	emit nr_mode "$nr_mode"
+} > "$tmp" || exit 1
+mv -f "$tmp" "$STATE_FILE"
+printf '%s\n' 'radio status cache refreshed'

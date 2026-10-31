@@ -1,0 +1,14 @@
+#!/bin/sh
+
+networks="$(uci -q get xm14openclash.main.local_networks)"
+[ -n "$networks" ] || networks='wifi_lan usb_lan'
+case " $networks " in
+	*" $INTERFACE "*) ;;
+	*) exit 0 ;;
+esac
+
+case "$ACTION" in
+	ifup|ifupdate)
+		/usr/sbin/xm14pro-openclash-compat apply >/dev/null 2>&1
+		;;
+esac

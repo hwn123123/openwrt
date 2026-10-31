@@ -1,0 +1,25 @@
+#!/bin/sh
+# The generic kmscon login service must not compete for the phone panel.  The
+# Xiaomi display service owns the same binary with a purpose-built dashboard.
+/etc/init.d/kmscon disable >/dev/null 2>&1 || true
+/etc/init.d/xm14pro-display enable >/dev/null 2>&1 || true
+/etc/init.d/xm14pro-dashboard-ready enable >/dev/null 2>&1 || true
+timeout="$(uci -q get xm14display.main.screen_timeout)"
+[ -n "$timeout" ] || timeout=120
+always_on="$(uci -q get xm14display.main.always_on)"
+if [ "$timeout" = 20 ] && [ "$always_on" = 1 ]; then
+	timeout=120
+	always_on=0
+fi
+uci -q set "xm14display.main.screen_timeout=$timeout"
+[ -n "$always_on" ] || always_on=0
+uci -q set "xm14display.main.always_on=$always_on"
+for setting in power_button=1 power_wake_presses=2 power_wake_window_ms=1000 touch_wake=0 raise_wake=0 volume_overlay=1 telephony_pages=0 cell_show_imei=1 cell_show_cell=1 cell_show_aggregation=1 cell_show_signal=1; do
+	name="${setting%%=*}"
+	value="${setting#*=}"
+	uci -q get "xm14display.main.$name" >/dev/null ||
+		uci -q set "xm14display.main.$name=$value"
+done
+uci -q commit xm14display
+exit 0
+

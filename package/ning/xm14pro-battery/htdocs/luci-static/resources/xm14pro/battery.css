@@ -1,0 +1,152 @@
+.battery-page {
+	--surface: #1c1c1e;
+	--surface2: #242426;
+	--fill: #2c2c2e;
+	--line: #36363a;
+	--label: #f5f5f7;
+	--muted: #98989f;
+	--green: #30d158;
+	--cyan: #63d9cf;
+	--orange: #ff9f0a;
+	--red: #ff453a;
+	display: grid;
+	gap: 18px;
+	color: var(--label);
+	font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.battery-hero {
+	display: grid;
+	grid-template-columns: auto minmax(0, 1fr) auto;
+	align-items: center;
+	gap: 22px;
+	padding: 22px 24px;
+	border: 1px solid rgba(99, 217, 207, .14);
+	border-radius: 18px;
+	background: linear-gradient(125deg, #17251f, #1c1c1e 58%);
+	box-shadow: 0 4px 22px rgba(0, 0, 0, .12);
+}
+
+.battery-ring {
+	--ring: var(--green);
+	display: grid;
+	place-items: center;
+	width: 126px;
+	height: 126px;
+	border-radius: 50%;
+	background: conic-gradient(from -90deg, var(--ring) calc(var(--level) * 1%), #343438 0);
+	animation: battery-breathe 2.8s ease-in-out infinite;
+}
+
+.battery-ring::before {
+	content: "";
+	grid-area: 1 / 1;
+	width: 100px;
+	height: 100px;
+	border-radius: 50%;
+	background: #171719;
+}
+
+.battery-ring > div { z-index: 1; grid-area: 1 / 1; text-align: center; }
+.battery-ring strong, .battery-ring span { display: block; }
+.battery-ring strong { font-size: 29px; }
+.battery-ring span { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.battery-hero-copy small { color: var(--green); font-weight: 700; letter-spacing: .08em; }
+.battery-hero-copy h1 { margin: 5px 0 3px; font-size: 28px; }
+.battery-hero-copy p { margin: 0; color: var(--muted); }
+
+.battery-metrics {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(155px, 1fr));
+	gap: 10px;
+}
+
+.battery-metric {
+	min-width: 0;
+	padding: 16px;
+	border-radius: 14px;
+	background: var(--surface);
+}
+
+.battery-metric span, .battery-metric small, .battery-metric strong { display: block; }
+.battery-metric span, .battery-metric small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.battery-metric strong { margin: 9px 0 5px; font-size: 23px; font-variant-numeric: tabular-nums; }
+.battery-metric.good strong { color: var(--green); }
+.battery-metric.warn strong { color: var(--orange); }
+.battery-metric.bad strong { color: var(--red); }
+
+.battery-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 18px;
+}
+
+.battery-section > h2 { margin: 0 0 9px 3px; color: #63b5aa; font-size: 15px; }
+.battery-card { overflow: hidden; border-radius: 15px; background: var(--surface); }
+.battery-row { position: relative; display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 49px; padding: 9px 16px; }
+.battery-row + .battery-row::before, .battery-control + .battery-control::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: .5px solid var(--line); }
+.battery-row > span { color: var(--label); }
+.battery-row > strong { max-width: 60%; color: var(--muted); font-weight: 500; text-align: right; overflow-wrap: anywhere; }
+
+.battery-controls { grid-column: 1 / -1; }
+.battery-control {
+	position: relative;
+	display: grid;
+	grid-template-columns: minmax(220px, 1fr) minmax(280px, .8fr);
+	align-items: center;
+	gap: 20px;
+	min-height: 70px;
+	padding: 11px 16px;
+}
+
+.battery-control-copy { display: grid; gap: 4px; }
+.battery-control-copy label { color: var(--label); font-size: 15px; font-weight: 600; }
+.battery-control-copy small { color: var(--muted); line-height: 1.45; }
+.battery-control > div:last-child:not(.battery-control-copy) { display: grid; grid-template-columns: minmax(100px, 1fr) auto auto; align-items: center; gap: 9px; }
+.battery-control input[type="number"] { min-height: 38px; padding: 7px 10px; border: 1px solid transparent; border-radius: 9px; background: var(--fill); color: var(--label); }
+.battery-control input[type="number"]:focus { border-color: var(--cyan); outline: none; }
+.battery-control.toggle { grid-template-columns: minmax(220px, 1fr) auto; }
+
+.battery-switch {
+	appearance: none;
+	display: grid;
+	grid-template-columns: 1fr 1fr;
+	align-items: center;
+	gap: 3px;
+	width: 142px;
+	padding: 3px;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	color: var(--label);
+	background: #171719;
+	cursor: pointer;
+}
+
+.battery-switch-option { display: grid; place-items: center; min-height: 34px; padding: 0 8px; border-radius: 8px; color: var(--muted); font-size: 13px; font-weight: 700; white-space: nowrap; transition: background .18s ease, color .18s ease; }
+.battery-switch .option-off.is-active { color: #fff; background: #48484d; }
+.battery-switch .option-on.is-active { color: #07150c; background: var(--green); box-shadow: 0 0 16px rgba(48,209,88,.2); }
+.battery-switch.is-on { border-color: rgba(48,209,88,.35); }
+.battery-switch:disabled { cursor: wait; opacity: .55; }
+
+.battery-empty { padding: 18px; color: var(--muted); }
+.battery-unavailable { display: grid; justify-items: center; padding: 48px 24px; border-radius: 18px; background: var(--surface); text-align: center; }
+.battery-unavailable-icon { display: grid; place-items: center; width: 72px; height: 72px; border-radius: 50%; color: var(--orange); background: rgba(255,159,10,.12); font-size: 34px; font-weight: 700; }
+.battery-unavailable strong { margin-top: 16px; font-size: 22px; }
+.battery-unavailable p { max-width: 620px; color: var(--muted); }
+
+#xm14-battery-notice { position: fixed; z-index: 100000; right: 22px; bottom: 72px; display: flex; align-items: center; gap: 10px; max-width: min(420px, calc(100vw - 28px)); padding: 11px 15px; border: 0; border-radius: 12px; color: #fff; background: rgba(35,35,38,.96); box-shadow: 0 10px 34px rgba(0,0,0,.28); opacity: 0; pointer-events: none; transform: translateY(14px); transition: .18s; }
+#xm14-battery-notice.show { opacity: 1; pointer-events: auto; transform: none; }
+#xm14-battery-notice i { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+#xm14-battery-notice.is-error i { background: var(--red); }
+
+@keyframes battery-breathe { 50% { filter: brightness(1.08); box-shadow: 0 0 22px rgba(48,209,88,.18); } }
+@media (max-width: 1200px) { .battery-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) {
+	.battery-hero { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+	.battery-grid { grid-template-columns: 1fr; }
+	.battery-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+	.battery-control, .battery-control.toggle { grid-template-columns: 1fr; }
+	.battery-switch { justify-self: start; }
+}
+@media (max-width: 440px) { .battery-metrics { grid-template-columns: 1fr; } }
+@media (prefers-reduced-motion: reduce) { .battery-page * { animation: none !important; transition: none !important; } }

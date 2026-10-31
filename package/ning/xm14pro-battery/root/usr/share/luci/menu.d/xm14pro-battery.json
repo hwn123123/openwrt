@@ -1,0 +1,9 @@
+{
+	"admin/services/xm14pro-battery": {
+		"title": "Battery",
+		"order": 25,
+		"action": { "type": "view", "path": "services/xm14pro-battery" },
+		"depends": { "acl": [ "xm14pro-battery" ] }
+	}
+}
+

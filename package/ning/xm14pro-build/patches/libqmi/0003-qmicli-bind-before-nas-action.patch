@@ -1,0 +1,61 @@
+From: nwrt Xiaomi 14 Pro support <ning@localhost>
+Subject: [PATCH] qmicli: bind and query on the same QRTR client
+
+QRTR client state belongs to the socket, so allocating a client in one qmicli
+process and reusing only its numeric CID in a later process loses the DSDS
+subscription binding.  Treat --nas-bind-subscription as a modifier and start
+the requested NAS action on the same QmiClient after the bind completes.
+
+--- a/src/qmicli/qmicli-nas.c
++++ b/src/qmicli/qmicli-nas.c
+@@ -299,8 +299,7 @@ qmicli_nas_options_enabled (void)
+     if (checked)
+         return !!n_actions;
+ 
+-    n_actions = (!!bind_subscription_str +
+-                 get_signal_strength_flag +
++    n_actions = (get_signal_strength_flag +
+                  get_signal_info_flag +
+                  !!get_tx_rx_info_str +
+                  get_home_network_flag +
+@@ -601,12 +600,19 @@ qmicli_nas_options_enabled (void)
+ 
+ #if defined HAVE_QMI_MESSAGE_NAS_BIND_SUBSCRIPTION
+ 
++void qmicli_nas_run (QmiDevice      *device,
++                     QmiClientNas   *client,
++                     GCancellable   *cancellable);
++
+ static void
+ bind_subscription_ready (QmiClientNas *client,
+                          GAsyncResult *res)
+ {
+     g_autoptr(QmiMessageNasBindSubscriptionOutput) output = NULL;
+     g_autoptr(GError)                              error = NULL;
++    QmiDevice                                     *next_device;
++    QmiClientNas                                  *next_client;
++    GCancellable                                  *next_cancellable;
+ 
+     output = qmi_client_nas_bind_subscription_finish (client, res, &error);
+     if (!output) {
+@@ -624,7 +630,19 @@ bind_subscription_ready (QmiClientNas *client,
+     g_print ("[%s] Successfully bound NAS subscription: '%s'\n",
+              qmi_device_get_path_display (ctx->device),
+              bind_subscription_str);
+-    operation_shutdown (TRUE);
++
++    next_device = g_object_ref (ctx->device);
++    next_client = g_object_ref (ctx->client);
++    next_cancellable = g_object_ref (ctx->cancellable);
++    context_free (ctx);
++    ctx = NULL;
++    g_clear_pointer (&bind_subscription_str, g_free);
++
++    qmicli_nas_run (next_device, next_client, next_cancellable);
++
++    g_object_unref (next_cancellable);
++    g_object_unref (next_client);
++    g_object_unref (next_device);
+ }
+ 
+ static QmiMessageNasBindSubscriptionInput *

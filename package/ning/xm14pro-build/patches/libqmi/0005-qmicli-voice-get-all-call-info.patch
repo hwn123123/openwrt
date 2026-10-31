@@ -1,0 +1,141 @@
+--- a/src/qmicli/qmicli-voice.c
++++ b/src/qmicli/qmicli-voice.c
+@@ -44,6 +44,7 @@ static Context *ctx;
+ 
+ /* Options */
+ static gboolean get_config_flag;
++static gboolean get_all_call_info_flag;
+ static gboolean get_supported_messages_flag;
+ static gboolean noop_flag;
+ 
+@@ -55,6 +56,12 @@ static GOptionEntry entries[] = {
+       NULL
+     },
+ #endif
++#if defined HAVE_QMI_MESSAGE_VOICE_GET_ALL_CALL_INFO
++    { "voice-get-all-call-info", 0, 0, G_OPTION_ARG_NONE, &get_all_call_info_flag,
++      "Get current Voice call information",
++      NULL
++    },
++#endif
+ #if defined HAVE_QMI_MESSAGE_VOICE_GET_SUPPORTED_MESSAGES
+     { "voice-get-supported-messages", 0, 0, G_OPTION_ARG_NONE, &get_supported_messages_flag,
+       "Get supported messages",
+@@ -96,6 +104,7 @@ qmicli_voice_options_enabled (void)
+         return !!n_actions;
+ 
+     n_actions = (get_config_flag +
++                 get_all_call_info_flag +
+                  get_supported_messages_flag +
+                  noop_flag);
+ 
+@@ -227,6 +235,89 @@ get_config_ready (QmiClientVoice *client,
+ 
+ #endif /* HAVE_QMI_MESSAGE_VOICE_GET_CONFIG */
+ 
++#if defined HAVE_QMI_MESSAGE_VOICE_GET_ALL_CALL_INFO
++
++static const gchar *
++find_remote_number (GArray *numbers,
++                    guint8  call_id)
++{
++    guint i;
++
++    if (!numbers)
++        return NULL;
++
++    for (i = 0; i < numbers->len; i++) {
++        QmiMessageVoiceGetAllCallInfoOutputRemotePartyNumberCall *number;
++
++        number = &g_array_index (numbers, QmiMessageVoiceGetAllCallInfoOutputRemotePartyNumberCall, i);
++        if (number->id == call_id)
++            return number->type;
++    }
++
++    return NULL;
++}
++
++static void
++get_all_call_info_ready (QmiClientVoice *client,
++                         GAsyncResult   *res)
++{
++    QmiMessageVoiceGetAllCallInfoOutput *output;
++    GError *error = NULL;
++    GArray *calls = NULL;
++    GArray *numbers = NULL;
++    guint i;
++
++    output = qmi_client_voice_get_all_call_info_finish (client, res, &error);
++    if (!output) {
++        g_printerr ("error: operation failed: %s\n", error->message);
++        g_error_free (error);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    if (!qmi_message_voice_get_all_call_info_output_get_result (output, &error)) {
++        g_printerr ("error: couldn't get Voice call information: %s\n", error->message);
++        g_error_free (error);
++        qmi_message_voice_get_all_call_info_output_unref (output);
++        operation_shutdown (FALSE);
++        return;
++    }
++
++    qmi_message_voice_get_all_call_info_output_get_call_information (output, &calls, NULL);
++    qmi_message_voice_get_all_call_info_output_get_remote_party_number (output, &numbers, NULL);
++
++    g_print ("[%s] Successfully retrieved Voice call information:\n"
++             "Call count: %u\n",
++             qmi_device_get_path_display (ctx->device),
++             calls ? calls->len : 0);
++
++    for (i = 0; calls && i < calls->len; i++) {
++        QmiMessageVoiceGetAllCallInfoOutputCallInformationCall *call;
++        const gchar *number;
++
++        call = &g_array_index (calls, QmiMessageVoiceGetAllCallInfoOutputCallInformationCall, i);
++        number = find_remote_number (numbers, call->id);
++        g_print ("Call:\n"
++                 "\tID: '%u'\n"
++                 "\tState: '%s'\n"
++                 "\tType: '%s'\n"
++                 "\tDirection: '%s'\n"
++                 "\tMode: '%s'\n",
++                 call->id,
++                 qmi_voice_call_state_get_string (call->state),
++                 qmi_voice_call_type_get_string (call->type),
++                 qmi_voice_call_direction_get_string (call->direction),
++                 qmi_voice_call_mode_get_string (call->mode));
++        if (number)
++            g_print ("\tNumber: '%s'\n", number);
++    }
++
++    qmi_message_voice_get_all_call_info_output_unref (output);
++    operation_shutdown (TRUE);
++}
++
++#endif /* HAVE_QMI_MESSAGE_VOICE_GET_ALL_CALL_INFO */
++
+ #if defined HAVE_QMI_MESSAGE_VOICE_GET_SUPPORTED_MESSAGES
+ 
+ static void
+@@ -349,6 +440,19 @@ qmicli_voice_run (QmiDevice *device,
+     }
+ #endif
+ 
++#if defined HAVE_QMI_MESSAGE_VOICE_GET_ALL_CALL_INFO
++    if (get_all_call_info_flag) {
++        g_debug ("Asynchronously getting Voice call information...");
++        qmi_client_voice_get_all_call_info (ctx->client,
++                                            NULL,
++                                            10,
++                                            ctx->cancellable,
++                                            (GAsyncReadyCallback)get_all_call_info_ready,
++                                            NULL);
++        return;
++    }
++#endif
++
+ #if defined HAVE_QMI_MESSAGE_VOICE_GET_SUPPORTED_MESSAGES
+     if (get_supported_messages_flag) {
+         g_debug ("Asynchronously getting supported voice messages...");

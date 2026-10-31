@@ -1,0 +1,2 @@
+#!/bin/sh
+printf 'init %s\n' "$*" >>"$XM14PRO_CELLULAR_TEST_LOG"

@@ -1,0 +1,137 @@
+#!/bin/sh
+
+TAG=xm14pro-wifi
+
+log() {
+	logger -t "$TAG" -- "$*"
+}
+
+cfg() {
+	local name="$1" fallback="$2" value
+	value="$(uci -q get "xm14wifi.main.$name")"
+	[ -n "$value" ] && printf '%s\n' "$value" || printf '%s\n' "$fallback"
+}
+
+wireless_sections() {
+	local type="$1"
+	uci -q show wireless 2>/dev/null |
+		sed -n "s/^wireless\.\([^.=]*\)=$type$/\1/p"
+}
+
+wifi_htmode_5g() {
+	# Every 160 MHz block exposed by this Android driver crosses DFS spectrum.
+	# Firmware completes CAC, but its private completion event is not translated
+	# to the nl80211 event expected by OpenWrt hostapd.  HE80 on channel 149 is
+	# currently the fastest configuration that reaches AP-ENABLED reliably.
+	echo HE80
+}
+
+wifi_htmode_6g() {
+	if iw phy 2>/dev/null | grep -q '320MHz in 6GHz Supported'; then
+		echo EHT320
+	elif iw phy 2>/dev/null | grep -q 'EHT bw=160 MHz'; then
+		echo EHT160
+	else
+		echo HE160
+	fi
+}
+
+configure_device() {
+	local device="$1" band="$2" channel="$3" htmode="$4" country="$5"
+	uci -q set "wireless.$device.country=$country"
+	uci -q set "wireless.$device.band=$band"
+	uci -q set "wireless.$device.channel=$channel"
+	uci -q set "wireless.$device.htmode=$htmode"
+	uci -q set "wireless.$device.disabled=0"
+	# An unset txpower means the maximum cfg80211 permits for the selected
+	# country, without hard-coding power that may be illegal after travel.
+	uci -q delete "wireless.$device.txpower"
+}
+
+add_ap() {
+	local section="$1" device="$2" ssid="$3" network="$4" encryption="$5" key="$6" ifname="$7"
+	uci -q set "wireless.$section=wifi-iface"
+	uci -q set "wireless.$section.device=$device"
+	uci -q set "wireless.$section.network=$network"
+	uci -q set "wireless.$section.mode=ap"
+	uci -q set "wireless.$section.ssid=$ssid"
+	uci -q set "wireless.$section.encryption=$encryption"
+	uci -q set "wireless.$section.key=$key"
+	uci -q set "wireless.$section.disabled=0"
+	uci -q set "wireless.$section.isolate=0"
+	# Qualcomm's Android driver pre-creates wlan/P2P/NAN interfaces. OpenWrt
+	# removes the original managed wlan0 before creating an AP; reusing that
+	# name then collides with the driver's NAN rename path. Use a unique AP
+	# name so hostapd can convert one vendor-created virtual interface cleanly.
+	[ -z "$ifname" ] || uci -q set "wireless.$section.ifname=$ifname"
+}
+
+apply_profile() {
+	local initial="$1" devices primary secondary section country profile key encryption network
+	local band1 channel1 mode1 ssid1 name1 band2 channel2 mode2 ssid2 name2
+	[ "$initial" = 1 ] && wifi config >/dev/null 2>&1 || true
+	devices="$(wireless_sections wifi-device)"
+	set -- $devices
+	primary="$1"
+	secondary="$2"
+	[ -n "$primary" ] || { log "netifd did not create a Wi-Fi radio"; return 1; }
+
+	country="$(cfg country US | tr 'a-z' 'A-Z')"
+	profile="$(cfg profile performance)"
+	key="$(cfg key 1234567890)"
+	encryption="$(cfg encryption sae-mixed)"
+	network="$(cfg network wifi_lan)"
+	[ "$(cfg enabled 1)" = 0 ] && {
+		for section in $devices; do uci -q set "wireless.$section.disabled=1"; done
+		uci -q commit wireless
+		wifi reload >/dev/null 2>&1 || true
+		return 0
+	}
+
+	case "$profile" in
+		compatible)
+			band1=5g; channel1=149; mode1="$(wifi_htmode_5g)"; ssid1="$(cfg ssid_5g nwrt)"; name1=nwrt_5g
+			band2=2g; channel2=6; mode2=HE40; ssid2="$(cfg ssid_24g nwrt)"; name2=nwrt_24g
+			;;
+		legacy6)
+			band1=6g; channel1=5; mode1="$(wifi_htmode_6g)"; ssid1="$(cfg ssid_6g nwrt)"; name1=nwrt_6g
+			band2=2g; channel2=6; mode2=HE40; ssid2="$(cfg ssid_24g nwrt)"; name2=nwrt_24g
+			;;
+		*)
+			band1=5g; channel1=149; mode1="$(wifi_htmode_5g)"; ssid1="$(cfg ssid_5g nwrt)"; name1=nwrt_5g
+			band2=6g; channel2=5; mode2="$(wifi_htmode_6g)"; ssid2="$(cfg ssid_6g nwrt)"; name2=nwrt_6g
+			;;
+	esac
+
+	# This command owns the complete CPE AP profile.  Remove both the initial
+	# OpenWrt interface and earlier generated sections so one physical Android
+	# WLAN interface can never be assigned twice in the same hostapd config.
+	for section in $(wireless_sections wifi-iface); do
+		uci -q delete "wireless.$section"
+	done
+
+	configure_device "$primary" "$band1" "$channel1" "$mode1" "$country"
+	add_ap "$name1" "$primary" "$ssid1" "$network" "$encryption" "$key" nwrt-ap
+	log "enabled $ssid1 ($band1/$mode1, country $country)"
+
+	if [ -n "$secondary" ]; then
+		configure_device "$secondary" "$band2" "$channel2" "$mode2" "$country"
+		add_ap "$name2" "$secondary" "$ssid2" "$network" "$encryption" "$key" wlan1
+		log "enabled $ssid2 ($band2/$mode2, country $country)"
+	else
+		log "driver exposed one netifd radio; the second AP profile is deferred"
+	fi
+
+	if [ "$#" -gt 2 ]; then
+		shift 2
+		for section in "$@"; do uci -q set "wireless.$section.disabled=1"; done
+	fi
+	uci -q commit wireless
+	[ "$initial" = 1 ] || wifi reload >/dev/null 2>&1 || true
+}
+
+case "${1:-apply}" in
+	initial) apply_profile 1 ;;
+	apply|reload) apply_profile 0 ;;
+	*) echo "usage: $0 {initial|apply}" >&2; exit 2 ;;
+esac

@@ -1,0 +1,28 @@
+#!/bin/sh /etc/rc.common
+
+START=98
+STOP=14
+UCI="${XM14_OPENCLASH_UCI:-uci}"
+COMPAT="${XM14_OPENCLASH_COMPAT:-/usr/sbin/xm14pro-openclash-compat}"
+
+boot() {
+	[ "$("$UCI" -q get xm14openclash.main.enabled)" != 0 ] || return 0
+
+	if [ "$("$UCI" -q get openclash.config.enable)" = 1 ]; then
+		"$COMPAT" wait
+	else
+		"$COMPAT" apply >/dev/null 2>&1 || true
+	fi
+}
+
+start() {
+	"$COMPAT" apply
+}
+
+reload() {
+	"$COMPAT" apply
+}
+
+stop() {
+	"$COMPAT" clear
+}

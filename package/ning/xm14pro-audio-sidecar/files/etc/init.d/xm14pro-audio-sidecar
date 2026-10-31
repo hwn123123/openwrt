@@ -1,0 +1,102 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+# Binder managers start at S57 and the stock module/card chain starts earlier.
+# Keep audio after USB's hardware observer (S65) without delaying network boot.
+START=67
+STOP=37
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+LAUNCHER=/usr/libexec/xm14pro-audio/launcher
+PERMISSIONS=/usr/libexec/xm14pro-audio/apply-stock-permissions
+
+manager_running() {
+	local command="$1"
+
+	ps w | awk -v command="$command" '
+		index($0, command) && $0 !~ /awk -v command=/ { found = 1 }
+		END { exit found ? 0 : 1 }
+	'
+}
+
+wait_for_binder_managers() {
+	local attempt=0
+
+	while [ "$attempt" -lt 20 ]; do
+		if manager_running '/system/bin/servicemanager' &&
+		   manager_running '/system_ext/bin/hwservicemanager' &&
+		   manager_running '/vendor/bin/vndservicemanager /dev/vndbinder'; then
+			sleep 1
+			manager_running '/system/bin/servicemanager' &&
+			manager_running '/system_ext/bin/hwservicemanager' &&
+			manager_running '/vendor/bin/vndservicemanager /dev/vndbinder'
+			return $?
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	return 1
+}
+
+add_instance() {
+	local name="$1"
+	local mode="$2"
+	local media_volume="$3"
+	local call_volume="$4"
+
+	procd_open_instance "$name"
+	procd_set_param command "$LAUNCHER" "$ANDROID_ROOT" "$mode"
+	procd_set_param env "XM14_MEDIA_VOLUME=$media_volume" \
+		"XM14_CALL_VOLUME=$call_volume"
+	procd_set_param respawn 3600 5 3
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+start_service() {
+	local enabled start_adsprpc start_hal media_volume call_volume
+
+	config_load xm14audio
+	config_get_bool enabled main enabled 1
+	config_get_bool start_adsprpc main start_adsprpc 1
+	config_get_bool start_hal main start_hal 1
+	config_get media_volume main media_volume 60
+	config_get call_volume main call_volume 50
+	[ "$enabled" -eq 1 ] || return 0
+
+	/etc/init.d/xm14pro-binder-managers running ||
+		/etc/init.d/xm14pro-binder-managers start
+	wait_for_binder_managers || {
+		logger -t xm14pro-audio 'stock Binder managers are not ready'
+		return 1
+	}
+
+	[ -x "$ANDROID_ROOT/vendor/bin/audioadsprpcd" ] || {
+		logger -t xm14pro-audio 'stock audioadsprpcd is missing'
+		return 1
+	}
+	[ -x "$ANDROID_ROOT/vendor/bin/hw/android.hardware.audio.service_64" ] || {
+		logger -t xm14pro-audio 'stock Audio HAL is missing'
+		return 1
+	}
+	[ -r "$ANDROID_ROOT/vendor/etc/xm14pro-audio.properties" ] || {
+		logger -t xm14pro-audio 'captured audio property baseline is missing'
+		return 1
+	}
+
+	"$PERMISSIONS" || {
+		logger -t xm14pro-audio 'failed to apply stock audio permissions'
+		return 1
+	}
+
+	[ "$start_adsprpc" -eq 1 ] && add_instance audio_adsprpc adsprpc \
+		"$media_volume" "$call_volume"
+	[ "$start_hal" -eq 1 ] && add_instance audio_hal hal \
+		"$media_volume" "$call_volume"
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14audio
+}

@@ -1,0 +1,249 @@
+#!/bin/sh
+
+UCI="${XM14_OPENCLASH_UCI:-uci}"
+UBUS="${XM14_OPENCLASH_UBUS:-ubus}"
+JSONFILTER="${XM14_OPENCLASH_JSONFILTER:-jsonfilter}"
+IP="${XM14_OPENCLASH_IP:-ip}"
+IPTABLES="${XM14_OPENCLASH_IPTABLES:-/usr/sbin/iptables}"
+LOGGER="${XM14_OPENCLASH_LOGGER:-logger}"
+SLEEP="${XM14_OPENCLASH_SLEEP:-sleep}"
+SYS_CLASS_NET="${XM14_OPENCLASH_SYS_CLASS_NET:-/sys/class/net}"
+OPENCLASH_CONFIG="${XM14_OPENCLASH_CONFIG:-/etc/config/openclash}"
+LOCALNETWORK_FILE="${XM14_OPENCLASH_LOCALNETWORK_FILE:-/etc/openclash/custom/openclash_custom_localnetwork_ipv4.list}"
+TAG=xm14pro-openclash
+BYPASS_CHAIN=XMOC_LOCAL
+
+log() {
+	"$LOGGER" -t "$TAG" "$*"
+}
+
+compat_get() {
+	"$UCI" -q get "xm14openclash.main.$1"
+}
+
+json_get() {
+	printf '%s\n' "$STATUS" | "$JSONFILTER" -e "$1" 2>/dev/null
+}
+
+openclash_installed() {
+	[ -f "$OPENCLASH_CONFIG" ]
+}
+
+network_ready() {
+	local network fallback up
+
+	network="$(compat_get network)"
+	[ -n "$network" ] || network=wifi_lan
+	STATUS="$("$UBUS" -S call "network.interface.$network" status 2>/dev/null)"
+	[ -n "$STATUS" ] || return 1
+
+	up="$(json_get '@.up')"
+	[ "$up" = true ] || [ "$up" = 1 ] || return 1
+
+	DEVICE="$(json_get '@.l3_device')"
+	[ -n "$DEVICE" ] || DEVICE="$(json_get '@.device')"
+	[ -n "$DEVICE" ] || DEVICE="$("$UCI" -q get "network.$network.device")"
+	if [ -z "$DEVICE" ]; then
+		fallback="$(compat_get fallback_device)"
+		[ -n "$fallback" ] || fallback=nwrt-ap
+		[ ! -e "$SYS_CLASS_NET/$fallback" ] || DEVICE="$fallback"
+	fi
+
+	case "$DEVICE" in
+		''|*[!A-Za-z0-9_.:-]*) return 1 ;;
+	esac
+	[ -e "$SYS_CLASS_NET/$DEVICE" ] || return 1
+
+	ADDRESS="$(json_get '@["ipv4-address"][0].address')"
+	[ -n "$ADDRESS" ] || ADDRESS="$("$IP" -4 -o address show dev "$DEVICE" scope global 2>/dev/null |
+		awk 'NR == 1 { sub(/\/.*/, "", $4); print $4 }')"
+	[ -n "$ADDRESS" ]
+}
+
+local_addresses() {
+	local networks network address status
+
+	networks="$(compat_get local_networks)"
+	[ -n "$networks" ] || networks='wifi_lan usb_lan'
+	for network in $networks; do
+		address="$("$UCI" -q get "network.$network.ipaddr")"
+		address="${address%%/*}"
+		if [ -z "$address" ]; then
+			status="$("$UBUS" -S call "network.interface.$network" status 2>/dev/null)"
+			address="$(printf '%s\n' "$status" |
+				"$JSONFILTER" -e '@["ipv4-address"][0].address' 2>/dev/null)"
+		fi
+		case "$address" in
+			''|*[!0-9.]*) continue ;;
+		esac
+		printf '%s\n' "$address"
+	done
+}
+
+default_local_networks() {
+	printf '%s\n' \
+		0.0.0.0/8 \
+		10.0.0.0/8 \
+		100.64.0.0/10 \
+		127.0.0.0/8 \
+		169.254.0.0/16 \
+		172.16.0.0/12 \
+		192.168.0.0/16 \
+		224.0.0.0/4 \
+		240.0.0.0/4
+}
+
+local_bypass_networks() {
+	local network
+
+	if [ -f "$LOCALNETWORK_FILE" ]; then
+		for network in $(sed 's/#.*//' "$LOCALNETWORK_FILE"); do
+			case "$network" in
+				''|*[!0-9./]*) continue ;;
+			esac
+			printf '%s\n' "$network"
+		done
+	else
+		default_local_networks
+	fi
+	local_addresses
+}
+
+run_iptables() {
+	"$IPTABLES" -w 5 "$@"
+}
+
+remove_bypass_jump() {
+	local table="$1" hook="$2"
+	while run_iptables -t "$table" -C "$hook" -j "$BYPASS_CHAIN" >/dev/null 2>&1; do
+		run_iptables -t "$table" -D "$hook" -j "$BYPASS_CHAIN" >/dev/null 2>&1 || break
+	done
+}
+
+apply_bypass_table() {
+	local table="$1" network hook
+
+	for hook in PREROUTING OUTPUT; do
+		remove_bypass_jump "$table" "$hook"
+	done
+	run_iptables -t "$table" -N "$BYPASS_CHAIN" >/dev/null 2>&1 || true
+	run_iptables -t "$table" -F "$BYPASS_CHAIN" || return 1
+	for network in $(local_bypass_networks); do
+		case "$network" in
+			*/*) ;;
+			*) network="$network/32" ;;
+		esac
+		run_iptables -t "$table" -A "$BYPASS_CHAIN" -d "$network" -j ACCEPT || return 1
+	done
+	for hook in PREROUTING OUTPUT; do
+		run_iptables -t "$table" -I "$hook" 1 -j "$BYPASS_CHAIN" || return 1
+	done
+}
+
+apply_bypass() {
+	[ -x "$IPTABLES" ] || { log "iptables userspace is unavailable"; return 1; }
+	apply_bypass_table nat || return 1
+	apply_bypass_table mangle || return 1
+}
+
+clear_bypass() {
+	local table
+	[ -x "$IPTABLES" ] || return 0
+	for table in nat mangle; do
+		remove_bypass_jump "$table" PREROUTING
+		remove_bypass_jump "$table" OUTPUT
+		run_iptables -t "$table" -F "$BYPASS_CHAIN" >/dev/null 2>&1 || true
+		run_iptables -t "$table" -X "$BYPASS_CHAIN" >/dev/null 2>&1 || true
+	done
+}
+
+apply_config() {
+	local current managed openclash_dirty=0 compat_dirty=0
+
+	[ "$(compat_get enabled)" != 0 ] || return 0
+	openclash_installed || return 2
+	network_ready || return 1
+
+	current="$("$UCI" -q get openclash.config.lan_interface_name)"
+	managed="$(compat_get managed_interface)"
+
+	case "$current" in
+		''|0|"$managed"|"$DEVICE") ;;
+		*)
+			log "keeping user-selected OpenClash LAN interface $current"
+			apply_bypass
+			return $?
+			;;
+	esac
+
+	if [ "$current" != "$DEVICE" ]; then
+		"$UCI" -q set "openclash.config.lan_interface_name=$DEVICE" || return 1
+		openclash_dirty=1
+	fi
+	if [ "$managed" != "$DEVICE" ]; then
+		"$UCI" -q set "xm14openclash.main.managed_interface=$DEVICE" || return 1
+		compat_dirty=1
+	fi
+
+	[ "$openclash_dirty" = 0 ] || "$UCI" -q commit openclash || return 1
+	[ "$compat_dirty" = 0 ] || "$UCI" -q commit xm14openclash || return 1
+	if [ "$openclash_dirty" = 1 ]; then
+		log "mapped OpenClash LAN interface to $DEVICE ($ADDRESS via wifi_lan)"
+	fi
+	apply_bypass || return 1
+	return 0
+}
+
+wait_ready() {
+	local timeout elapsed=0 rc
+
+	timeout="$(compat_get wait_timeout)"
+	case "$timeout" in
+		''|*[!0-9]*) timeout=90 ;;
+	esac
+
+	while [ "$elapsed" -le "$timeout" ]; do
+		apply_config
+		rc=$?
+		[ "$rc" -eq 0 ] && return 0
+		[ "$rc" -eq 2 ] && return 0
+		[ "$elapsed" -ge "$timeout" ] && break
+		"$SLEEP" 1
+		elapsed=$((elapsed + 1))
+	done
+
+	log "wifi_lan did not become ready within ${timeout}s; OpenClash will continue its normal startup"
+	return 0
+}
+
+show_status() {
+	local current managed bypass=0
+	current="$("$UCI" -q get openclash.config.lan_interface_name)"
+	managed="$(compat_get managed_interface)"
+	if [ -x "$IPTABLES" ] &&
+		run_iptables -t nat -C PREROUTING -j "$BYPASS_CHAIN" >/dev/null 2>&1 &&
+		run_iptables -t nat -C OUTPUT -j "$BYPASS_CHAIN" >/dev/null 2>&1; then
+		bypass=1
+	fi
+	if network_ready; then
+		printf 'ready=1 network=wifi_lan device=%s address=%s openclash=%s managed=%s bypass=%s\n' \
+			"$DEVICE" "$ADDRESS" "${current:-0}" "${managed:-0}" "$bypass"
+	else
+		printf 'ready=0 network=wifi_lan openclash=%s managed=%s bypass=%s\n' \
+			"${current:-0}" "${managed:-0}" "$bypass"
+		return 1
+	fi
+}
+
+case "${1:-apply}" in
+	apply)
+		apply_config
+		rc=$?
+		[ "$rc" -ne 2 ] || exit 0
+		exit "$rc"
+		;;
+	wait) wait_ready ;;
+	clear) clear_bypass ;;
+	status) show_status ;;
+	*) echo "usage: $0 {apply|wait|clear|status}" >&2; exit 2 ;;
+esac

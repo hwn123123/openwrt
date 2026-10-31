@@ -1,0 +1,185 @@
+#!/bin/sh
+
+# Refresh read-only phone-service state.  Every value is obtained from the
+# live X80 QRTR services; no Android capture value is used at runtime.
+
+STATE_ROOT=/var/run/xm14pro
+STATE_FILE=$STATE_ROOT/telecom-state
+LOCK_DIR=$STATE_ROOT/telecom-status.lock
+DEVICE=qrtr://0
+
+cleanup() {
+	rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
+mkdir -p "$STATE_ROOT" || exit 1
+mkdir "$LOCK_DIR" 2>/dev/null || {
+	printf '%s\n' 'telecom status refresh is already running' >&2
+	exit 1
+}
+trap cleanup EXIT INT TERM
+
+subscription="$(cat "$STATE_ROOT/qmi-subscription" 2>/dev/null)"
+case "$subscription" in
+	0|1) ;;
+	*) printf '%s\n' 'no selected QMI subscription is available' >&2; exit 1 ;;
+esac
+
+query() {
+	timeout -k 2 15 qmicli -d "$DEVICE" "$@" 2>&1 || true
+}
+
+wms_routes="$(query --wms-get-routes)"
+voice_config="$(query --voice-get-config)"
+voice_calls="$(query --voice-get-all-call-info)"
+voice_supported="$(query --voice-get-supported-messages)"
+ims_registration="$(query --imsa-bind="$subscription" --imsa-get-ims-registration-status)"
+ims_services="$(query --imsa-bind="$subscription" --imsa-get-ims-services-status)"
+slot_status="$(query --uim-get-slot-status)"
+sms_mt_read="$(query --wms-list-messages=uim,mt-read)"
+sms_mt_unread="$(query --wms-list-messages=uim,mt-not-read)"
+sms_mo_sent="$(query --wms-list-messages=uim,mo-sent)"
+sms_mo_unsent="$(query --wms-list-messages=uim,mo-not-sent)"
+dms_ids="$(query --dms-get-ids)"
+dms_manufacturer="$(query --dms-get-manufacturer)"
+dms_model="$(query --dms-get-model)"
+dms_revision="$(query --dms-get-revision)"
+dms_hardware="$(query --dms-get-hardware-revision)"
+dms_software="$(query --dms-get-software-version)"
+dms_mode="$(query --dms-get-operating-mode)"
+dms_power="$(query --dms-get-power-state)"
+dms_capabilities="$(query --dms-get-capabilities)"
+dms_bands="$(query --dms-get-band-capabilities)"
+
+quoted_field() {
+	local raw="$1" label="$2"
+	printf '%s\n' "$raw" | sed -n "s/.*$label:[[:space:]]*'\([^']*\)'.*/\1/p" | head -n 1
+}
+
+plain_field() {
+	local raw="$1" label="$2"
+	printf '%s\n' "$raw" | sed -n "s/^[[:space:]]*$label:[[:space:]]*//p" | head -n 1 | sed "s/^'//;s/'$//"
+}
+
+json_field() {
+	printf '%s\n' "$1" | jsonfilter -e "@$2" 2>/dev/null | head -n 1
+}
+
+service_field() {
+	local raw="$1" section="$2" label="$3"
+	printf '%s\n' "$raw" | awk -F"'" -v section="$section service" -v label="$label:" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (line == section) { active = 1; next }
+			if (active && line ~ / service$/) active = 0
+			if (active && index(line, label) == 1 && NF >= 2) { print $2; exit }
+		}'
+}
+
+route_count="$(printf '%s\n' "$wms_routes" | sed -n 's/.*Got \([0-9][0-9]*\) SMS routes:.*/\1/p' | head -n 1)"
+physical_slots="$(printf '%s\n' "$slot_status" | sed -n 's/.*] \([0-9][0-9]*\) physical slots found:.*/\1/p' | head -n 1)"
+call_count="$(printf '%s\n' "$voice_calls" | sed -n 's/^Call count: \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+sms_read_count="$(printf '%s\n' "$sms_mt_read" | sed -n 's/^Message count: \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+sms_unread_count="$(printf '%s\n' "$sms_mt_unread" | sed -n 's/^Message count: \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+sms_sent_count="$(printf '%s\n' "$sms_mo_sent" | sed -n 's/^Message count: \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+sms_unsent_count="$(printf '%s\n' "$sms_mo_unsent" | sed -n 's/^Message count: \([0-9][0-9]*\)$/\1/p' | head -n 1)"
+
+tmp="$STATE_FILE.$$"
+emit() {
+	[ -n "$2" ] && printf '%s=%s\n' "$1" "$2"
+}
+{
+	printf 'subscription=%s\nupdated_uptime=%s\n' "$subscription" "$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	if printf '%s\n' "$wms_routes" | grep -q 'Got [0-9][0-9]* SMS routes'; then
+		printf 'sms_route_query=1\n'
+	else
+		printf 'sms_route_query=0\n'
+	fi
+	emit sms_route_count "$route_count"
+	if printf '%s\n' "$wms_routes" | grep -q "Storage Type: uim"; then printf 'sms_uim_storage=1\n'; else printf 'sms_uim_storage=0\n'; fi
+	if printf '%s\n' "$wms_routes" | grep -q "Receipt Action: transfer-only"; then printf 'sms_transfer_route=1\n'; else printf 'sms_transfer_route=0\n'; fi
+
+	if printf '%s\n' "$voice_config" | grep -q 'Successfully retrieved Voice configuration'; then
+		printf 'voice_config_query=1\n'
+	else
+		printf 'voice_config_query=0\n'
+	fi
+	if printf '%s\n' "$voice_supported" | grep -q '0x0020' &&
+	   printf '%s\n' "$voice_supported" | grep -q '0x0021' &&
+	   printf '%s\n' "$voice_supported" | grep -q '0x0022'; then
+		printf 'voice_actions_supported=1\n'
+	else
+		printf 'voice_actions_supported=0\n'
+	fi
+	emit voice_domain "$(quoted_field "$voice_config" 'Current Voice Domain Preference')"
+	emit voice_privacy "$(quoted_field "$voice_config" 'Current Voice Privacy Preference')"
+	emit tty_mode "$(quoted_field "$voice_config" 'Current TTY mode')"
+	emit auto_answer "$(quoted_field "$voice_config" 'Auto Answer Status')"
+	if printf '%s\n' "$voice_calls" | grep -q 'Successfully retrieved Voice call information'; then
+		printf 'voice_call_query=1\n'
+		emit active_call_count "$call_count"
+		emit active_call_id "$(quoted_field "$voice_calls" ID)"
+		emit active_call_state "$(quoted_field "$voice_calls" State)"
+		emit active_call_type "$(quoted_field "$voice_calls" Type)"
+		emit active_call_direction "$(quoted_field "$voice_calls" Direction)"
+		emit active_call_mode "$(quoted_field "$voice_calls" Mode)"
+		emit active_call_number "$(quoted_field "$voice_calls" Number)"
+	else
+		printf 'voice_call_query=0\n'
+	fi
+
+	if [ -n "$sms_read_count" ] && [ -n "$sms_unread_count" ] && [ -n "$sms_sent_count" ] && [ -n "$sms_unsent_count" ]; then
+		printf 'sms_storage_query=1\n'
+		printf 'sms_stored_total=%s\n' "$((sms_read_count + sms_unread_count + sms_sent_count + sms_unsent_count))"
+		printf 'sms_unread_total=%s\n' "$sms_unread_count"
+	else
+		printf 'sms_storage_query=0\n'
+	fi
+
+	if printf '%s\n' "$ims_registration" | grep -q '] IMS registration:'; then
+		printf 'ims_registration_query=1\n'
+	else
+		printf 'ims_registration_query=0\n'
+	fi
+	emit ims_registration "$(quoted_field "$ims_registration" Status)"
+	emit ims_technology "$(quoted_field "$ims_registration" Technology)"
+	emit ims_sms_status "$(service_field "$ims_services" SMS Status)"
+	emit ims_sms_technology "$(service_field "$ims_services" SMS Technology)"
+	emit ims_voice_status "$(service_field "$ims_services" Voice Status)"
+	emit ims_voice_technology "$(service_field "$ims_services" Voice Technology)"
+	emit ims_video_status "$(service_field "$ims_services" 'Video Telephony' Status)"
+	emit ims_video_technology "$(service_field "$ims_services" 'Video Telephony' Technology)"
+	emit ims_ut_status "$(service_field "$ims_services" 'UE to TAS' Status)"
+	emit ims_ut_technology "$(service_field "$ims_services" 'UE to TAS' Technology)"
+
+	emit physical_sim_slots "$physical_slots"
+	if [ -n "$physical_slots" ]; then
+		if printf '%s\n' "$slot_status" | grep -q 'Is eUICC: yes'; then printf 'esim_supported=1\n'; else printf 'esim_supported=0\n'; fi
+	fi
+
+	# Static/read-mostly baseband identity and capabilities are cached here so
+	# the frequently polled WebUI never opens additional QMI clients.
+	emit modem_manufacturer "$(quoted_field "$dms_manufacturer" Manufacturer)"
+	emit modem_model "$(quoted_field "$dms_model" Model)"
+	emit modem_revision "$(quoted_field "$dms_revision" Revision)"
+	emit modem_hardware_revision "$(quoted_field "$dms_hardware" Revision)"
+	emit modem_software_version "$(printf '%s\n' "$dms_software" | sed -n 's/.*Software version:[[:space:]]*//p' | head -n 1 | sed "s/^'//;s/'$//")"
+	emit modem_operating_mode "$(quoted_field "$dms_mode" Mode)"
+	emit modem_hardware_restricted "$(quoted_field "$dms_mode" 'HW restricted')"
+	emit modem_power_source "$(quoted_field "$dms_power" 'Power state')"
+	emit imei "$(quoted_field "$dms_ids" IMEI)"
+	emit imei_sv "$(quoted_field "$dms_ids" 'IMEI SV')"
+	emit meid "$(quoted_field "$dms_ids" MEID)"
+	emit esn "$(quoted_field "$dms_ids" ESN)"
+	emit max_tx_rate "$(quoted_field "$dms_capabilities" 'Max TX channel rate')"
+	emit max_rx_rate "$(quoted_field "$dms_capabilities" 'Max RX channel rate')"
+	emit data_service_capability "$(quoted_field "$dms_capabilities" 'Data Service')"
+	emit sim_capability "$(quoted_field "$dms_capabilities" SIM)"
+	emit network_capabilities "$(quoted_field "$dms_capabilities" Networks)"
+	emit legacy_band_capabilities "$(quoted_field "$dms_bands" Bands)"
+	emit lte_band_capabilities "$(quoted_field "$dms_bands" 'LTE bands (extended)')"
+	emit nr_band_capabilities "$(quoted_field "$dms_bands" 'NR5G bands')"
+} > "$tmp" || exit 1
+mv -f "$tmp" "$STATE_FILE"
+printf '%s\n' 'telecom status cache refreshed'

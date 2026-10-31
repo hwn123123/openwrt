@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+process_running() {
+	ps w | grep -F "$1" | grep -v grep >/dev/null 2>&1
+}
+
+printf '{"nfc_node":%s,"nfc_hal_running":%s,"infrared_node":%s,"infrared_hal_running":%s}\n' \
+	"$([ -c /dev/nq-nci ] && echo true || echo false)" \
+	"$(process_running /odm/bin/hw/android.hardware.nqnfc-service.nxp && echo true || echo false)" \
+	"$([ -c /dev/ir_spi ] && echo true || echo false)" \
+	"$(process_running /vendor/bin/hw/android.hardware.ir-service.example && echo true || echo false)"

@@ -1,0 +1,165 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+START=11
+STOP=89
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+PERSIST_TARGET="$ANDROID_ROOT/mnt/vendor/persist"
+DEVICE_STATE=/mnt/nwrt-data/device-state/qwes
+TZSTORAGE_TARGET="$ANDROID_ROOT/data/vendor/tzstorage"
+
+bind_once() {
+	local source="$1"
+	local target="$2"
+
+	grep -Fqs " $target " /proc/mounts && return 0
+	mount -o bind "$source" "$target"
+}
+
+mount_persist() {
+	local source=/dev/block/by-name/persist
+
+	grep -Fqs " $PERSIST_TARGET " /proc/mounts && return 0
+	[ -b "$source" ] || {
+		logger -t xm14pro-qwes 'persist partition is unavailable'
+		return 1
+	}
+	mkdir -p "$PERSIST_TARGET"
+	mount -t ext4 -o rw,nosuid,nodev,noatime "$source" "$PERSIST_TARGET"
+}
+
+directory_has_files() {
+	find "$1" -type f -print 2>/dev/null | grep -q .
+}
+
+prepare_qwes_state() {
+	mkdir -p "$DEVICE_STATE/tzstorage" "$TZSTORAGE_TARGET" || return 1
+
+	# The Qualcomm secure-storage records are bound to this physical phone and
+	# must survive both nwrt system slots. Seed the shared copy once when an
+	# imported Android copy is present, then always expose the shared directory
+	# to qseecomd/ssgtzd/qwesd.
+	if ! directory_has_files "$DEVICE_STATE/tzstorage" &&
+	   directory_has_files "$TZSTORAGE_TARGET"; then
+		cp -a "$TZSTORAGE_TARGET/." "$DEVICE_STATE/tzstorage/" || return 1
+	fi
+	chown -R 1000:1000 "$DEVICE_STATE/tzstorage" || return 1
+	chmod 0770 "$DEVICE_STATE/tzstorage" || return 1
+	bind_once "$DEVICE_STATE/tzstorage" "$TZSTORAGE_TARGET"
+}
+
+prepare_android_devices() {
+	local platform=/dev/block/platform/soc/1d84000.ufshc
+
+	mkdir -p "$platform"
+	[ -e "$platform/by-name" ] || ln -s /dev/block/by-name "$platform/by-name"
+	[ -e /dev/block/bootdevice ] || ln -s "$platform" /dev/block/bootdevice
+	[ -e /dev/ufs-bsg0 ] || ln -s /dev/bsg/ufs-bsg0 /dev/ufs-bsg0
+	[ -e /dev/ufs-bsg ] || ln -s /dev/bsg/ufs-bsg0 /dev/ufs-bsg
+
+	# Android ueventd places BSG nodes directly below /dev, while OpenWrt's
+	# mdev follows DEVNAME and places them below /dev/bsg.  Qualcomm's stock
+	# RPMB and GPT libraries use the Android paths literally.  Recreate the
+	# same character devices from their live sysfs major/minor values instead
+	# of assuming that dynamic BSG major 238 is stable.
+	prepare_android_bsg_node 0:0:0:49476 1000 1000 || return 1
+	prepare_android_bsg_node 0:0:0:4 1000 0 || return 1
+}
+
+prepare_android_bsg_node() {
+	local name="$1"
+	local owner="$2"
+	local group="$3"
+	local sysdev="/sys/class/bsg/$name/dev"
+	local node="/dev/$name"
+	local dev major minor
+
+	[ -r "$sysdev" ] || {
+		logger -t xm14pro-qwes "missing BSG device metadata: $sysdev"
+		return 1
+	}
+	dev="$(cat "$sysdev")"
+	major="${dev%%:*}"
+	minor="${dev#*:}"
+	case "$major:$minor" in
+		*[!0-9:]*|:|*:)
+			logger -t xm14pro-qwes "invalid BSG device number for $name: $dev"
+			return 1
+			;;
+	esac
+
+	if [ ! -c "$node" ]; then
+		rm -f "$node"
+		mknod "$node" c "$major" "$minor" || return 1
+	fi
+	chown "$owner:$group" "$node" || return 1
+	chmod 0600 "$node" || return 1
+}
+
+prepare_android_root() {
+	prepare_android_devices || return 1
+	bind_once /dev "$ANDROID_ROOT/dev" || return 1
+	bind_once /proc "$ANDROID_ROOT/proc" || return 1
+	bind_once /sys "$ANDROID_ROOT/sys" || return 1
+	mount_persist || return 1
+	prepare_qwes_state || return 1
+
+	if grep -Fqs ' /vendor/firmware_mnt ' /proc/mounts; then
+		bind_once /vendor/firmware_mnt "$ANDROID_ROOT/vendor/firmware_mnt" || return 1
+	fi
+}
+
+start_service() {
+	prepare_android_root || {
+		logger -t xm14pro-qwes 'could not prepare the Android compatibility root'
+		return 1
+	}
+
+	# Qualcomm's ats_1 file stores a generic TOD offset, not a wall-clock
+	# timestamp. Restore offset + the always-running PMIC RTC before any
+	# secure-world client can observe OpenWrt's build-time fallback clock.
+	mkdir -p /mnt/nwrt-data/time
+	/usr/libexec/xm14pro-qwes/secure-time restore \
+		"$PERSIST_TARGET/time/ats_1" \
+		/mnt/nwrt-data/time/tod-offset-ms ||
+		logger -t xm14pro-qwes 'no valid Qualcomm TOD offset was available'
+
+	mkdir -p \
+		"$ANDROID_ROOT/data/vendor/qwes" \
+		"$ANDROID_ROOT/data/vendor/tzstorage" \
+		"$ANDROID_ROOT/data/system/users" \
+		"$ANDROID_ROOT/data/misc/qsee"
+	chown 1000:1000 \
+		"$ANDROID_ROOT/data/vendor/qwes" \
+		"$ANDROID_ROOT/data/vendor/tzstorage" \
+		"$ANDROID_ROOT/data/system/users" \
+		"$ANDROID_ROOT/data/misc/qsee"
+	chmod 0755 "$ANDROID_ROOT/data/vendor/qwes"
+	chmod 0770 "$ANDROID_ROOT/data/vendor/tzstorage"
+	if [ -e /dev/smcinvoke ]; then
+		chown 1000:1026 /dev/smcinvoke
+		chmod 0660 /dev/smcinvoke
+	fi
+	if [ -e '/dev/dma_heap/qcom,qseecom' ]; then
+		chown 1000:1000 '/dev/dma_heap/qcom,qseecom'
+		chmod 0444 '/dev/dma_heap/qcom,qseecom'
+	fi
+	chmod 0666 /sys/power/wake_lock /sys/power/wake_unlock 2>/dev/null
+
+	procd_open_instance android_log
+	procd_set_param command /usr/libexec/xm14pro-qwes/android-log-bridge
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	procd_open_instance qseecomd
+	procd_set_param command /usr/libexec/xm14pro-qwes/ssgtzd-launcher "$ANDROID_ROOT" qseecomd
+	procd_set_param respawn 3600 5 5
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+

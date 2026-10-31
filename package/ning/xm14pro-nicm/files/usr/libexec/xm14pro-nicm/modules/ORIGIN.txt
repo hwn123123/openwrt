@@ -1,0 +1,13 @@
+Source image: Xiaomi 14 Pro (shennong) OS3.0.308.0.WNBCNXM system_dlkm_a
+Kernel release: 6.1.138-android14-11-g0c3d559bcd85-ab14529422
+
+tipc.ko sha256:
+55d0c7f813b2ac44fdfc5a0dfa16ef58d46c7f560045dfc45de9440b52f9ba45
+
+tipc_diag.ko sha256:
+98bc9942ea6c6f6bfe05820f24056e9cffc65040b614911292deffdf6ccdcb82
+
+These are the stock modules matching the Android kernel used by the nwrt
+B-slot boot image.  Qualcomm's stock DSI/NICM B2G client uses AF_TIPC for its
+control transport; without tipc.ko every initialization query fails with
+EAFNOSUPPORT before reaching nicmd.

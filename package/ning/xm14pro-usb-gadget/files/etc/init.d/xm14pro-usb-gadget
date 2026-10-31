@@ -1,0 +1,182 @@
+#!/bin/sh /etc/rc.common
+
+START=70
+STOP=30
+
+CONFIGFS=/config
+GADGET_ROOT=$CONFIGFS/usb_gadget
+GADGET=$GADGET_ROOT/g1
+FUNCTION=$GADGET/functions/ncm.gs6
+CONFIG=$GADGET/configs/b.1
+LOG_DIR=/mnt/nwrt-data/logs
+LOG_FILE=$LOG_DIR/usb-gadget-last.log
+USB_ROLE=/sys/class/usb_role/a600000.ssusb-role-switch/role
+USB_SIDECAR_INIT=/etc/init.d/xm14pro-usb-sidecar
+USB_SIDECAR_READY=/usr/libexec/xm14pro-qwes/android-root/data/vendor/xm14pro-usb/framework.ready
+
+diag() {
+	mkdir -p "$LOG_DIR" 2>/dev/null
+	printf '%s xm14pro-usb-gadget: %s\n' "$(date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null)" "$*" >> "$LOG_FILE"
+}
+
+write_value() {
+	printf '%s' "$2" > "$1"
+}
+
+mount_configfs() {
+	grep -q " $CONFIGFS configfs " /proc/mounts && {
+		diag 'configfs already mounted'
+		return 0
+	}
+	mkdir -p "$CONFIGFS" || {
+		diag "creating configfs mount point failed: $CONFIGFS"
+		return 1
+	}
+	mount -t configfs configfs "$CONFIGFS" || {
+		diag 'configfs mount failed'
+		return 1
+	}
+	diag 'configfs mounted'
+}
+
+request_device_role() {
+	[ -e "$USB_ROLE" ] || {
+		diag "USB role switch is absent: $USB_ROLE"
+		return 0
+	}
+	role="$(cat "$USB_ROLE" 2>/dev/null)"
+	diag "USB role before request=$role"
+	[ "$role" = device ] || write_value "$USB_ROLE" device || {
+		diag 'requesting USB device role failed'
+		return 1
+	}
+	diag "USB role after request=$(cat "$USB_ROLE" 2>/dev/null)"
+}
+
+wait_for_stock_port_manager() {
+	local boot_id ready_id enabled attempt
+
+	# Keep this package usable on builds without the optional stock userspace
+	# sidecar. If it is installed and enabled, preserve HyperOS ordering: IUsb
+	# and UsbPortManager's callback must be active before ConfigFS binds UDC.
+	[ -x "$USB_SIDECAR_INIT" ] || return 0
+	enabled="$(uci -q get xm14usbcompat.main.enabled 2>/dev/null)"
+	[ "$enabled" = 0 ] && return 0
+	boot_id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+	[ -n "$boot_id" ] || {
+		diag 'cannot read current boot ID for USB ordering'
+		return 1
+	}
+	attempt=0
+	while [ "$attempt" -lt 30 ]; do
+		ready_id="$(sed -n '1p' "$USB_SIDECAR_READY" 2>/dev/null)"
+		if [ "$ready_id" = "$boot_id" ]; then
+			diag "stock IUsb callback ready for boot=$boot_id"
+			return 0
+		fi
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	diag "stock IUsb callback did not become ready for boot=$boot_id"
+	return 1
+}
+
+start() {
+	mkdir -p "$LOG_DIR" 2>/dev/null
+	: > "$LOG_FILE"
+	config_load xm14usb
+	config_get mode main mode network
+	diag "start requested mode=$mode"
+	case "$mode" in
+		network) ;;
+		charge_only)
+			stop
+			return 0
+			;;
+		*)
+			diag "invalid mode=$mode"
+			echo "xm14pro-usb-gadget: invalid mode: $mode" >&2
+			return 1
+			;;
+	esac
+
+	[ -d /sys/class/udc ] || {
+		diag '/sys/class/udc is absent'
+		return 1
+	}
+	wait_for_stock_port_manager || return 1
+	request_device_role || return 1
+	mount_configfs || return 1
+
+	mkdir -p "$GADGET/strings/0x409" "$CONFIG/strings/0x409" "$FUNCTION" || {
+		diag 'creating configfs gadget directories failed'
+		return 1
+	}
+	# This is the exact network-only NCM composition selected by the stock
+	# init.qcom.usb.rc.  The stock IUsbGadget HAL does not implement NCM; Android
+	# also creates this branch directly in ConfigFS.
+	write_value "$GADGET/idVendor" 0x05C6
+	write_value "$GADGET/idProduct" 0xA4A1
+	write_value "$GADGET/bcdUSB" 0x0200
+	write_value "$GADGET/strings/0x409/serialnumber" xm14pro-nwrt
+	write_value "$GADGET/strings/0x409/manufacturer" Xiaomi
+	write_value "$GADGET/strings/0x409/product" 'Xiaomi 14 Pro nwrt CPE'
+	write_value "$CONFIG/strings/0x409/configuration" ncm
+	write_value "$CONFIG/MaxPower" 900
+	write_value "$FUNCTION/dev_addr" 02:14:14:00:00:01
+	write_value "$FUNCTION/host_addr" 02:14:14:00:00:02
+
+	[ -L "$CONFIG/f1" ] || ln -s "$FUNCTION" "$CONFIG/f1" || {
+		diag 'linking stock ncm.gs6 into the configuration failed'
+		return 1
+	}
+
+	udc=''
+	attempt=0
+	while [ "$attempt" -lt 5 ]; do
+		udc="$(ls /sys/class/udc 2>/dev/null | head -n 1)"
+		[ -n "$udc" ] && break
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	[ -n "$udc" ] || {
+		diag 'no UDC device is registered'
+		return 1
+	}
+	diag "selected UDC=$udc"
+	current="$(cat "$GADGET/UDC" 2>/dev/null)"
+	[ "$current" = "$udc" ] || write_value "$GADGET/UDC" "$udc" || {
+		diag "binding UDC=$udc failed"
+		return 1
+	}
+	diag "stock NCM network gadget ready UDC=$(cat "$GADGET/UDC" 2>/dev/null)"
+}
+
+stop() {
+	[ -f "$GADGET/UDC" ] || {
+		diag 'stop: gadget is not present'
+		return 0
+	}
+	write_value "$GADGET/UDC" '' || {
+		diag 'stop: unbinding UDC failed'
+		return 1
+	}
+	diag 'USB data disabled'
+}
+
+reload() {
+	stop
+	start
+}
+
+status() {
+	config_load xm14usb
+	config_get mode main mode network
+	bound="$(cat "$GADGET/UDC" 2>/dev/null)"
+	printf 'mode=%s\n' "$mode"
+	if [ -n "$bound" ]; then
+		printf 'usb_data=enabled\nudc=%s\n' "$bound"
+	else
+		printf 'usb_data=disabled\n'
+	fi
+}

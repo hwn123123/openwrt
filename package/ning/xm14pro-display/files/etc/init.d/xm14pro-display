@@ -1,0 +1,66 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+START=05
+STOP=89
+
+start_service() {
+	local enabled boot_animation
+	config_load xm14display
+	config_get_bool enabled main enabled 1
+	config_get_bool boot_animation main boot_animation 1
+	[ "$enabled" -eq 1 ] || return 0
+	mkdir -p /var/run/xm14display
+
+	# Remove the obsolete terminal renderer before claiming the two DSI halves.
+	for pid in $(pgrep -f '/usr/bin/kmscon.*xm14pro-screen' 2>/dev/null); do
+		kill -KILL "$pid" 2>/dev/null || true
+	done
+	for pid in $(pgrep -f '^/bin/sh /usr/sbin/xm14pro-screen$' 2>/dev/null); do
+		kill -KILL "$pid" 2>/dev/null || true
+	done
+	for pid in $(pgrep -x xm14pro-screen 2>/dev/null); do
+		kill -KILL "$pid" 2>/dev/null || true
+	done
+	for pid in $(pgrep -f '^/usr/sbin/xm14pro-touch-nav$' 2>/dev/null); do
+		kill -KILL "$pid" 2>/dev/null || true
+	done
+	for pid in $(pgrep -f '^/usr/sbin/xm14pro-keys$' 2>/dev/null); do
+		kill -KILL "$pid" 2>/dev/null || true
+	done
+
+	procd_open_instance screen
+	if [ "$boot_animation" -eq 1 ] && [ ! -e /var/run/xm14display/dashboard-ready ]; then
+		procd_set_param command /usr/sbin/xm14pro-screen --boot-animation
+	else
+		procd_set_param command /usr/sbin/xm14pro-screen
+	fi
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	procd_open_instance touch
+	procd_set_param command /usr/sbin/xm14pro-touch-nav
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+
+	procd_open_instance keys
+	procd_set_param command /usr/sbin/xm14pro-keys
+	procd_set_param respawn 3600 5 0
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+reload_service() {
+	/usr/libexec/xm14pro-display apply >/dev/null 2>&1 || true
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14display
+}
+

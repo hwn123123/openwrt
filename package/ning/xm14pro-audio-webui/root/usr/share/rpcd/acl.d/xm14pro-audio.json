@@ -1,0 +1,18 @@
+{
+	"xm14pro-audio": {
+		"description": "管理小米 14 Pro 音频与通话声路",
+		"read": {
+			"uci": [ "xm14audio" ],
+			"file": {
+				"/usr/libexec/xm14pro-audio/status": [ "list", "exec" ],
+				"/usr/libexec/xm14pro-audio/control": [ "list", "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "xm14audio" ],
+			"file": {
+				"/usr/libexec/xm14pro-audio/control": [ "list", "exec" ]
+			}
+		}
+	}
+}

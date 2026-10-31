@@ -1,0 +1,211 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=07
+STOP=89
+USE_PROCD=1
+
+log() {
+	logger -t xm14pro-platform -- "$*"
+}
+
+is_mounted() {
+	grep -qs "[[:space:]]$1[[:space:]]" /proc/mounts
+}
+
+ensure_writable_root() {
+	local options
+	options="$(awk '$2 == "/" { print $4; exit }' /proc/mounts)"
+	case ",$options," in
+		*,rw,*) return 0 ;;
+	esac
+
+	if mount -o remount,rw / 2>/dev/null; then
+		options="$(awk '$2 == "/" { print $4; exit }' /proc/mounts)"
+		case ",$options," in
+			*,rw,*)
+				log "restored writable nwrt overlay root"
+				return 0
+				;;
+		esac
+	fi
+
+	log "nwrt overlay root is still read-only"
+	return 1
+}
+
+safe_component() {
+	[ -n "$1" ] || return 1
+	case "$1" in
+		*[!A-Za-z0-9_.-]*) return 1 ;;
+	esac
+}
+
+prepare_block_aliases() {
+	local sysdev uevent devname partname
+	mkdir -p /dev/block/by-name
+	for sysdev in /sys/class/block/*; do
+		uevent="$sysdev/uevent"
+		[ -r "$uevent" ] || continue
+		devname="$(sed -n 's/^DEVNAME=//p' "$uevent" | head -n 1)"
+		partname="$(sed -n 's/^PARTNAME=//p' "$uevent" | head -n 1)"
+		safe_component "$devname" || continue
+		[ -b "/dev/$devname" ] || continue
+		ln -sfn "../$devname" "/dev/block/$devname"
+		if safe_component "$partname"; then
+			ln -sfn "../$devname" "/dev/block/by-name/$partname"
+		fi
+	done
+	[ -b /dev/block/by-name/modemst1 ] || {
+		log "Android block partition aliases are incomplete"
+		return 1
+	}
+}
+
+slot_suffix() {
+	local cmdline
+	cmdline="$(cat /proc/cmdline 2>/dev/null)"
+	case "$cmdline" in
+		*androidboot.slot_suffix=_a*|*androidboot.slot=a*) echo a ;;
+		*) echo b ;;
+	esac
+}
+
+block_path() {
+	local name="$1"
+	local path
+	for path in \
+		"/dev/block/by-name/$name" \
+		"/dev/block/bootdevice/by-name/$name" \
+		"/dev/$name"; do
+		[ -b "$path" ] && {
+			echo "$path"
+			return 0
+		}
+	done
+	return 1
+}
+
+expand_linux_root() {
+	local root_link=/dev/block/by-name/linux_root
+	local marker=/root/.xm14pro-linux-root-expanded-v1
+	local root_source expected actual block_name sectors
+
+	[ -e "$marker" ] && return 0
+	[ -b "$root_link" ] || {
+		log "linux_root block device is unavailable"
+		return 1
+	}
+	root_source="$(awk '$2 == "/" { print $1; exit }' /proc/mounts)"
+	expected="$(readlink -f "$root_link")"
+	actual="$(readlink -f "$root_source" 2>/dev/null)"
+	[ -n "$expected" ] && [ "$actual" = "$expected" ] || {
+		log "refusing root resize: / is not linux_root ($root_source)"
+		return 1
+	}
+	block_name="${expected##*/}"
+	sectors="$(cat "/sys/class/block/$block_name/size" 2>/dev/null)"
+	[ "$sectors" = 419430400 ] || {
+		log "refusing root resize: linux_root is not exactly 200 GiB ($sectors sectors)"
+		return 1
+	}
+	command -v resize2fs >/dev/null 2>&1 || {
+		log "resize2fs is unavailable"
+		return 1
+	}
+	if resize2fs "$expected" >/tmp/xm14pro-resize2fs.log 2>&1; then
+		touch "$marker"
+		sync
+		log "expanded linux_root to the full verified 200 GiB partition"
+		return 0
+	fi
+	log "resize2fs failed; see /tmp/xm14pro-resize2fs.log"
+	return 1
+}
+
+mount_stock() {
+	local base="$1"
+	local target="$2"
+	local fstype="$3"
+	local preferred fallback suffix device
+	is_mounted "$target" && return 0
+	preferred="$(slot_suffix)"
+	[ "$preferred" = a ] && fallback=b || fallback=a
+	mkdir -p "$target"
+	for suffix in "$preferred" "$fallback"; do
+		device="$(block_path "$base"'_'"$suffix")" || continue
+		if mount -t "$fstype" -o ro,nosuid,nodev "$device" "$target" 2>/dev/null; then
+			log "mounted $device read-only at $target"
+			return 0
+		fi
+	done
+	log "stock partition $base is not available"
+	return 1
+}
+
+bind_stock_firmware() {
+	local source=/vendor/firmware_mnt/image
+	local target=/lib/firmware
+	[ -d "$source" ] || return 1
+	is_mounted "$target" && return 0
+	mkdir -p "$target"
+	if mount -o bind "$source" "$target" 2>/dev/null; then
+		mount -o remount,bind,ro "$target" 2>/dev/null || true
+		log "exposed stock firmware read-only at $target for Qualcomm services"
+		return 0
+	fi
+	log "could not expose stock firmware at $target"
+	return 1
+}
+
+prepare_rmtfs_uio_alias() {
+	local uio name
+	[ -e /dev/qcom_rmtfs_mem1 ] && return 0
+	[ -e /dev/qcom_rmtfs_uio1 ] && return 0
+	for uio in /sys/class/uio/uio*; do
+		[ -r "$uio/name" ] || continue
+		name="$(cat "$uio/name" 2>/dev/null)"
+		[ "$name" = rmtfs ] || continue
+		[ -e "/dev/${uio##*/}" ] || continue
+		ln -sfn "/dev/${uio##*/}" /dev/qcom_rmtfs_uio1
+		log "mapped ${uio##*/} as qcom_rmtfs_uio1"
+		return 0
+	done
+	log "rmtfs UIO shared-memory device is not available"
+	return 1
+}
+
+start_service() {
+	# The boot shim mounts the independent ext4 root directly. Keep it writable
+	# before hardware services create their persistent configuration.
+	ensure_writable_root || return 1
+
+	# The boot shim creates these aliases before pivot_root, but nwrt's final
+	# devtmpfs is a new mount. Rebuild them before firmware and rmtfs services.
+	prepare_block_aliases
+	expand_linux_root || log "linux_root remains usable at its current filesystem size"
+	mount_stock modem /vendor/firmware_mnt vfat
+	mount_stock modemfirmware /vendor/modem_firmware vfat
+	mount_stock dsp /vendor/dsp ext4
+	mount_stock bluetooth /vendor/bt_firmware vfat
+	bind_stock_firmware
+	prepare_rmtfs_uio_alias
+
+	# The stock-module package owns this writable-root copy. /vendor/firmware
+	# is the read-only modem partition at runtime and must never be an APK
+	# extraction target.
+	[ -r /usr/lib/firmware/wlan/qca_cld/kiwi_v2/WCNSS_qcom_cfg.ini ] ||
+		log "kiwi_v2 Wi-Fi configuration is missing"
+
+	# Generate CPE AP defaults only once, after the stock driver creates a phy.
+	# The initial credentials are deliberately fixed at the owner's request;
+	# LuCI can change them later without this service overwriting the result.
+	if [ -d /sys/class/ieee80211 ] && ! uci -q show wireless >/dev/null 2>&1; then
+		/usr/sbin/xm14pro-wifi-profile initial ||
+			log "automatic Wi-Fi CPE profile could not be created"
+	fi
+}
+
+service_triggers() {
+	procd_add_reload_trigger wireless
+}

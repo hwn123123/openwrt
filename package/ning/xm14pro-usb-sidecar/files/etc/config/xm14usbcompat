@@ -1,0 +1,2 @@
+config sidecar 'main'
+	option enabled '1'

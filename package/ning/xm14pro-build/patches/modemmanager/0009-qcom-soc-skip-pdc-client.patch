@@ -1,0 +1,33 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qcom-soc: skip PDC on the in-SoC phone modem
+
+Xiaomi's downstream shennong modem resets the QMI transport when generic
+ModemManager enumerates every PDC software configuration during initial
+probing.  The PDC service is only used for carrier firmware selection; it is
+not required for registration, packet data, signal, SMS, or SIM management.
+
+Skip allocating the optional PDC client only for the qcom-soc plugin.  Other
+QMI devices retain the upstream service set and behaviour.
+
+--- a/src/mm-broadband-modem-qmi.c
++++ b/src/mm-broadband-modem-qmi.c
+@@ -13794,10 +13794,21 @@ allocate_next_client (GTask *task)
+ {
++    MMBroadbandModemQmi          *self;
+     InitializationStartedContext *ctx;
+ 
++    self = g_task_get_source_object (task);
+     ctx = g_task_get_task_data (task);
+ 
++    /* The downstream Xiaomi phone modem drops the QRTR transport when PDC
++     * enumeration runs.  PDC is optional and unrelated to CPE data/SMS. */
++    while (ctx->service_index < G_N_ELEMENTS (qmi_services) &&
++           qmi_services[ctx->service_index] == QMI_SERVICE_PDC &&
++           g_strcmp0 (mm_base_modem_get_plugin (MM_BASE_MODEM (self)), "qcom-soc") == 0) {
++        mm_obj_dbg (self, "skipping optional PDC client on qcom-soc");
++        ctx->service_index++;
++    }
++
+     if (ctx->service_index == G_N_ELEMENTS (qmi_services)) {
+         parent_initialization_started (task);
+         return;

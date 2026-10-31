@@ -1,0 +1,58 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=10
+STOP=90
+
+SELINUXFS=/sys/fs/selinux
+POLICY=/usr/share/xm14pro-qwes/stock-sepolicy
+EXPECTED_SHA256=db57b0d1611f7061ae44dddf108cb6accc47e187eccd718c5bb29320314e6604
+
+policy_sha256() {
+	sha256sum "$1" 2>/dev/null | awk '{print $1}'
+}
+
+start() {
+	local installed_sha current
+
+	[ -r "$POLICY" ] || {
+		logger -t xm14pro-selinux "missing stock policy: $POLICY"
+		return 1
+	}
+	installed_sha="$(policy_sha256 "$POLICY")"
+	[ "$installed_sha" = "$EXPECTED_SHA256" ] || {
+		logger -t xm14pro-selinux "stock policy checksum mismatch: $installed_sha"
+		return 1
+	}
+
+	grep -Fqs " $SELINUXFS selinuxfs " /proc/mounts || {
+		mkdir -p "$SELINUXFS"
+		mount -t selinuxfs selinuxfs "$SELINUXFS" || {
+			logger -t xm14pro-selinux 'could not mount selinuxfs'
+			return 1
+		}
+	}
+
+	# selinuxfs reports a size of zero for policy even after a successful load.
+	# The process security class only appears once a policy is active.
+	if [ -d "$SELINUXFS/class/process" ]; then
+		logger -t xm14pro-selinux 'an SELinux policy is already active; keeping it permissive'
+	else
+		/usr/libexec/xm14pro-qwes/selinux-load "$POLICY" "$SELINUXFS/load" || {
+			logger -t xm14pro-selinux 'kernel rejected the Xiaomi stock policy'
+			return 1
+		}
+	fi
+
+	# Policy identity is required by Qualcomm secure-world clients; enforcing
+	# Android filesystem rules against nwrt is neither required nor safe.
+	echo 0 > "$SELINUXFS/enforce" || return 1
+	current="$(cat /proc/self/attr/current 2>/dev/null)"
+	logger -t xm14pro-selinux "stock policy loaded permissive; current=$current"
+}
+
+stop() {
+	# A loaded SELinux policy cannot be unloaded without rebooting.  Keep it
+	# permissive; stopping the QWES services remains handled by their scripts.
+	[ ! -e "$SELINUXFS/enforce" ] || echo 0 > "$SELINUXFS/enforce"
+}

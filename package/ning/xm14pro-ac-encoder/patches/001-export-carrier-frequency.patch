@@ -1,0 +1,30 @@
+--- a/src/IRsend.h
++++ b/src/IRsend.h
+@@ -54,6 +54,7 @@ const float kNoTempValue = -100.0;
+ #ifdef SWIGLIB
+ // Global
+ extern std::vector<int> timingList;
++extern uint32_t timingFrequency;
+ #endif  // SWIGLIB
+ 
+ /// Enumerators and Structures for the Common A/C API.
+--- a/src/IRsend.cpp
++++ b/src/IRsend.cpp
+@@ -20,6 +20,7 @@
+ 
+ #ifdef SWIGLIB
+ std::vector<int> timingList;
++uint32_t timingFrequency = 0;
+ #endif  // SWIGLIB
+ 
+ /// Constructor for an IRsend object.
+@@ -93,6 +94,9 @@ void IRsend::enableIROut(uint32_t freq, uint8_t duty) {
+ #ifdef UNIT_TEST
+   _freq_unittest = freq;
+ #endif  // UNIT_TEST
++#ifdef SWIGLIB
++  timingFrequency = freq;
++#endif  // SWIGLIB
+   uint32_t period = calcUSecPeriod(freq);
+   // Nr. of uSeconds the LED will be on per pulse.
+   onTimePeriod = (period * _dutycycle) / kDutyMax;

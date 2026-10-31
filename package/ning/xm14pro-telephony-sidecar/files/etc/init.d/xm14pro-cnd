@@ -1,0 +1,56 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+USE_PROCD=1
+# Cellular data is established by S63. cnd only supplies the stock Qualcomm
+# data factory required by the IMS stack; the S64 telephony service verifies
+# that exact Binder object before it releases QCRIL/IMS.
+START=64
+STOP=41
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+STATE_ROOT=/mnt/nwrt-data/device-state/telephony
+LAUNCHER=/usr/libexec/xm14pro-telephony/launcher
+
+bind_once() {
+	local source="$1"
+	local target="$2"
+
+	grep -Fqs " $target " /proc/mounts && return 0
+	mkdir -p "$source" "$target" || return 1
+	mount -o bind "$source" "$target"
+}
+
+prepare_connectivity_state() {
+	local connectivity="$STATE_ROOT/connectivity"
+
+	mkdir -p "$connectivity" || return 1
+	chown 1000:1000 "$connectivity" || return 1
+	chmod 0770 "$connectivity" || return 1
+	bind_once "$connectivity" "$ANDROID_ROOT/data/vendor/connectivity"
+}
+
+start_service() {
+	local enabled
+
+	config_load xm14telephony
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+
+	/etc/init.d/xm14pro-qwes running || /etc/init.d/xm14pro-qwes start
+	prepare_connectivity_state || {
+		logger -t xm14pro-cnd 'failed to prepare persistent connectivity state'
+		return 1
+	}
+
+	procd_open_instance cnd
+	procd_set_param command "$LAUNCHER" "$ANDROID_ROOT" cnd
+	procd_set_param respawn 3600 5 3
+	procd_set_param stdout 1
+	procd_set_param stderr 1
+	procd_close_instance
+}
+
+service_triggers() {
+	procd_add_reload_trigger xm14telephony
+}

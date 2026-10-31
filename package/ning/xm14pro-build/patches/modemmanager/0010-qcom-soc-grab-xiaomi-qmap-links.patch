@@ -1,0 +1,34 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] device: grab Xiaomi downstream rmnet ports as link ports
+
+Mainline IPA exposes a lower-device relationship for dynamically created
+QMAP netdevices. Xiaomi's downstream 6.1 rmnet driver does not expose that
+sysfs relationship, so ModemManager mistakes the link for a new modem port and
+restarts device probing while a bearer is waiting for it.
+
+Treat only rmnet data netdevices explicitly assigned to the qcom-soc UID as link
+ports. Other devices retain the upstream lower-device and WWAN detection.
+
+--- a/src/mm-device.c
++++ b/src/mm-device.c
+@@ -221,13 +221,19 @@ mm_device_grab_port (MMDevice       *self,
+                      MMKernelDevice *kernel_port)
+ {
+     MMPortProbe    *probe;
+     MMKernelDevice *lower_port;
++    gboolean        downstream_rmnet_link;
+ 
+     if (mm_device_owns_port (self, kernel_port))
+         return TRUE;
+ 
+     lower_port = mm_kernel_device_peek_lower_device (kernel_port);
+-    if (lower_port) {
++    downstream_rmnet_link =
++        (g_strcmp0 (mm_kernel_device_get_subsystem (kernel_port), "net") == 0 &&
++         (g_str_has_prefix (mm_kernel_device_get_name (kernel_port), "rmnet_data") ||
++          g_str_has_prefix (mm_kernel_device_get_name (kernel_port), "qmapmux")) &&
++         g_strcmp0 (mm_kernel_device_get_physdev_uid (kernel_port), "qcom-soc") == 0);
++    if (lower_port || downstream_rmnet_link) {
+         g_autoptr(GError) error = NULL;
+ 
+         /* No port probing done, at this point this is not something we require

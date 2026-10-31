@@ -1,0 +1,31 @@
+#!/bin/sh
+
+timeout="${1:-20}"
+elapsed=0
+
+while [ "$elapsed" -lt "$timeout" ]; do
+	ssgtzd_ready=0
+	qwesd_ready=0
+	for cmdline in /proc/[0-9]*/cmdline; do
+		[ -r "$cmdline" ] || continue
+		case "$(tr '\000' ' ' < "$cmdline" 2>/dev/null)" in
+			*'/vendor/bin/ssgtzd'*)
+				pid="${cmdline#/proc/}"
+				pid="${pid%/cmdline}"
+				if ls -l "/proc/$pid/fd" 2>/dev/null |
+					grep -q 'anon_inode:smcinvoke'; then
+					ssgtzd_ready=1
+				fi
+				;;
+			*'/vendor/bin/qwesd'*)
+				qwesd_ready=1
+				;;
+		esac
+	done
+	[ "$ssgtzd_ready" -eq 1 ] && [ "$qwesd_ready" -eq 1 ] && exit 0
+	sleep 1
+	elapsed=$((elapsed + 1))
+done
+
+logger -t xm14pro-qwes 'ssgtzd/QWES TA and qwesd did not become ready'
+exit 1

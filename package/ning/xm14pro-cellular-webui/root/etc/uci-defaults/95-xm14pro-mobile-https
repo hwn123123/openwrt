@@ -1,0 +1,26 @@
+#!/bin/sh
+
+# Browser notifications require a trustworthy HTTPS origin.  Generate the
+# first-boot uhttpd certificate with both the nwrt hostname and the default
+# CPE management address.  Never replace an administrator-provided cert.
+
+CERT=/etc/uhttpd.crt
+KEY=/etc/uhttpd.key
+
+[ -x /usr/sbin/px5g ] || exit 0
+[ ! -s "$CERT" ] || [ ! -s "$KEY" ] || exit 0
+
+umask 077
+/usr/sbin/px5g selfsigned -der -days 397 \
+	-newkey ec -pkeyopt ec_paramgen_curve:P-256 \
+	-keyout "$KEY.new" -out "$CERT.new" \
+	-subj /C=ZZ/ST=Somewhere/L=Unknown/O=nwrt/CN=nwrt \
+	-addext extendedKeyUsage=serverAuth \
+	-addext subjectAltName=DNS:nwrt \
+	-addext subjectAltName=IP:192.168.66.1 || exit 1
+
+mv -f "$KEY.new" "$KEY"
+mv -f "$CERT.new" "$CERT"
+chmod 0600 "$KEY"
+chmod 0644 "$CERT"
+exit 0

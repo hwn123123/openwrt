@@ -1,0 +1,27 @@
+LIBC {
+	global:
+		__system_property_get;
+};
+
+LIBC_DEPRECATED {
+	global:
+		__system_property_wait_any;
+};
+
+LIBCUTILS {
+	global:
+		property_get;
+		property_set;
+};
+
+XIAOMI_QCRIL {
+	global:
+		xiaomi_get_property_value_from_int;
+};
+
+LIBBINDER {
+	global:
+		_ZN7android4base15WaitForPropertyERKNSt3__112basic_stringIcNS1_11char_traitsIcEENS1_9allocatorIcEEEES9_NS1_6chrono8durationIxNS1_5ratioILl1ELl1000EEEEE;
+	local:
+		*;
+};

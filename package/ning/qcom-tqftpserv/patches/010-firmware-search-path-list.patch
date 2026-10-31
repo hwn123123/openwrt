@@ -1,0 +1,80 @@
+--- a/translate.c
++++ b/translate.c
+@@ -37,17 +37,50 @@
+ static int open_maybe_compressed(const char *path);
+ 
+ static void read_fw_path_from_sysfs(char *outbuffer, size_t bufsize)
+ {
+ 	size_t pathsize;
++
++	if (!bufsize)
++		return;
++	outbuffer[0] = '\0';
+ 	FILE *f = fopen("/sys/module/firmware_class/parameters/path", "rt");
+ 	if (!f)
+ 		return;
+-	pathsize = fread(outbuffer, sizeof(char), bufsize, f);
++	pathsize = fread(outbuffer, sizeof(char), bufsize - 1, f);
+ 	fclose(f);
+ 	if (pathsize == 0)
+ 		return;
+-	/* truncate newline */
+-	outbuffer[pathsize - 1] = '\0';
++	while (pathsize && (outbuffer[pathsize - 1] == '\n' ||
++			       outbuffer[pathsize - 1] == '\r'))
++		pathsize--;
++	outbuffer[pathsize] = '\0';
++}
++
++static int open_from_fw_path_list(const char *path_list,
++				  const char *firmware_path, const char *file)
++{
++	char *copy;
++	char *entry;
++	char *saveptr = NULL;
++	char path[PATH_MAX];
++	int fd = -1;
++
++	copy = strdup(path_list);
++	if (!copy)
++		return -1;
++	for (entry = strtok_r(copy, ",", &saveptr); entry;
++	     entry = strtok_r(NULL, ",", &saveptr)) {
++		if (snprintf(path, sizeof(path), "%s/%s/%s", entry,
++			     firmware_path, file) >= (int)sizeof(path))
++			continue;
++		fd = open_maybe_compressed(path);
++		if (fd >= 0)
++			break;
++		if (errno != ENOENT)
++			warn("failed to open %s", path);
++	}
++	free(copy);
++	return fd;
+ }
+ 
+ /**
+@@ -118,19 +151,10 @@ static int translate_readonly(const char
+ 		firmware_path = dirname(firmware_value_copy);
+ 
+ 		/* first try path from sysfs */
+-		if ((strlen(fw_sysfs_path) > 0) &&
+-		    (strlen(fw_sysfs_path) + 1 + strlen(firmware_value) + 1 + strlen(file) + 1 < sizeof(path))) {
+-			strcpy(path, fw_sysfs_path);
+-			strcat(path, "/");
+-			strcat(path, firmware_path);
+-			strcat(path, "/");
+-			strcat(path, file);
+-
+-			fd = open_maybe_compressed(path);
+-			if (fd >= 0)
+-				break;
+-			if (errno != ENOENT)
+-				warn("failed to open %s", path);
++		if (fw_sysfs_path[0]) {
++			fd = open_from_fw_path_list(fw_sysfs_path, firmware_path, file);
++			if (fd >= 0)
++				break;
+ 		}
+ 
+ 		/* now try with base path */

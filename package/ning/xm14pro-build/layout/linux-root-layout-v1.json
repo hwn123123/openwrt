@@ -1,0 +1,40 @@
+{
+  "schema": "xm14-linux-root-layout-v1",
+  "status": "applied-device-tested",
+  "device": "shennong",
+  "disk": {
+    "path": "/dev/block/sda",
+    "guid": "0CC9AB68-255D-F5C6-2977-973EF047D32C",
+    "logical_sector_bytes": 4096,
+    "sector_count": 128626688,
+    "last_usable_sector": 128626682
+  },
+  "userdata": {
+    "number": 33,
+    "name": "userdata",
+    "type_code": "A03A",
+    "unique_guid": "3B83A1BD-7907-7CE1-67D5-4D3EF93D2372",
+    "start_sector": 2260480,
+    "end_sector": 76197881,
+    "sector_count": 73937402,
+    "size_bytes": 302847598592,
+    "filesystem": "f2fs",
+    "preserve": true
+  },
+  "linux_root": {
+    "number": 34,
+    "name": "linux_root",
+    "type_code": "8300",
+    "type_guid": "0FC63DAF-8483-4772-8E79-3D69D8477DE4",
+    "unique_guid": "C675F892-57A0-4776-A8FD-17C15F0AD78A",
+    "start_sector": 76197882,
+    "end_sector": 128626681,
+    "sector_count": 52428800,
+    "size_bytes": 214748364800,
+    "size_gib": 200,
+    "filesystem": "ext4",
+    "content": "nwrt-rootfs-packages-config-docker-and-persistent-data"
+  },
+  "trailing_free_sectors": 1,
+  "trailing_free_bytes": 4096
+}

@@ -28,7 +28,7 @@ include $(INCLUDE_DIR)/package.mk
 define Package/libnetfilter-conntrack
   SECTION:=libs
   CATEGORY:=Libraries
-  DEPENDS:=+libnfnetlink +kmod-nf-conntrack-netlink +libmnl
+  DEPENDS:=+libnfnetlink +!TARGET_xm14pro:kmod-nf-conntrack-netlink +libmnl
   TITLE:=API to the in-kernel connection tracking state table
   URL:=http://www.netfilter.org/projects/libnetfilter_conntrack/
   ABI_VERSION:=3

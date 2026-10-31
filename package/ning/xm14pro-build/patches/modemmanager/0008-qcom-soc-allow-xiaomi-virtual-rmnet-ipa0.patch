@@ -1,0 +1,33 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] filter: allow Xiaomi IPA parent and owned rmnet links
+
+The downstream Xiaomi kernel exposes its IPA parent as the virtual netdevice
+rmnet_ipa0.  OpenWrt reports that port explicitly with the qcom-soc UID, but
+the generic virtual-device filter rejects it before the qcom-soc plugin can
+apply its IPA handling.
+
+Allow only this exact parent and rmnet links explicitly reported with the
+qcom-soc UID. Other virtual devices keep the upstream filtering behaviour.
+
+--- a/src/mm-filter.c
++++ b/src/mm-filter.c
+@@ -230,6 +230,19 @@ mm_filter_port (MMFilter        *self,
+         return TRUE;
+     }
+ 
++    /* Xiaomi's downstream IPA parent and its dynamically created rmnet links
++     * are real modem data endpoints exposed as virtual netdevices.  Data
++     * links are admitted only when xm14pro-cellular explicitly assigns them
++     * to the existing qcom-soc device. */
++    if ((g_strcmp0 (subsystem, "net") == 0) &&
++        ((g_strcmp0 (name, "rmnet_ipa0") == 0) ||
++         ((g_str_has_prefix (name, "rmnet_data") ||
++           g_str_has_prefix (name, "qmapmux")) &&
++          (g_strcmp0 (mm_kernel_device_get_physdev_uid (port), "qcom-soc") == 0)))) {
++        mm_obj_dbg (self, "(%s/%s) port allowed: downstream IPA data endpoint", subsystem, name);
++        return TRUE;
++    }
++
+     /* If this is a virtual device, don't allow it */
+     if ((self->priv->enabled_rules & MM_FILTER_RULE_VIRTUAL) &&
+         (!mm_kernel_device_get_physdev_sysfs_path (port))) {

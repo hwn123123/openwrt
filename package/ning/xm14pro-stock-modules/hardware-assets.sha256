@@ -1,0 +1,5 @@
+# OS3.0.308.0 vendor_dlkm modules copied byte-for-byte. Do not strip.
+298e1cc6f41d838fa5f2e5f075040764bc999f60ae870a0e8497deeefef53e16  nxp-nci.ko
+796c1efc2f4b94e914e52b051a2b821473d038a83cb9631f88c4af319cf38d93  stm_nfc_i2c.ko
+40d8651ffc0ce2fcc14002e11b7e6a3eb0e590012cb570a78fbcf03e43fc8e74  stm_st54se_gpio.ko
+4ef445e0ed70e07ee32626c6503d81ff5c2f5d1418e66878c5f94f7fc7a12f81  ir-spi.ko

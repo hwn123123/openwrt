@@ -1,0 +1,35 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qcom-soc: accept downstream virtual rmnet_ipa0 as IPA
+
+Xiaomi's downstream 6.1 kernel exposes the main IPA data interface as the
+virtual netdevice rmnet_ipa0. It therefore has no sysfs driver symlink even
+though it is the IPA parent used for QMAP multiplexed links.
+
+Keep the upstream driver check and add only the exact downstream interface
+name used by shennong. Other driverless virtual network devices remain
+unsupported.
+
+--- a/src/plugins/qcom-soc/mm-broadband-modem-qmi-qcom-soc.c
++++ b/src/plugins/qcom-soc/mm-broadband-modem-qmi-qcom-soc.c
+@@ -117,15 +117,20 @@ peek_port_qmi_for_data (MMBroadbandModemQmi  *self,
+                         GError              **error)
+ {
+     MMKernelDevice *net_port;
++    const gchar    *net_port_name;
+     const gchar    *net_port_driver;
+ 
+     g_assert (MM_IS_BROADBAND_MODEM_QMI (self));
+     g_assert (mm_port_get_subsys (data) == MM_PORT_SUBSYS_NET);
+ 
+     net_port = mm_port_peek_kernel_device (data);
++    net_port_name = mm_port_get_device (data);
+     net_port_driver = mm_kernel_device_get_driver (net_port);
+ 
+-    if (g_strcmp0 (net_port_driver, "ipa") == 0)
++    /* Downstream Qualcomm Android kernels may expose the IPA parent as a
++     * driverless virtual rmnet_ipa0 netdevice. */
++    if (g_strcmp0 (net_port_driver, "ipa") == 0 ||
++        (!net_port_driver && g_strcmp0 (net_port_name, "rmnet_ipa0") == 0))
+         return peek_port_qmi_for_data_ipa (self, data, out_endpoint, error);
+ 
+     if (g_strcmp0 (net_port_driver, "bam-dmux") == 0)

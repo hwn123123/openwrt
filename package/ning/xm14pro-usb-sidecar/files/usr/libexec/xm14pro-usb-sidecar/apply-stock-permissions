@@ -1,0 +1,27 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+TAG=xm14pro-usb-sidecar
+attempt=0
+
+# These are the exact ownership changes from the stock HyperOS USB service rc.
+# charger_pd may publish qcom-battery several seconds after userspace starts.
+while [ "$attempt" -lt 120 ]; do
+	[ ! -e /proc/usb_msflag ] || chown 1000 /proc/usb_msflag
+	[ ! -e /proc/usb_ms_use ] || chown 1000 /proc/usb_ms_use
+	if [ -e /sys/class/qcom-battery/usbinterface ]; then
+		chown 1000:1018 /sys/class/qcom-battery/usbinterface &&
+			chmod 0660 /sys/class/qcom-battery/usbinterface
+	fi
+
+	if [ -d /sys/class/typec ] &&
+	   [ -e /sys/class/power_supply/usb ]; then
+		logger -t "$TAG" 'real Type-C and USB power-supply nodes are ready'
+		exit 0
+	fi
+	attempt=$((attempt + 1))
+	sleep 1
+done
+
+logger -t "$TAG" 'Type-C provider is still absent; kept stock USB HAL running without synthetic state'
+exit 0

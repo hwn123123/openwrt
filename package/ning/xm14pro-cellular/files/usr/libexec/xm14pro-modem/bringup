@@ -1,0 +1,107 @@
+#!/bin/sh
+
+TAG=xm14-cellular
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+find_modem_remoteproc() {
+	local path firmware name
+	for path in /sys/class/remoteproc/remoteproc*; do
+		[ -d "$path" ] || continue
+		firmware=$(cat "$path/firmware" 2>/dev/null)
+		name=$(cat "$path/name" 2>/dev/null)
+		case "$firmware:$name" in
+			modem.mdt:*|*:*-mss) printf '%s\n' "$path"; return 0 ;;
+		esac
+	done
+	return 1
+}
+
+modem_qmi_ready() {
+	qrtr-lookup 2>/dev/null | awk '
+		$1 == 2 && $4 == 0 { found = 1 }
+		END { exit !found }
+	'
+}
+
+# MPSS performs its Smart Transmit license check shortly after boot. Starting
+# it without the stock QWES/TEE service causes a fatal modem assertion, which
+# the stock kernel escalates to a device kpanic. Refuse to start MPSS until the
+# license service has opened its secure-world session.
+/usr/libexec/xm14pro-qwes/wait-ready 20 || {
+	log "QWES secure license service is not ready; refusing to start MPSS"
+	exit 1
+}
+
+/usr/sbin/xm14pro-stock-modules cellular || {
+	log "could not load the IPA/rmnet module closure"
+	exit 1
+}
+
+remoteproc=$(find_modem_remoteproc) || {
+	log "modem remote processor was not found"
+	exit 1
+}
+
+state=$(cat "$remoteproc/state" 2>/dev/null)
+if [ "$state" != running ]; then
+	printf '%s' start > "$remoteproc/state" || {
+		log "could not start modem remote processor"
+		exit 1
+	}
+fi
+
+count=0
+while [ "$count" -lt 30 ]; do
+	modem_qmi_ready && break
+	count=$((count + 1))
+	sleep 1
+done
+modem_qmi_ready || {
+	log "QRTR node 0 did not expose DMS within 30 seconds"
+	exit 1
+}
+
+# A cold modem starts in shutting-down mode.  Switching DMS to online is the
+# bounded, non-destructive equivalent of enabling the radio.  Do not activate
+# UIM provisioning sessions or start WDS here: both require the remaining
+# Android radio/DPM compatibility layer and may trigger a modem subsystem reset.
+mode=$(timeout -k 2 12 qmicli -d qrtr://0 --dms-get-operating-mode 2>/dev/null) || {
+	log "could not query modem operating mode"
+	exit 1
+}
+case "$mode" in
+	*"Mode: 'online'"*) ;;
+	*)
+		timeout -k 2 12 qmicli -d qrtr://0 --dms-set-operating-mode=online >/dev/null 2>&1 || {
+			log "could not place modem in online mode"
+			exit 1
+		}
+		;;
+esac
+
+# The downstream IPA parent has no sysfs endpoint metadata, so generic
+# ModemManager cannot open the DPM software port by itself.  The Xiaomi modem
+# expects the embedded endpoint (interface 1) to be opened before WDA is
+# queried.  Keep this bounded and verify the endpoint immediately; no PDP/WDS
+# session is started here.
+if ! timeout -k 2 12 qmicli -d qrtr://0 \
+	--wda-get-data-format='ep-type=embedded,ep-iface-number=1' >/dev/null 2>&1; then
+	timeout -k 2 12 qmicli -d qrtr://0 \
+		--dpm-open-port='sw-data-ep-type=embedded,sw-data-ep-iface-number=1,sw-data-port-name=rmnet_data0' \
+		>/dev/null 2>&1 || {
+			log "could not open the Qualcomm DPM software data port"
+			exit 1
+		}
+fi
+
+timeout -k 2 12 qmicli -d qrtr://0 \
+	--wda-get-data-format='ep-type=embedded,ep-iface-number=1' >/dev/null 2>&1 || {
+		log "Qualcomm WDA endpoint embedded/1 is not ready"
+		exit 1
+	}
+
+log "internal Qualcomm modem control plane is online on QRTR node 0"
+exit 0

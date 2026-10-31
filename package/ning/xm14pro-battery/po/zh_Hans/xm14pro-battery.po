@@ -1,0 +1,252 @@
+msgid "Battery"
+msgstr "电池"
+
+msgid "Battery driver is not registered"
+msgstr "电池驱动尚未注册"
+
+msgid "The Xiaomi PMIC battery channel is not available yet. No battery value is being simulated."
+msgstr "小米 PMIC 电池通道尚未可用，页面不会伪造电量或状态。"
+
+msgid "Detected power components"
+msgstr "已检测的供电组件"
+
+msgid "Power system"
+msgstr "电源系统"
+
+msgid "Battery temperature"
+msgstr "电池温度"
+
+msgid "Voltage"
+msgstr "电压"
+
+msgid "Current"
+msgstr "电流"
+
+msgid "Power"
+msgstr "功率"
+
+msgid "Battery health"
+msgstr "电池健康度"
+
+msgid "Cycle count"
+msgstr "循环次数"
+
+msgid "Capacity and lifetime"
+msgstr "容量与寿命"
+
+msgid "Charging input"
+msgstr "充电输入"
+
+msgid "Battery identity"
+msgstr "电池信息"
+
+msgid "Thermal sensors"
+msgstr "温度传感器"
+
+msgid "Charging controls"
+msgstr "充电控制"
+
+msgid "Charging enabled"
+msgstr "允许充电"
+
+msgid "Start charging at"
+msgstr "开始充电阈值"
+
+msgid "Stop charging at"
+msgstr "停止充电阈值"
+
+msgid "Input current limit"
+msgstr "输入电流上限"
+
+msgid "Maximum charging current"
+msgstr "最大充电电流"
+
+msgid "Reverse charging"
+msgstr "反向充电"
+
+msgid "Suspend USB input"
+msgstr "暂停 USB 输入"
+
+msgid "Night charging"
+msgstr "夜间充电"
+
+msgid "Kernel-reported power"
+msgstr "内核实时功率"
+
+msgid "Fuel-gauge state of health"
+msgstr "电量计健康度"
+
+msgid "Full versus design"
+msgstr "满充/设计容量"
+
+msgid "Fuel-gauge SOH"
+msgstr "电量计 SOH"
+
+msgid "Time remaining"
+msgstr "预计剩余时间"
+
+msgid "Protocol"
+msgstr "充电协议"
+
+msgid "UCSI source"
+msgstr "UCSI 电源能力"
+
+msgid "Input power"
+msgstr "输入功率"
+
+msgid "Type-C connection"
+msgstr "Type-C 连接"
+
+msgid "Mode"
+msgstr "模式"
+
+msgid "Current state"
+msgstr "当前状态"
+
+msgid "Data role"
+msgstr "数据角色"
+
+msgid "Power role"
+msgstr "供电角色"
+
+msgid "Power mode"
+msgstr "供电模式"
+
+msgid "PD revision"
+msgstr "PD 版本"
+
+msgid "Type-C revision"
+msgstr "Type-C 版本"
+
+msgid "Cable orientation"
+msgstr "接口方向"
+
+msgid "Fast charging"
+msgstr "快充状态"
+
+msgid "Fast-charge mode"
+msgstr "快充模式"
+
+msgid "Quick-charge type"
+msgstr "快充类型码"
+
+msgid "PD verified"
+msgstr "PD 已认证"
+
+msgid "APDO maximum"
+msgstr "APDO 上限"
+
+msgid "Power maximum"
+msgstr "功率上限"
+
+msgid "Adapter ID"
+msgstr "适配器 ID"
+
+msgid "Adapter SVID"
+msgstr "适配器 SVID"
+
+msgid "Battery device"
+msgstr "电池器件"
+
+msgid "Cell vendor"
+msgstr "电芯厂商"
+
+msgid "Pack vendor"
+msgstr "电池包厂商"
+
+msgid "Charging safety"
+msgstr "充电安全"
+
+msgid "Connector temperature"
+msgstr "接口温度"
+
+msgid "Moisture status"
+msgstr "进水检测状态"
+
+msgid "Anti-burn state"
+msgstr "防烧状态"
+
+msgid "CC short-to-VBUS"
+msgstr "CC/VBUS 短路状态"
+
+msgid "Battery connection"
+msgstr "电池连接状态"
+
+msgid "Charge-pump primary"
+msgstr "主充电泵状态"
+
+msgid "Charge-pump secondary"
+msgstr "副充电泵状态"
+
+msgid "The active kernel driver exposes no safe writable battery controls."
+msgstr "当前内核驱动没有提供可安全写入的电池控制项。"
+
+msgid "Setting applied"
+msgstr "设置已生效"
+
+msgid "Battery backend returned invalid data"
+msgstr "电池后端返回了无效数据"
+
+msgid "Battery operation failed"
+msgstr "电池操作失败"
+
+msgid "Normal"
+msgstr "正常"
+
+msgid "Warm"
+msgstr "偏热"
+
+msgid "Hot"
+msgstr "过热"
+
+msgid "Live voltage"
+msgstr "实时电压"
+
+msgid "Charging"
+msgstr "充电中"
+
+msgid "Discharging"
+msgstr "放电中"
+
+msgid "Kernel health state"
+msgstr "内核健康状态"
+
+msgid "Kernel-reported cycles"
+msgstr "内核报告的循环次数"
+
+msgid "Current charge"
+msgstr "当前电量容量"
+
+msgid "Full charge capacity"
+msgstr "当前满充容量"
+
+msgid "Design capacity"
+msgstr "设计容量"
+
+msgid "Online"
+msgstr "在线状态"
+
+msgid "Input voltage"
+msgstr "输入电压"
+
+msgid "Input current"
+msgstr "输入电流"
+
+msgid "Current limit"
+msgstr "电流上限"
+
+msgid "Charge type"
+msgstr "充电类型"
+
+msgid "Model"
+msgstr "型号"
+
+msgid "Technology"
+msgstr "电池类型"
+
+msgid "Health"
+msgstr "健康状态"
+
+msgid "Present"
+msgstr "安装状态"
+

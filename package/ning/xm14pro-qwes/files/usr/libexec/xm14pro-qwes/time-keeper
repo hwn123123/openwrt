@@ -1,0 +1,16 @@
+#!/bin/sh
+# Keep nwrt's TOD offset current without touching Android's Qualcomm files.
+
+helper=/usr/libexec/xm14pro-qwes/secure-time
+state_file="${1:-/mnt/nwrt-data/time/tod-offset-ms}"
+
+save_time() {
+	"$helper" save "$state_file"
+}
+
+trap 'save_time; exit 0' INT TERM
+
+save_time
+while sleep 300; do
+	save_time
+done

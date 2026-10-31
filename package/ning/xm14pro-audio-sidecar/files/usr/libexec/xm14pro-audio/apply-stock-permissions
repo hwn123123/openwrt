@@ -1,0 +1,79 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+
+install_directory() {
+	local mode="$1"
+	local owner="$2"
+	local group="$3"
+	local path="$4"
+
+	mkdir -p "$path" || return 1
+	chown "$owner:$group" "$path" || return 1
+	chmod "$mode" "$path"
+}
+
+# audioadsprpcd runs as Android media (1013); the Audio HAL is in the audio
+# group (1005).  Match the stock shared data path so both original services
+# can traverse it without widening it to unrelated processes.
+install_directory 0770 1013 1005 "$ANDROID_ROOT/data/vendor/audio" || exit 1
+install_directory 0770 1013 1013 "$ANDROID_ROOT/data/vendor/audio_dsp" || exit 1
+install_directory 0770 1005 1005 \
+	"$ANDROID_ROOT/data/vendor/audio/audio_feature_stats" || exit 1
+install_directory 0770 1005 1005 \
+	"$ANDROID_ROOT/data/vendor/audio/memlog" || exit 1
+install_directory 0770 1013 1005 \
+	"$ANDROID_ROOT/data/vendor/audio/acdbdata" || exit 1
+install_directory 0770 1013 1005 \
+	"$ANDROID_ROOT/data/vendor/audio/acdbdata/delta" || exit 1
+
+# Xiaomi's unmodified DSP client looks up its MiSound tables below
+# /data/vendor/audio even though the immutable payloads are shipped below
+# /odm/etc/audio.  Android init creates this runtime view.  Reproduce that
+# path mapping with links so the original binaries and calibration files stay
+# byte-for-byte unchanged and no second copy can drift from the stock image.
+for source in "$ANDROID_ROOT"/odm/etc/audio/misound*.bin; do
+	[ -f "$source" ] || continue
+	name=${source##*/}
+	ln -sf "/odm/etc/audio/$name" \
+		"$ANDROID_ROOT/data/vendor/audio/$name" || exit 1
+done
+
+# Exact generic Android audio-node ownership: system:audio, mode 0660.
+for node in /dev/snd/* /dev/audio_slimslave /dev/msm_audio_cal \
+	/dev/msm_audio_ion /dev/msm_audio_ion_cma /dev/aud_pasthru_adsp; do
+	[ -e "$node" ] || continue
+	chown 1000:1005 "$node" || exit 1
+	chmod 0660 "$node" || exit 1
+done
+
+# Exact vendor ueventd ownership used by the stock FastRPC client.
+for node in /dev/adsprpc-smd /dev/fastrpc-adsp /dev/fastrpc-cdsp \
+	/dev/fastrpc-sdsp; do
+	[ -e "$node" ] || continue
+	chown 1000:1000 "$node" || exit 1
+	chmod 0664 "$node" || exit 1
+done
+for node in /dev/adsprpc-smd-secure /dev/fastrpc-adsp-secure \
+	/dev/fastrpc-cdsp-secure /dev/fastrpc-sdsp-secure; do
+	[ -e "$node" ] || continue
+	chown 1000:1000 "$node" || exit 1
+	chmod 0644 "$node" || exit 1
+done
+
+# audioadsprpcd allocates its non-secure listener buffer from Android's
+# generic system DMA-BUF heap.  OpenWrt creates this node root-only, while
+# Android's ueventd makes the generic heap available to vendor processes.
+# Keep every secure and CMA heap untouched and open only the heap proven to
+# be selected by Xiaomi's unmodified libadsprpc.
+if [ -e /dev/dma_heap/system ]; then
+	chown 0:0 /dev/dma_heap/system || exit 1
+	chmod 0666 /dev/dma_heap/system || exit 1
+fi
+
+if [ -e /sys/kernel/snd_card/card_state ]; then
+	chown 1013:1005 /sys/kernel/snd_card/card_state || exit 1
+fi
+
+exit 0

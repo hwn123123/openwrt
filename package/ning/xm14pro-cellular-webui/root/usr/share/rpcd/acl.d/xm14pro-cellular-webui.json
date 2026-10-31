@@ -1,0 +1,25 @@
+{
+	"xm14pro-cellular-webui": {
+		"description": "访问 nwrt 移动网络状态与设置",
+		"read": {
+			"uci": [ "xm14cellular", "xm14bonding", "xm14wifi", "xm14usb", "xm14cpe", "xm14display", "network", "wireless", "firewall", "dhcp" ],
+			"file": {
+				"/usr/libexec/xm14pro-modem/control": [ "list", "exec" ],
+				"/usr/libexec/xm14pro-bonding/control": [ "list", "exec" ],
+				"/usr/libexec/xm14pro-display": [ "list", "exec" ],
+				"/sys/kernel/config/usb_gadget/nwrt/UDC": [ "read" ]
+			}
+		},
+		"write": {
+			"uci": [ "xm14cellular", "xm14bonding", "xm14wifi", "xm14usb", "xm14cpe", "xm14display", "network", "wireless", "firewall", "dhcp" ],
+			"file": {
+				"/usr/libexec/xm14pro-modem/control": [ "list", "exec" ],
+				"/usr/libexec/xm14pro-bonding/control": [ "list", "exec" ],
+				"/usr/libexec/xm14pro-display": [ "list", "exec" ],
+				"/usr/sbin/xm14pro-wifi-profile": [ "list", "exec" ],
+				"/etc/init.d/xm14pro-usb-gadget": [ "list", "exec" ],
+				"/etc/init.d/xm14pro-cpe-firewall": [ "list", "exec" ]
+			}
+		}
+	}
+}

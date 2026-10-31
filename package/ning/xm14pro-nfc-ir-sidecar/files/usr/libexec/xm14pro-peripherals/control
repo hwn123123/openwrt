@@ -1,0 +1,624 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+ROOT=/usr/libexec/xm14pro-qwes/android-root
+CLIENT=/vendor/bin/xm14pro-peripheral-control
+STATE_DIR=/var/run/xm14peripherals
+DATA_DIR=/etc/xm14pro-peripherals
+NFC_DIR=$DATA_DIR/nfc
+REMOTE_DIR=$DATA_DIR/remotes
+IR_DB=/usr/share/xm14pro-ir
+AC_DB=/usr/share/xm14pro-ac/protocols.tsv
+NFC_RUNTIME_ROOT=$ROOT/data/vendor/nfc/xm14
+NFC_SERVICE_STATUS=$NFC_RUNTIME_ROOT/status.json
+
+json_escape() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/[[:cntrl:]]/ /g'
+}
+
+field() {
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1
+}
+
+valid_id() {
+	case "$1" in ''|*[!A-Za-z0-9_-]*) return 1 ;; esac
+}
+
+valid_text() {
+	[ -n "$1" ] && [ "${#1}" -le "${2:-160}" ] &&
+		! printf '%s' "$1" | grep -q '[[:cntrl:]]'
+}
+
+new_id() {
+	local prefix="$1"
+	printf '%s%s%s\n' "$prefix" "$(date +%s)" "$$"
+}
+
+count_files() {
+	local directory="$1" pattern="$2"
+	[ -d "$directory" ] || { printf 0; return; }
+	find "$directory" -type f -name "$pattern" 2>/dev/null | wc -l | tr -d ' '
+}
+
+run_client() {
+	timeout 5 /usr/libexec/xm14pro-peripherals/launcher "$ROOT" control "$@"
+}
+
+save_result() {
+	local name="$1" result="$2" temporary
+	mkdir -p "$STATE_DIR"
+	temporary="$STATE_DIR/$name.$$"
+	{
+		printf 'updated=%s\n' "$(date +%s)"
+		printf 'result=%s\n' "$result"
+	} >"$temporary" && mv "$temporary" "$STATE_DIR/$name"
+}
+
+service_status() {
+	local enabled nfc_enabled ir_enabled nfc_node nfc_hal ir_node ir_hal
+	local nfc_updated nfc_result infrared_updated infrared_result
+	local nfc_saved infrared_saved infrared_catalog
+	local nfc_mode nfc_service nfc_stage nfc_detail nfc_source_bytes ndef_available
+	enabled="$(uci -q get xm14peripherals.main.enabled)"; [ "$enabled" = 0 ] || enabled=1
+	nfc_enabled="$(uci -q get xm14peripherals.main.nfc)"; [ "$nfc_enabled" = 0 ] || nfc_enabled=1
+	nfc_mode="$(uci -q get xm14peripherals.main.nfc_mode)"
+	case "$nfc_mode" in share|copy) ;; *) nfc_mode=share ;; esac
+	ir_enabled="$(uci -q get xm14peripherals.main.infrared)"; [ "$ir_enabled" = 0 ] || ir_enabled=1
+	[ -c /dev/nq-nci ] && nfc_node=true || nfc_node=false
+	pidof android.hardware.nqnfc-service.nxp >/dev/null 2>&1 && nfc_hal=true || \
+		ps w | grep -F '/odm/bin/hw/android.hardware.nqnfc-service.nxp' | grep -v grep >/dev/null && nfc_hal=true || nfc_hal=false
+	pidof xm14pro-nfc-service >/dev/null 2>&1 && nfc_service=true || \
+		ps w | grep -F '/vendor/bin/xm14pro-nfc-service' | grep -v grep >/dev/null && nfc_service=true || nfc_service=false
+	nfc_stage="$(jsonfilter -i "$NFC_SERVICE_STATUS" -e '@.stage' 2>/dev/null)"
+	nfc_detail="$(jsonfilter -i "$NFC_SERVICE_STATUS" -e '@.detail' 2>/dev/null)"
+	nfc_source_bytes="$(jsonfilter -i "$NFC_SERVICE_STATUS" -e '@.source_bytes' 2>/dev/null)"
+	case "$nfc_stage" in share_active|await_source|reading_source|await_target|writing_target|copy_complete|mct_detected|mct_reading_source|mct_await_target|mct_writing_target) ndef_available=true ;; *) ndef_available=false ;; esac
+	[ -c /dev/ir_spi ] && ir_node=true || ir_node=false
+	pidof android.hardware.ir-service.example >/dev/null 2>&1 && ir_hal=true || \
+		ps w | grep -F '/vendor/bin/hw/android.hardware.ir-service.example' | grep -v grep >/dev/null && ir_hal=true || ir_hal=false
+	printf '{"ok":true,"enabled":%s,"nfc_enabled":%s,"nfc_node":%s,"nfc_hal_running":%s,' \
+		"$([ "$enabled" = 1 ] && echo true || echo false)" \
+		"$([ "$nfc_enabled" = 1 ] && echo true || echo false)" "$nfc_node" "$nfc_hal"
+	printf '"nfc_chip":"NXP SN220T","nfc_firmware":"01.01.38","nfc_device":"/dev/nq-nci",'
+	printf '"nfc_mode":"%s","nfc_service_running":%s,"nfc_stage":"%s","nfc_detail":"%s","nfc_source_bytes":%s,' \
+		"$nfc_mode" "$nfc_service" "$(json_escape "$nfc_stage")" \
+		"$(json_escape "$nfc_detail")" "${nfc_source_bytes:-0}"
+	printf '"infrared_enabled":%s,"infrared_node":%s,"infrared_hal_running":%s,' \
+		"$([ "$ir_enabled" = 1 ] && echo true || echo false)" "$ir_node" "$ir_hal"
+	nfc_saved="$(count_files "$NFC_DIR" '*.ndef')"
+	infrared_saved="$(count_files "$REMOTE_DIR" '*.remote')"
+	if [ -r "$IR_DB/catalog.tsv" ]; then
+		infrared_catalog="$(awk 'END { print NR + 0 }' "$IR_DB/catalog.tsv")"
+	else
+		infrared_catalog="$(count_files "$IR_DB" '*.ir')"
+	fi
+	if [ -r "$AC_DB" ]; then
+		infrared_catalog=$((infrared_catalog + $(awk 'NF { count++ } END { print count + 0 }' "$AC_DB")))
+	fi
+	printf '"infrared_device":"/dev/ir_spi","carrier_ranges":[30000,33000,36000,38000,40000,56000],'
+	printf '"nfc_ndef_available":%s,"nfc_saved":%s,"infrared_saved":%s,"infrared_catalog":%s' \
+		"$ndef_available" "$nfc_saved" "$infrared_saved" "$infrared_catalog"
+	if [ -r "$STATE_DIR/nfc-probe" ]; then
+		nfc_updated="$(sed -n 's/^updated=//p' "$STATE_DIR/nfc-probe" | head -n1)"
+		nfc_result="$(sed -n 's/^result=//p' "$STATE_DIR/nfc-probe" | head -n1)"
+		printf ',"nfc_updated":%s,"nfc_result":"%s"' \
+			"${nfc_updated:-0}" "$(json_escape "$nfc_result")"
+	fi
+	if [ -r "$STATE_DIR/infrared-test" ]; then
+		infrared_updated="$(sed -n 's/^updated=//p' "$STATE_DIR/infrared-test" | head -n1)"
+		infrared_result="$(sed -n 's/^result=//p' "$STATE_DIR/infrared-test" | head -n1)"
+		printf ',"infrared_updated":%s,"infrared_result":"%s"' \
+			"${infrared_updated:-0}" "$(json_escape "$infrared_result")"
+	fi
+	printf '}\n'
+}
+
+nfc_library() {
+	local file id name kind payload updated selected first=true
+	mkdir -p "$NFC_DIR" "$STATE_DIR"
+	selected="$(cat "$DATA_DIR/nfc-selected" 2>/dev/null)"
+	printf '{"ok":true,"selected":"%s","items":[' "$(json_escape "$selected")"
+	for file in "$NFC_DIR"/*.ndef; do
+		[ -f "$file" ] || continue
+		id="${file##*/}"; id="${id%.ndef}"
+		name="$(cat "$file.name" 2>/dev/null)"
+		kind="$(field "$file" kind)"
+		payload="$(cat "$file.payload" 2>/dev/null)"
+		updated="$(field "$file" updated)"
+		$first || printf ','; first=false
+		printf '{"id":"%s","name":"%s","kind":"%s","payload":"%s","updated":%s}' \
+			"$(json_escape "$id")" "$(json_escape "$name")" \
+			"$(json_escape "$kind")" "$(json_escape "$payload")" "${updated:-0}"
+	done
+	printf ']}\n'
+}
+
+nfc_create() {
+	local name="$1" kind="$2" payload="$3" id file temporary
+	valid_text "$name" 80 || { echo '{"ok":false,"error":"名称不能为空且不能超过 80 个字符"}'; return 2; }
+	valid_text "$payload" 4096 || { echo '{"ok":false,"error":"内容不能为空且不能超过 4096 个字符"}'; return 2; }
+	case "$kind" in text|url|wifi|contact) ;; *) echo '{"ok":false,"error":"不支持的标签类型"}'; return 2 ;; esac
+	id="$(new_id nfc_)"; file="$NFC_DIR/$id.ndef"; temporary="$file.$$"
+	mkdir -p "$NFC_DIR"
+	{
+		printf 'kind=%s\n' "$kind"
+		printf 'updated=%s\n' "$(date +%s)"
+	} >"$temporary"
+	printf '%s' "$name" >"$file.name"
+	printf '%s' "$payload" >"$file.payload"
+	mv "$temporary" "$file"
+	printf '{"ok":true,"id":"%s"}\n' "$id"
+}
+
+nfc_rename() {
+	local id="$1" name="$2" file temporary
+	valid_id "$id" || { echo '{"ok":false,"error":"标签编号无效"}'; return 2; }
+	valid_text "$name" 80 || { echo '{"ok":false,"error":"名称不能为空且不能超过 80 个字符"}'; return 2; }
+	file="$NFC_DIR/$id.ndef"; [ -f "$file" ] || { echo '{"ok":false,"error":"标签不存在"}'; return 2; }
+	temporary="$file.name.$$"
+	printf '%s' "$name" >"$temporary" && mv "$temporary" "$file.name"
+	echo '{"ok":true}'
+}
+
+nfc_delete() {
+	local id="$1"
+	valid_id "$id" || { echo '{"ok":false,"error":"标签编号无效"}'; return 2; }
+	[ -f "$NFC_DIR/$id.ndef" ] || { echo '{"ok":false,"error":"标签不存在"}'; return 2; }
+	rm -f "$NFC_DIR/$id.ndef" "$NFC_DIR/$id.ndef.name" "$NFC_DIR/$id.ndef.payload"
+	[ "$(cat "$DATA_DIR/nfc-selected" 2>/dev/null)" = "$id" ] && rm -f "$DATA_DIR/nfc-selected"
+	echo '{"ok":true}'
+}
+
+nfc_select() {
+	local id="$1"
+	valid_id "$id" || { echo '{"ok":false,"error":"标签编号无效"}'; return 2; }
+	[ -f "$NFC_DIR/$id.ndef" ] || { echo '{"ok":false,"error":"标签不存在"}'; return 2; }
+	mkdir -p "$DATA_DIR"; printf '%s\n' "$id" >"$DATA_DIR/nfc-selected"
+	echo '{"ok":true}'
+}
+
+infrared_catalog() {
+	local file relative category brand model buttons first=true
+	if [ -r "$IR_DB/catalog.json" ]; then
+		cat "$IR_DB/catalog.json"
+		return
+	fi
+	printf '{"ok":true,"items":['
+	if [ -r "$IR_DB/catalog.tsv" ]; then
+		while IFS='|' read -r relative category brand model buttons; do
+			[ -n "$relative" ] || continue
+			$first || printf ','; first=false
+			printf '{"id":"%s","category":"%s","brand":"%s","model":"%s","buttons":%s}' \
+				"$(json_escape "$relative")" "$(json_escape "$category")" \
+				"$(json_escape "$brand")" "$(json_escape "$model")" "${buttons:-0}"
+		done < "$IR_DB/catalog.tsv"
+	elif [ -d "$IR_DB" ]; then
+		find "$IR_DB" -type f -name '*.ir' 2>/dev/null | sort | while IFS= read -r file; do
+			relative="${file#$IR_DB/}"
+			category="${relative%%/*}"
+			brand="${relative#*/}"; brand="${brand%%/*}"
+			model="${file##*/}"; model="${model%.ir}"
+			buttons="$(grep -c '^name: ' "$file" 2>/dev/null)"
+			$first || printf ','; first=false
+			printf '{"id":"%s","category":"%s","brand":"%s","model":"%s","buttons":%s}' \
+				"$(json_escape "$relative")" "$(json_escape "$category")" \
+				"$(json_escape "$brand")" "$(json_escape "$model")" "${buttons:-0}"
+		done
+	fi
+	printf ']}\n'
+}
+
+infrared_categories() {
+	local category count first=true
+	[ -r "$IR_DB/catalog.tsv" ] || {
+		echo '{"ok":false,"error":"红外码库索引不存在"}'
+		return 2
+	}
+	printf '{"ok":true,"items":['
+	if [ -r "$AC_DB" ]; then
+		count="$(awk 'NF { count++ } END { print count + 0 }' "$AC_DB")"
+		printf '{"name":"Air_Conditioners","count":%s}' "$count"
+		first=false
+	fi
+	while IFS='|' read -r category count; do
+		[ -n "$category" ] || continue
+		$first || printf ','; first=false
+		printf '{"name":"%s","count":%s}' \
+			"$(json_escape "$category")" "${count:-0}"
+	done <<-EOF
+	$(awk -F'|' 'NF >= 4 { count[$2]++ } END { for (name in count) print name "|" count[name] }' "$IR_DB/catalog.tsv" | sort)
+	EOF
+	printf ']}\n'
+}
+
+infrared_brands() {
+	local category="$1" brand count first=true
+	valid_text "$category" 120 || {
+		echo '{"ok":false,"error":"设备类型无效"}'
+		return 2
+	}
+	if [ "$category" = Air_Conditioners ]; then
+		[ -r "$AC_DB" ] || { echo '{"ok":false,"error":"空调协议库不存在"}'; return 2; }
+		printf '{"ok":true,"items":['
+		while IFS='|' read -r brand count; do
+			[ -n "$brand" ] || continue
+			$first || printf ','; first=false
+			printf '{"name":"%s","count":%s}' "$(json_escape "$brand")" "${count:-0}"
+		done <<-EOF
+		$(awk -F'|' 'NF >= 4 { count[$1]++ } END { for (brand in count) print brand "|" count[brand] }' "$AC_DB" | sort)
+		EOF
+		printf ']}\n'
+		return
+	fi
+	[ -r "$IR_DB/catalog.tsv" ] || {
+		echo '{"ok":false,"error":"红外码库索引不存在"}'
+		return 2
+	}
+	printf '{"ok":true,"items":['
+	while IFS='|' read -r brand count; do
+		[ -n "$brand" ] || continue
+		$first || printf ','; first=false
+		printf '{"name":"%s","count":%s}' \
+			"$(json_escape "$brand")" "${count:-0}"
+	done <<-EOF
+	$(awk -F'|' -v category="$category" '$2 == category { count[$3]++ } END { for (name in count) print name "|" count[name] }' "$IR_DB/catalog.tsv" | sort)
+	EOF
+	printf ']}\n'
+}
+
+infrared_models() {
+	local category="$1" brand="$2" relative model buttons first=true protocol protocol_model
+	valid_text "$category" 120 && valid_text "$brand" 160 || {
+		echo '{"ok":false,"error":"设备类型或品牌无效"}'
+		return 2
+	}
+	if [ "$category" = Air_Conditioners ]; then
+		[ -r "$AC_DB" ] || { echo '{"ok":false,"error":"空调协议库不存在"}'; return 2; }
+		printf '{"ok":true,"items":['
+		while IFS='|' read -r model protocol protocol_model; do
+			[ -n "$protocol" ] || continue
+			$first || printf ','; first=false
+			printf '{"id":"ac:%s:%s","category":"Air_Conditioners","brand":"%s","model":"%s","buttons":7,"kind":"ac"}' \
+				"$(json_escape "$protocol")" "$(json_escape "$protocol_model")" \
+				"$(json_escape "$brand")" "$(json_escape "$model")"
+		done <<-EOF
+		$(awk -F'|' -v brand="$brand" '$1 == brand { print $2 "|" $3 "|" $4 }' "$AC_DB")
+		EOF
+		printf ']}\n'
+		return
+	fi
+	[ -r "$IR_DB/catalog.tsv" ] || {
+		echo '{"ok":false,"error":"红外码库索引不存在"}'
+		return 2
+	}
+	printf '{"ok":true,"items":['
+	while IFS='|' read -r relative model buttons; do
+		[ -n "$relative" ] || continue
+		$first || printf ','; first=false
+		printf '{"id":"%s","category":"%s","brand":"%s","model":"%s","buttons":%s}' \
+			"$(json_escape "$relative")" "$(json_escape "$category")" \
+			"$(json_escape "$brand")" "$(json_escape "$model")" "${buttons:-0}"
+	done <<-EOF
+	$(awk -F'|' -v category="$category" -v brand="$brand" '$2 == category && $3 == brand { print $1 "|" $4 "|" $5 }' "$IR_DB/catalog.tsv")
+	EOF
+	printf ']}\n'
+}
+
+ir_file() {
+	case "$1" in ''|/*|*../*|../*|*/..|*\\*) return 1 ;; esac
+	[ -f "$IR_DB/$1" ] || return 1
+	printf '%s\n' "$IR_DB/$1"
+}
+
+ac_spec() {
+	local source="$1" spec protocol model
+	case "$source" in ac:*:*) ;; *) return 1 ;; esac
+	spec="${source#ac:}"
+	protocol="${spec%%:*}"
+	model="${spec#*:}"
+	case "$protocol" in ''|*[!A-Z0-9_]*) return 1 ;; esac
+	case "$model" in -1|[0-9]|[0-9][0-9]|[0-9][0-9][0-9]|[0-9][0-9][0-9][0-9]|[0-9][0-9][0-9][0-9][0-9]) ;; *) return 1 ;; esac
+	[ -r "$AC_DB" ] || return 1
+	awk -F'|' -v protocol="$protocol" -v model="$model" \
+		'$3 == protocol && $4 == model { print $3 "\t" $4; exit }' "$AC_DB" | grep -q . || return 1
+	printf '%s\t%s\n' "$protocol" "$model"
+}
+
+infrared_buttons() {
+	local file first=true name
+	case "$1" in
+		ac:*:*)
+			ac_spec "$1" >/dev/null || { echo '{"ok":false,"error":"空调协议不存在"}'; return 2; }
+			echo '{"ok":true,"kind":"ac","items":["power","mode","temp-","temp+","fan","swingv","swingh"]}'
+			return
+			;;
+	esac
+	file="$(ir_file "$1")" || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	printf '{"ok":true,"items":['
+	while IFS= read -r name; do
+		$first || printf ','; first=false
+		printf '"%s"' "$(json_escape "$name")"
+	done <<-EOF
+	$(awk '
+		/^name: / { name=$0; sub(/^name: /, "", name); type="" }
+		/^type: / { type=$0; sub(/^type: /, "", type); if (type == "raw") print name }
+	' "$file")
+	EOF
+	printf ']}\n'
+}
+
+infrared_pattern() {
+	local file="$1" button="$2"
+	awk -v target="$button" '
+		/^name: / { active=(substr($0,7)==target); type=""; frequency=""; data="" }
+		active && /^type: / { type=substr($0,7) }
+		active && /^frequency: / { frequency=substr($0,12) }
+		active && /^data: / { data=substr($0,7) }
+		active && type=="raw" && frequency!="" && data!="" { print frequency "\t" data; exit }
+	' "$file"
+}
+
+infrared_send() {
+	local file button="$2" parsed frequency pattern result
+	file="$(ir_file "$1")" || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	valid_text "$button" 120 || { echo '{"ok":false,"error":"按键名称无效"}'; return 2; }
+	parsed="$(infrared_pattern "$file" "$button")"
+	[ -n "$parsed" ] || { echo '{"ok":false,"error":"当前按键不是可直接发射的波形"}'; return 2; }
+	frequency="${parsed%%	*}"; pattern="${parsed#*	}"
+	[ "$frequency" != "$pattern" ] || {
+		frequency="$(printf '%s' "$parsed" | cut -f1)"
+		pattern="$(printf '%s' "$parsed" | cut -f2-)"
+	}
+	if result="$(run_client infrared-transmit "$frequency" "$(printf '%s' "$pattern" | tr ' ' ',')" 2>&1)"; then
+		save_result infrared-send "$button 已发送"
+		touch /var/run/xm14display/refresh 2>/dev/null || true
+		printf '%s\n' "$result"
+	else
+		printf '%s\n' "$result" >&2
+		return 1
+	fi
+}
+
+infrared_library() {
+	local file id name source updated selected first=true kind
+	mkdir -p "$REMOTE_DIR" "$STATE_DIR"
+	selected="$(cat "$DATA_DIR/infrared-selected" 2>/dev/null)"
+	printf '{"ok":true,"selected":"%s","items":[' "$(json_escape "$selected")"
+	for file in "$REMOTE_DIR"/*.remote; do
+		[ -f "$file" ] || continue
+		id="${file##*/}"; id="${id%.remote}"
+		name="$(cat "$file.name" 2>/dev/null)"
+		source="$(cat "$file.source" 2>/dev/null)"
+		case "$source" in ac:*:*) kind=ac ;; *) kind=buttons ;; esac
+		updated="$(field "$file" updated)"
+		$first || printf ','; first=false
+		printf '{"id":"%s","name":"%s","source":"%s","kind":"%s","updated":%s}' \
+			"$(json_escape "$id")" "$(json_escape "$name")" \
+			"$(json_escape "$source")" "$kind" "${updated:-0}"
+	done
+	printf ']}\n'
+}
+
+infrared_select() {
+	local id="$1"
+	valid_id "$id" || { echo '{"ok":false,"error":"遥控器编号无效"}'; return 2; }
+	[ -f "$REMOTE_DIR/$id.remote" ] || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	mkdir -p "$DATA_DIR"; printf '%s\n' "$id" >"$DATA_DIR/infrared-selected"
+	echo '{"ok":true}'
+}
+
+infrared_send_saved() {
+	local button="$1" id file source
+	id="$(cat "$DATA_DIR/infrared-selected" 2>/dev/null)"
+	valid_id "$id" || { echo '{"ok":false,"error":"尚未选择遥控器"}'; return 2; }
+	file="$REMOTE_DIR/$id.remote"
+	[ -f "$file" ] || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	source="$(cat "$file.source" 2>/dev/null)"
+	case "$source" in ac:*:*) infrared_ac_command "$button"; return ;; esac
+	infrared_send "$source" "$button"
+}
+
+infrared_save() {
+	local source="$1" name="$2" id file temporary
+	ir_file "$source" >/dev/null || ac_spec "$source" >/dev/null || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	valid_text "$name" 80 || { echo '{"ok":false,"error":"名称不能为空且不能超过 80 个字符"}'; return 2; }
+	id="$(new_id ir_)"; file="$REMOTE_DIR/$id.remote"; temporary="$file.$$"; mkdir -p "$REMOTE_DIR"
+	{
+		printf 'updated=%s\n' "$(date +%s)"
+	} >"$temporary"
+	printf '%s' "$name" >"$file.name"
+	printf '%s' "$source" >"$file.source"
+	mv "$temporary" "$file"
+	case "$source" in
+		ac:*:*)
+			{
+				printf 'power=0\nmode=cool\ntemp=26\nfan=auto\n'
+				printf 'swingv=off\nswingh=off\n'
+			} >"$file.state"
+			;;
+	esac
+	mkdir -p "$DATA_DIR"; printf '%s\n' "$id" >"$DATA_DIR/infrared-selected"
+	printf '{"ok":true,"id":"%s"}\n' "$id"
+}
+
+infrared_rename() {
+	local id="$1" name="$2" file temporary
+	valid_id "$id" || { echo '{"ok":false,"error":"遥控器编号无效"}'; return 2; }
+	valid_text "$name" 80 || { echo '{"ok":false,"error":"名称不能为空且不能超过 80 个字符"}'; return 2; }
+	file="$REMOTE_DIR/$id.remote"; [ -f "$file" ] || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	temporary="$file.name.$$"
+	printf '%s' "$name" >"$temporary" && mv "$temporary" "$file.name"
+	echo '{"ok":true}'
+}
+
+infrared_delete() {
+	local id="$1"
+	valid_id "$id" || { echo '{"ok":false,"error":"遥控器编号无效"}'; return 2; }
+	[ -f "$REMOTE_DIR/$id.remote" ] || { echo '{"ok":false,"error":"遥控器不存在"}'; return 2; }
+	rm -f "$REMOTE_DIR/$id.remote" "$REMOTE_DIR/$id.remote.name" \
+		"$REMOTE_DIR/$id.remote.source" "$REMOTE_DIR/$id.remote.state"
+	[ "$(cat "$DATA_DIR/infrared-selected" 2>/dev/null)" = "$id" ] && rm -f "$DATA_DIR/infrared-selected"
+	echo '{"ok":true}'
+}
+
+infrared_ac_load() {
+	local id="$1" file source spec
+	[ -n "$id" ] || id="$(cat "$DATA_DIR/infrared-selected" 2>/dev/null)"
+	valid_id "$id" || return 1
+	file="$REMOTE_DIR/$id.remote"
+	[ -f "$file" ] || return 1
+	source="$(cat "$file.source" 2>/dev/null)"
+	spec="$(ac_spec "$source")" || return 1
+	printf '%s\t%s\t%s\t%s\n' "$id" "$file" "${spec%%	*}" "${spec#*	}"
+}
+
+infrared_ac_state() {
+	local loaded id file protocol model state power mode temp fan swingv swingh name
+	loaded="$(infrared_ac_load "$1")" || { echo '{"ok":false,"error":"当前遥控器不是空调"}'; return 2; }
+	id="$(printf '%s' "$loaded" | cut -f1)"; file="$(printf '%s' "$loaded" | cut -f2)"
+	protocol="$(printf '%s' "$loaded" | cut -f3)"; model="$(printf '%s' "$loaded" | cut -f4)"
+	state="$file.state"; name="$(cat "$file.name" 2>/dev/null)"
+	power="$(field "$state" power)"; [ "$power" = 1 ] || power=0
+	mode="$(field "$state" mode)"; [ -n "$mode" ] || mode=cool
+	temp="$(field "$state" temp)"; [ -n "$temp" ] || temp=26
+	fan="$(field "$state" fan)"; [ -n "$fan" ] || fan=auto
+	swingv="$(field "$state" swingv)"; [ -n "$swingv" ] || swingv=off
+	swingh="$(field "$state" swingh)"; [ -n "$swingh" ] || swingh=off
+	printf '{"ok":true,"id":"%s","name":"%s","protocol":"%s","model":%s,' \
+		"$(json_escape "$id")" "$(json_escape "$name")" "$protocol" "$model"
+	printf '"power":%s,"mode":"%s","temp":%s,"fan":"%s","swingv":"%s","swingh":"%s"}\n' \
+		"$([ "$power" = 1 ] && echo true || echo false)" "$mode" "$temp" "$fan" "$swingv" "$swingh"
+}
+
+infrared_ac_command() {
+	local action="$1" loaded id file protocol model state power mode temp fan swingv swingh
+	local temporary encoded frequency pattern result
+	loaded="$(infrared_ac_load)" || { echo '{"ok":false,"error":"当前遥控器不是空调"}'; return 2; }
+	id="$(printf '%s' "$loaded" | cut -f1)"; file="$(printf '%s' "$loaded" | cut -f2)"
+	protocol="$(printf '%s' "$loaded" | cut -f3)"; model="$(printf '%s' "$loaded" | cut -f4)"
+	state="$file.state"
+	power="$(field "$state" power)"; [ "$power" = 1 ] || power=0
+	mode="$(field "$state" mode)"; [ -n "$mode" ] || mode=cool
+	temp="$(field "$state" temp)"; [ -n "$temp" ] || temp=26
+	fan="$(field "$state" fan)"; [ -n "$fan" ] || fan=auto
+	swingv="$(field "$state" swingv)"; [ -n "$swingv" ] || swingv=off
+	swingh="$(field "$state" swingh)"; [ -n "$swingh" ] || swingh=off
+	case "$action" in
+		power) [ "$power" = 1 ] && power=0 || power=1 ;;
+		temp+) [ "$temp" -lt 30 ] && temp=$((temp + 1)) ;;
+		temp-) [ "$temp" -gt 16 ] && temp=$((temp - 1)) ;;
+		mode) case "$mode" in auto) mode=cool ;; cool) mode=heat ;; heat) mode=dry ;; dry) mode=fan ;; *) mode=auto ;; esac ;;
+		fan) case "$fan" in auto) fan=low ;; low) fan=medium ;; medium) fan=high ;; high) fan=max ;; *) fan=auto ;; esac ;;
+		swingv) [ "$swingv" = auto ] && swingv=off || swingv=auto ;;
+		swingh) [ "$swingh" = auto ] && swingh=off || swingh=auto ;;
+		*) echo '{"ok":false,"error":"不支持的空调操作"}'; return 2 ;;
+	esac
+	encoded="$(xm14pro-ac-encode "$protocol" "$model" "$power" "$mode" "$temp" "$fan" "$swingv" "$swingh" 2>&1)" || {
+		printf '{"ok":false,"error":"%s"}\n' "$(json_escape "$encoded")"; return 1;
+	}
+	frequency="${encoded%%
+*}"; pattern="${encoded#*
+}"
+	[ "$frequency" != "$pattern" ] || { echo '{"ok":false,"error":"空调波形生成失败"}'; return 1; }
+	if result="$(run_client infrared-transmit "$frequency" "$pattern" 2>&1)"; then
+		temporary="$state.$$"
+		{
+			printf 'power=%s\nmode=%s\ntemp=%s\nfan=%s\n' "$power" "$mode" "$temp" "$fan"
+			printf 'swingv=%s\nswingh=%s\n' "$swingv" "$swingh"
+		} >"$temporary" && mv "$temporary" "$state"
+		save_result infrared-send "空调状态已发送"
+		touch /var/run/xm14display/refresh 2>/dev/null || true
+		infrared_ac_state "$id"
+	else
+		printf '{"ok":false,"error":"%s"}\n' "$(json_escape "$result")"
+		return 1
+	fi
+}
+
+set_feature() {
+	local option="$1" value="$2"
+	case "$option" in nfc|infrared) ;; *) echo '{"ok":false,"error":"未知功能"}'; return 2 ;; esac
+	case "$value" in 0|1) ;; *) echo '{"ok":false,"error":"无效开关值"}'; return 2 ;; esac
+	uci set "xm14peripherals.main.$option=$value"
+	uci commit xm14peripherals
+	/etc/init.d/xm14pro-nfc-ir-sidecar restart >/dev/null 2>&1
+	touch /var/run/xm14display/refresh 2>/dev/null || true
+	printf '{"ok":true,"feature":"%s","enabled":%s}\n' "$option" \
+		"$([ "$value" = 1 ] && echo true || echo false)"
+}
+
+set_nfc_mode() {
+	local mode="$1"
+	case "$mode" in share|copy) ;; *) echo '{"ok":false,"error":"NFC 模式无效"}'; return 2 ;; esac
+	uci set xm14peripherals.main.nfc=1
+	uci set "xm14peripherals.main.nfc_mode=$mode"
+	uci commit xm14peripherals
+	/etc/init.d/xm14pro-nfc-ir-sidecar restart >/dev/null 2>&1
+	touch /var/run/xm14display/refresh 2>/dev/null || true
+	printf '{"ok":true,"mode":"%s"}\n' "$mode"
+}
+
+case "$1" in
+	status) service_status ;;
+	set) set_feature "$2" "$3" ;;
+	set-nfc-mode) set_nfc_mode "$2" ;;
+	nfc-copy-reset)
+		[ "$(uci -q get xm14peripherals.main.nfc_mode)" = copy ] || {
+			echo '{"ok":false,"error":"当前不是复制模式"}'; exit 2;
+		}
+		rm -f "$NFC_RUNTIME_ROOT/copy.ndef" "$NFC_RUNTIME_ROOT/mct-source.dump" "$NFC_SERVICE_STATUS"
+		/etc/init.d/xm14pro-nfc-ir-sidecar restart >/dev/null 2>&1
+		echo '{"ok":true}'
+		;;
+	nfc-library) nfc_library ;;
+	nfc-create) nfc_create "$2" "$3" "$4" ;;
+	nfc-rename) nfc_rename "$2" "$3" ;;
+	nfc-delete) nfc_delete "$2" ;;
+	nfc-select) nfc_select "$2" ;;
+	infrared-catalog) infrared_catalog ;;
+	infrared-categories) infrared_categories ;;
+	infrared-brands) infrared_brands "$2" ;;
+	infrared-models) infrared_models "$2" "$3" ;;
+	infrared-buttons) infrared_buttons "$2" ;;
+	infrared-send) infrared_send "$2" "$3" ;;
+	infrared-library) infrared_library ;;
+	infrared-save) infrared_save "$2" "$3" ;;
+	infrared-select) infrared_select "$2" ;;
+	infrared-send-saved) infrared_send_saved "$2" ;;
+	infrared-ac-state) infrared_ac_state "$2" ;;
+	infrared-ac-command) infrared_ac_command "$2" ;;
+	infrared-rename) infrared_rename "$2" "$3" ;;
+	infrared-delete) infrared_delete "$2" ;;
+	nfc-probe)
+		if [ -r "$NFC_SERVICE_STATUS" ] && [ "$(jsonfilter -i "$NFC_SERVICE_STATUS" -e '@.ok' 2>/dev/null)" = true ]; then
+			result="$(cat "$NFC_SERVICE_STATUS")"
+			save_result nfc-probe 'NFC 服务正常'
+			printf '%s\n' "$result"
+		elif result="$(run_client nfc-probe 2>&1)"; then
+			save_result nfc-probe 'NFC 服务正常'
+			printf '%s\n' "$result"
+		else
+			save_result nfc-probe "$result"
+			printf '{"ok":false,"error":"%s"}\n' "$(json_escape "$result")"
+			exit 1
+		fi
+		;;
+	infrared-probe) run_client infrared-probe ;;
+	infrared-test)
+		pattern='9000,4500,560,560,560,560,560,560'
+		if result="$(run_client infrared-transmit 38000 "$pattern" 2>&1)"; then
+			save_result infrared-test '38 kHz 测试波形已发射'
+			printf '%s\n' "$result"
+		else
+			save_result infrared-test "$result"
+			printf '{"ok":false,"error":"%s"}\n' "$(json_escape "$result")"
+			exit 1
+		fi
+		;;
+	infrared-transmit)
+		case "$2" in ''|*[!0-9]*) echo '{"ok":false,"error":"载波频率无效"}'; exit 2 ;; esac
+		case "$3" in ''|*[!0-9,\ ]*) echo '{"ok":false,"error":"波形格式无效"}'; exit 2 ;; esac
+		run_client infrared-transmit "$2" "$3"
+		;;
+	*) echo '{"ok":false,"error":"不支持的操作"}'; exit 2 ;;
+esac

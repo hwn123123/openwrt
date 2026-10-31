@@ -1,0 +1,16 @@
+jni com_android_adservices libhpke_jni.so:libtflite_support_classifiers_native.so
+jni com_android_appsearch libicing.so
+jni com_android_art libartservice.so
+public com_android_art libnativehelper.so
+jni com_android_bt libbluetooth_jni.so
+jni com_android_conscrypt libjavacrypto.so
+jni com_android_extservices libtflite_support_classifiers_native.so
+public com_android_i18n libicui18n.so:libicuuc.so:libicu.so
+jni com_android_mediaprovider libpdfclient.so
+public com_android_neuralnetworks libneuralnetworks.so
+jni com_android_ondevicepersonalization libfcp_cpp_dep_jni.so:libfcp_hpke_jni.so
+jni com_android_os_statsd libstats_jni.so
+jni com_android_tethering libframework-connectivity-jni.so:libframework-connectivity-tiramisu-jni.so:libmainlinecronet.133.0.6876.3.so:stable_cronet_libcrypto.so:stable_cronet_libssl.so:libandroid_net_connectivity_com_android_net_module_util_jni.so:libservice-connectivity.so:libservice-thread-jni.so
+jni com_android_uwb libuwb_uci_jni_rust.so
+jni com_android_virt libvirtualizationservice_jni.so:libvirtualmachine_jni.so
+jni com_android_wifi libservice-wifi-jni.so

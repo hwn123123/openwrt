@@ -1,0 +1,50 @@
+--- a/feeds/openclash/luci-app-openclash/Makefile
++++ b/feeds/openclash/luci-app-openclash/Makefile
+@@ -11,6 +11,6 @@ include $(INCLUDE_DIR)/package.mk
+ define Package/$(PKG_NAME)/config
+ 	config PACKAGE_kmod-inet-diag
+-	default y if PACKAGE_$(PKG_NAME)
++	default y if PACKAGE_$(PKG_NAME) && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_luci-compat
+ 	default y if PACKAGE_$(PKG_NAME)
+@@ -17,24 +17,24 @@ define Package/$(PKG_NAME)/config
+ 
+ 	config PACKAGE_kmod-nft-tproxy
+-	default y if PACKAGE_firewall4
++	default y if PACKAGE_firewall4 && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_kmod-ipt-nat
+-	default y if ! PACKAGE_firewall4
++	default y if ! PACKAGE_firewall4 && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_iptables-mod-tproxy
+-	default y if ! PACKAGE_firewall4
++	default y if ! PACKAGE_firewall4 && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_iptables-mod-extra
+-	default y if ! PACKAGE_firewall4
++	default y if ! PACKAGE_firewall4 && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_dnsmasq_full_ipset
+-	default y if ! PACKAGE_firewall4
++	default y if ! PACKAGE_firewall4 && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_dnsmasq_full_nftset
+-	default y if PACKAGE_firewall4
++	default y if PACKAGE_firewall4 && ! TARGET_xm14pro
+ 
+ 	config PACKAGE_ipset
+-	default y if ! PACKAGE_firewall4
++	default y if ! PACKAGE_firewall4 && ! TARGET_xm14pro
+ endef
+ 
+ define Package/$(PKG_NAME)
+@@ -43,6 +43,6 @@ define Package/$(PKG_NAME)
+ 	TITLE:=LuCI support for clash
+ 	PKGARCH:=all
+ 	DEPENDS:=+dnsmasq-full +bash +curl +ca-bundle +ip-full \
+-	+ruby +ruby-yaml +kmod-tun +unzip
++	+ruby +ruby-yaml +!TARGET_xm14pro:kmod-tun +unzip
+ 	MAINTAINER:=vernesong
+ endef

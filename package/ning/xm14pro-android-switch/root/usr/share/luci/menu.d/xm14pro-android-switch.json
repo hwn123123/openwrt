@@ -1,0 +1,8 @@
+{
+	"admin/services/xm14pro-android-switch": {
+		"title": "切换到 Android",
+		"order": 27,
+		"action": { "type": "view", "path": "services/xm14pro-android-switch" },
+		"depends": { "acl": [ "xm14pro-android-switch" ] }
+	}
+}

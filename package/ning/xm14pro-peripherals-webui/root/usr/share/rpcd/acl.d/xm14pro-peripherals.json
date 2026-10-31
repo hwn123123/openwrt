@@ -1,0 +1,18 @@
+{
+	"xm14pro-peripherals": {
+		"description": "管理小米 14 Pro NFC 与红外功能",
+		"read": {
+			"uci": [ "xm14peripherals" ],
+			"file": {
+				"/usr/libexec/xm14pro-peripherals/control": [ "list", "exec" ],
+				"/usr/libexec/xm14pro-peripherals/status": [ "list", "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "xm14peripherals" ],
+			"file": {
+				"/usr/libexec/xm14pro-peripherals/control": [ "list", "exec" ]
+			}
+		}
+	}
+}

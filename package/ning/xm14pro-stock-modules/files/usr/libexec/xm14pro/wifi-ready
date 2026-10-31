@@ -1,0 +1,47 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+TAG=xm14-stock-modules
+count=0
+
+finish_profile() {
+	/usr/sbin/xm14pro-wifi-profile initial || {
+		logger -t "$TAG" 'could not generate the nwrt AP profile'
+		return 1
+	}
+	wifi reload >/dev/null 2>&1 || true
+	logger -t "$TAG" 'Wi-Fi profile enabled after P2P/NAN enumeration'
+}
+
+while [ "$count" -lt 55 ]; do
+	nan_ifaces="$(iw dev 2>/dev/null | awk '
+		$1 == "Interface" { name = $2 }
+		$1 == "type" && $2 == "NAN" { print name }
+	')"
+	if [ -d /sys/class/ieee80211 ] &&
+		ls /sys/class/ieee80211/phy* >/dev/null 2>&1 &&
+		[ -e /sys/class/net/p2p1 ] && [ -n "$nan_ifaces" ]; then
+		for iface in $nan_ifaces; do
+			iw dev "$iface" del >/dev/null 2>&1 || {
+				logger -t "$TAG" "could not remove vendor NAN interface $iface"
+				exit 1
+			}
+		done
+		if iw dev 2>/dev/null | awk '
+			$1 == "type" && $2 == "NAN" { found=1 }
+			END { exit !found }
+		'; then
+			logger -t "$TAG" 'vendor NAN interface remained after deletion'
+			exit 1
+		fi
+		finish_profile
+		exit $?
+	fi
+	count=$((count + 1))
+	sleep 1
+done
+
+# Never leave a previously working persistent AP disabled for the current
+# boot if a future vendor firmware omits the NAN interface altogether.
+logger -t "$TAG" 'P2P/NAN enumeration timed out; applying the saved AP profile'
+finish_profile

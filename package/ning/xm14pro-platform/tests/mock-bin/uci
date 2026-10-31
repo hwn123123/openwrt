@@ -1,0 +1,21 @@
+#!/bin/sh
+case "$*" in
+	"-q show wireless")
+		cat <<'EOF'
+wireless.radio0=wifi-device
+wireless.radio1=wifi-device
+wireless.default_radio0=wifi-iface
+wireless.default_radio1=wifi-iface
+EOF
+		;;
+	"-q get xm14wifi.main.country") echo US ;;
+	"-q get xm14wifi.main.profile") echo performance ;;
+	"-q get xm14wifi.main.ssid_24g") echo nwrt ;;
+	"-q get xm14wifi.main.ssid_5g") echo nwrt ;;
+	"-q get xm14wifi.main.ssid_6g") echo nwrt ;;
+	"-q get xm14wifi.main.key") echo 1234567890 ;;
+	"-q get xm14wifi.main.encryption") echo sae-mixed ;;
+	"-q get xm14wifi.main.network") echo wifi_lan ;;
+	"-q get xm14wifi.main.enabled") echo 1 ;;
+	*) printf 'uci %s\n' "$*" >>"$XM14PRO_WIFI_TEST_LOG" ;;
+esac

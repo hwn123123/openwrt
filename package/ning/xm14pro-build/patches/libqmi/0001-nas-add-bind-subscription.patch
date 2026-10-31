@@ -1,0 +1,34 @@
+From: nwrt Xiaomi 14 Pro support <ning@localhost>
+Subject: [PATCH] nas: add Bind Subscription request
+
+Qualcomm dual-SIM modems require each NAS client to select the modem stack it
+will control.  The request is part of Qualcomm's public Gobi API description
+but is not modelled by libqmi 1.38.  Add the request so the Xiaomi qcom-soc
+plugin can bind its NAS client to the subscription selected by the user.
+
+The wire format follows the Gobi API definition: message 0x0045 with mandatory
+TLV 0x01 containing a one-byte subscription type (0 primary, 1 secondary,
+2 tertiary).
+
+--- a/data/qmi-service-nas.json
++++ b/data/qmi-service-nas.json
+@@ -2281,6 +2281,19 @@
+                      "format"        : "guint32",
+                      "public-format" : "QmiNasNetworkNameSource" } ] },
+ 
++  // *********************************************************************************
++  {  "name"    : "Bind Subscription",
++     "type"    : "Message",
++     "service" : "NAS",
++     "id"      : "0x0045",
++     "since"   : "1.38",
++     "input"   : [ { "name"   : "Subscription Type",
++                     "id"     : "0x01",
++                     "type"   : "TLV",
++                     "since"  : "1.38",
++                     "format" : "guint8" } ],
++     "output"  : [ { "common-ref" : "Operation Result" } ] },
++
+   // *********************************************************************************
+   {  "name"    : "Network Time",
+      "type"    : "Indication",

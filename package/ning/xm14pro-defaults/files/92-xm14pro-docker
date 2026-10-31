@@ -1,0 +1,11 @@
+#!/bin/sh
+
+# Docker Hub is routinely DNS-poisoned or unreachable on direct mainland
+# cellular links. Keep two currently verified mirrors, in priority order.
+uci -q show dockerd.globals >/dev/null 2>&1 || exit 0
+uci -q delete dockerd.globals.registry_mirrors
+uci add_list dockerd.globals.registry_mirrors='https://docker.m.daocloud.io'
+uci add_list dockerd.globals.registry_mirrors='https://docker.1ms.run'
+uci commit dockerd
+
+exit 0

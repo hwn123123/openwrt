@@ -1,0 +1,312 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+MODULE_DIR=/usr/lib/xm14pro/stock-modules
+INSMOD=/usr/libexec/xm14pro/insmod
+TAG=xm14-stock-modules
+
+log() {
+	logger -t "$TAG" -- "$*"
+	printf '%s\n' "$*" >&2
+}
+
+module_name() {
+	local name="${1##*/}"
+	name="${name%.ko}"
+	printf '%s' "$name" | tr '-' '_'
+}
+
+module_loaded() {
+	[ -d "/sys/module/$(module_name "$1")" ]
+}
+
+load_one() {
+	local file="$1" path="$MODULE_DIR/$1"
+	module_loaded "$file" && return 0
+	[ -r "$path" ] || {
+		log "missing module: $path"
+		return 1
+	}
+	"$INSMOD" "$path" || {
+		log "failed to load: $file"
+		return 1
+	}
+	log "loaded: $file"
+}
+
+load_sequence() {
+	local file
+	for file in "$@"; do
+		load_one "$file" || return 1
+	done
+}
+
+load_ipa_base() {
+	load_sequence \
+		rmnet_mem.ko \
+		gsim.ko \
+		ipam.ko
+}
+
+ensure_firmware_path() {
+	local path_file=/sys/module/firmware_class/parameters/path current wanted
+	[ -w "$path_file" ] || return 0
+	current="$(cat "$path_file" 2>/dev/null)"
+	for wanted in /vendor/modem_firmware/image /usr/lib/firmware; do
+		case ",$current," in
+			*,"$wanted",*) ;;
+			*) current="$wanted${current:+,$current}" ;;
+		esac
+	done
+	printf '%s' "$current" > "$path_file"
+}
+
+load_wifi_base() {
+	[ -d /vendor/firmware_mnt/image/kiwi ] || {
+		log 'stock kiwi Wi-Fi firmware is not mounted'
+		return 1
+	}
+	ensure_firmware_path
+	load_sequence \
+		wlan_firmware_service.ko \
+		cnss_plat_ipc_qmi_svc.ko \
+		cnss_prealloc.ko \
+		cnss_utils.ko
+}
+
+load_wifi_bus() {
+	load_wifi_base || return 1
+	load_sequence \
+		cnss2.ko \
+		cnss_nl.ko
+}
+
+load_wifi_driver() {
+	load_wifi_bus || return 1
+	load_ipa_base || return 1
+	load_sequence \
+		rfkill.ko \
+		cfg80211.ko \
+		qca_cld3_kiwi_v2.ko || return 1
+
+	# The Android init sequence marks the mounted WLAN firmware/configuration
+	# ready after loading the host driver.  CNSS waits for the same hand-off.
+	[ ! -w /sys/kernel/cnss/fs_ready ] || printf '1\n' > /sys/kernel/cnss/fs_ready
+}
+
+load_wifi() {
+	load_wifi_driver
+}
+
+prepare_touch_evdev() {
+	local raw_node=/sys/devices/virtual/touch/touch_dev/enable_touch_raw
+	local power_node=/sys/devices/platform/synaptics_tcm.0/synaptics_tcm/power_state
+	local count=0
+
+	while [ "$count" -lt 5 ]; do
+		[ -w "$raw_node" ] && [ -w "$power_node" ] && break
+		count=$((count + 1))
+		sleep 1
+	done
+	[ -w "$raw_node" ] && [ -w "$power_node" ] || {
+		log "touch evdev controls did not appear"
+		return 1
+	}
+
+	# The driver registers while nwrt's DRM panel is already lit, so it misses
+	# the first UNBLANK notification that Android delivers after boot.  Let the
+	# asynchronous startup firmware check finish, then invoke the driver's own
+	# public resume control.  This performs the same hardware reset and app-FW
+	# setup as the stock panel notifier without blanking the nwrt framebuffer.
+	sleep 1
+	printf 'resume\n' > "$power_node" || {
+		log "failed to perform initial Synaptics resume"
+		return 1
+	}
+	sleep 1
+
+	# Xiaomi Android selects raw mode only after its proprietary THP consumer
+	# is running. nwrt reads the standard synaptics_tcm_touch evdev stream.
+	printf '0\n' > "$raw_node" || {
+		log "failed to select standard touch evdev mode"
+		return 1
+	}
+	[ "$(cat "$raw_node" 2>/dev/null)" = 0 ] || {
+		log "touch controller did not enter standard evdev mode"
+		return 1
+	}
+	log "completed initial Synaptics resume in standard evdev mode"
+}
+
+load_touch() {
+	# The stock DTBO already describes the Synaptics S3910 controller.  These
+	# are the exact OS3.0.308.0 vendor modules used by Android; once inserted,
+	# the kernel exposes the normal synaptics_tcm_touch evdev device.  No
+	# Android input service or synthetic uinput device is involved.
+	# The matching panel firmware lives in Android's ODM image.  Add the nwrt
+	# copy to the kernel search path before registering the client so the
+	# asynchronous reflash check cannot stall on the sysfs fallback timeout.
+	ensure_firmware_path
+	load_sequence \
+		xiaomi_touch.ko \
+		synaptics_tcm2.ko || return 1
+	prepare_touch_evdev
+}
+
+load_adsp_loader() {
+	# Xiaomi recovery loads this vendor_dlkm dependency closure before writing
+	# /sys/kernel/boot_adsp/boot.  Loading the modules only registers the stock
+	# loader; xm14pro-adsp performs the separate, ordered boot request at S11.
+	load_sequence \
+		q6_pdr_dlkm.ko \
+		q6_notifier_dlkm.ko \
+		snd_event_dlkm.ko \
+		gpr_dlkm.ko \
+		spf_core_dlkm.ko \
+		adsp_loader_dlkm.ko \
+		frpc-adsprpc.ko
+}
+
+load_audio() {
+	# Android's modules.load is consumed by modprobe, which resolves modules.dep
+	# before insertion. This loader uses raw insmod, so keep the equivalent
+	# dependency order explicitly: LPASS CDC/TX must precede MBHC, and every
+	# codec/macro required by machine_dlkm must precede the machine driver.
+	# The machine card also contains always-present haptics, DisplayPort and
+	# Bluetooth/FM Slimbus links.  Leaving any of those original components out
+	# keeps the whole 53-link card in EPROBE_DEFER, even when the phone speaker
+	# and microphone codecs have already bound.  Load their stock providers
+	# before machine_dlkm so the card is registered once with a complete graph.
+	ensure_firmware_path
+	load_sequence \
+		rfkill.ko \
+		audpkt_ion_dlkm.ko \
+		audio_pkt_dlkm.ko \
+		q6_dlkm.ko \
+		audio_prm_dlkm.ko \
+		pinctrl_lpi_dlkm.ko \
+		swr_dlkm.ko \
+		swr_ctrl_dlkm.ko \
+		wcd_core_dlkm.ko \
+		typec_analog_acc_dlkm.ko \
+		lpass_cdc_dlkm.ko \
+		lpass_cdc_tx_macro_dlkm.ko \
+		mbhc_dlkm.ko \
+		wcd9xxx_dlkm.ko \
+		stub_dlkm.ko \
+		cs35l43_dlkm.ko \
+		lpass_cdc_wsa2_macro_dlkm.ko \
+		lpass_cdc_wsa_macro_dlkm.ko \
+		lpass_cdc_va_macro_dlkm.ko \
+		lpass_cdc_rx_macro_dlkm.ko \
+		wsa884x_dlkm.ko \
+		wsa883x_dlkm.ko \
+		wcd937x_dlkm.ko \
+		wcd937x_slave_dlkm.ko \
+		wcd9378_dlkm.ko \
+		wcd9378_slave_dlkm.ko \
+		wcd939x_dlkm.ko \
+		wcd939x_slave_dlkm.ko \
+		swr_dmic_dlkm.ko \
+		swr_haptics_dlkm.ko \
+		hdmi_dlkm.ko \
+		btpower.ko \
+		bt_fm_slim.ko \
+		machine_dlkm.ko
+}
+
+load_cellular() {
+	[ -r /vendor/firmware_mnt/image/ipa_fws.mdt ] || {
+		log 'stock IPA firmware is not mounted'
+		return 1
+	}
+	ensure_firmware_path
+	load_ipa_base || return 1
+	load_sequence \
+		ipanetm.ko \
+		rmnet_ctl.ko \
+		rmnet_core.ko \
+		rmnet_offload.ko \
+		rmnet_perf_tether.ko \
+		rmnet_perf.ko \
+		rmnet_wlan.ko \
+		rmnet_shs.ko \
+		rmnet_aps.ko \
+		rmnet_sch.ko
+}
+
+load_nfc() {
+	# OS3.0.308.0 loads all three modules. nxp-nci owns the phone's primary
+	# /dev/nq-nci controller; the ST modules expose the companion NFC/eSE
+	# devices described by the same stock DTBO. Keep the original order used by
+	# vendor_dlkm/modules.load for the two ST components, then register NXP.
+	load_sequence \
+		stm_st54se_gpio.ko \
+		stm_nfc_i2c.ko \
+		nxp-nci.ko
+}
+
+load_infrared() {
+	# The stock module registers /dev/ir_spi. The original Android
+	# IConsumerIr service remains the only higher-level writer.
+	load_sequence ir-spi.ko
+}
+
+show_status() {
+	local file name state
+	for file in "$MODULE_DIR"/*.ko; do
+		[ -e "$file" ] || continue
+		name="$(module_name "$file")"
+		if [ -d "/sys/module/$name" ]; then state=loaded; else state=available; fi
+		printf '%-32s %s\n' "${file##*/}" "$state"
+	done
+	for file in /sys/class/remoteproc/remoteproc*; do
+		[ -e "$file" ] || continue
+		printf '%s: %s (%s)\n' "${file##*/}" \
+			"$(cat "$file/state" 2>/dev/null)" \
+			"$(cat "$file/name" 2>/dev/null)"
+	done
+}
+
+case "${1:-status}" in
+	status)
+		show_status
+		;;
+	adsp-loader)
+		load_adsp_loader
+		;;
+	audio)
+		load_audio
+		;;
+	wifi-base)
+		load_wifi_base
+		;;
+	wifi-bus)
+		load_wifi_bus
+		;;
+	wifi-driver)
+		load_wifi_driver
+		;;
+	wifi)
+		load_wifi
+		;;
+	touch)
+		load_touch
+		;;
+	cellular)
+		load_cellular
+		;;
+	nfc)
+		load_nfc
+		;;
+	infrared)
+		load_infrared
+		;;
+	all)
+		load_touch && load_wifi && load_cellular
+		;;
+	*)
+		printf 'usage: %s {status|adsp-loader|audio|touch|wifi-base|wifi-bus|wifi-driver|wifi|cellular|nfc|infrared|all}\n' "$0" >&2
+		exit 2
+		;;
+esac

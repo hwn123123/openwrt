@@ -1,0 +1,28 @@
+config cellular 'main'
+	option backend 'xiaomi-stock-dsi'
+	option enabled '1'
+	# The internal modem is the CPE uplink. The data path is prepared before
+	# netifd is allowed to dial, so normal builds may connect automatically.
+	option autoconnect '1'
+	option modem 'any'
+	# Physical slots are selected at runtime. "auto" follows the first ready
+	# USIM; an explicit slot is never silently replaced by another card.
+	option data_slot 'auto'
+	option voice_slot 'auto'
+	option sms_slot 'auto'
+	# APN overrides belong to physical SIM slots. Empty means use the default
+	# data APN for the home carrier reported by that SIM.
+	option sim1_apn ''
+	option sim2_apn ''
+	# Xiaomi's stock DSI runtime owns the live rmnet data path and obtains both
+	# IPv4 and IPv6 settings. netifd manages only the private xm14cell link.
+	option iptype 'ipv4v6'
+	option roaming '0'
+	option allowedmode '3g|4g|5g'
+	option preferredmode '5g'
+	option pincode ''
+	# Keep Android's shared modemst/fsg/fsc radio state untouched during the
+	# first nwrt integration stages. Set to 0 only after read-only modem tests.
+	option rmtfs_read_only '1'
+	option reconnect_interval '20'
+	option command_timeout '120'

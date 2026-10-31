@@ -1,0 +1,15 @@
+config system
+	option hostname 'nwrt'
+	option timezone 'CST-8'
+	option zonename 'Asia/Shanghai'
+	option ttylogin '0'
+	option log_size '1024'
+	option log_file '/root/nwrt-logs/system.log'
+	option urandom_seed '0'
+
+config timeserver 'ntp'
+	option enabled '1'
+	option enable_server '0'
+	list server 'ntp.aliyun.com'
+	list server 'ntp.tencent.com'
+	list server 'cn.pool.ntp.org'

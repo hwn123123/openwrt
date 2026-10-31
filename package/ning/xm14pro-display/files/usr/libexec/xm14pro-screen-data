@@ -1,0 +1,400 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+MODEM=/usr/libexec/xm14pro-modem/control
+snapshot='{}'
+[ -x "$MODEM" ] && snapshot="$(timeout 3 "$MODEM" status 2>/dev/null)"
+[ -n "$snapshot" ] || snapshot='{}'
+
+# Decode the modem snapshot once.  The old helper started jsonfilter twice for
+# every field (printf + jsonfilter), which meant dozens of short-lived
+# processes on each screen refresh and made the dashboard itself visible in
+# the CPU figure it was trying to report.
+snapshot_loaded=0
+if [ -r /usr/share/libubox/jshn.sh ]; then
+	. /usr/share/libubox/jshn.sh
+	json_load "$snapshot" 2>/dev/null && snapshot_loaded=1
+fi
+j() {
+	local key="${1#.}" value
+	if [ "$snapshot_loaded" -eq 1 ]; then
+		json_get_var value "$key"
+		printf '%s' "$value"
+	else
+		printf '%s' "$snapshot" | jsonfilter -e "@$1" 2>/dev/null
+	fi
+}
+line() {
+	# The native renderer consumes one key/value per line. Strip control bytes
+	# so modem or UCI text can never alter the protocol.
+	printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')"
+}
+
+line connected "$(j .connected)"
+operator_name="$(j .operator_name)"
+operator_code="$(j .operator_code)"
+case "$operator_code" in
+	46000|46002|46004|46007|46008) operator_name='中国移动' ;;
+	46001|46006|46009) operator_name='中国联通' ;;
+	46003|46005|46011) operator_name='中国电信' ;;
+	46015) operator_name='中国广电' ;;
+esac
+line operator "$operator_name"
+line technology "$(j .access_technologies)"
+line operator_code "$operator_code"
+line signal "$(j .nr_rsrp)"
+[ -n "$(j .nr_rsrp)" ] || line signal "$(j .rsrp)"
+line signal_quality "$(j .signal_quality)"
+line band "$(j .active_bands)"
+line rsrq "$(j .nr_rsrq)"
+line sinr "$(j .nr_sinr)"
+line pci "$(j .pci)"
+line cell_id "$(j .cell_id)"
+line tac "$(j .tac)"
+line slot "$(j .active_data_slot)"
+line sim1_present "$(j .sim1_present)"
+line sim2_present "$(j .sim2_present)"
+line airplane_mode "$(j .airplane_mode)"
+line roaming "$(j .roaming)"
+line allowed_mode "$(j .allowed_mode)"
+line preferred_mode "$(j .preferred_mode)"
+line interface "$(j .interface)"
+line apn "$(j .runtime_apn)"
+line ipv4 "$(j .ipv4)"
+line ipv6 "$(j .ipv6)"
+line gateway "$(j .ipv4_gateway)"
+line dns "$(j .dns_servers)"
+line mtu "$(j .mtu)"
+line rx_bytes "$(j .rx_bytes)"
+line tx_bytes "$(j .tx_bytes)"
+line rx_packets "$(j .rx_packets)"
+line tx_packets "$(j .tx_packets)"
+line rx_errors "$(j .rx_errors)"
+line tx_errors "$(j .tx_errors)"
+line wifi_ssid "$(j .wifi_ssid_5g)"
+[ -n "$(j .wifi_ssid_5g)" ] || line wifi_ssid "$(j .wifi_ssid_24g)"
+line wifi_key "$(uci -q get wireless.nwrt_5g.key)"
+line wifi_encryption "$(uci -q get wireless.nwrt_5g.encryption)"
+line wifi_ipv4 "$(j .wifi_ipv4)"
+line wifi_clients "$(j .wifi_clients)"
+line wifi_up "$(j .wifi_up)"
+line usb_up "$(j .usb_up)"
+line usb_ipv4 "$(j .usb_ipv4)"
+line cpu "$(j .cpu_usage_percent)"
+line memory "$(j .memory_usage_percent)"
+cpu_frequency="$(for cpu_file in /sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq; do
+	cat "$cpu_file" 2>/dev/null
+done | awk 'NR == 1 { min=$1; max=$1 } { if ($1 < min) min=$1; if ($1 > max) max=$1 } END { if (NR) printf "%.2f-%.2f GHz", min / 1000000, max / 1000000 }')"
+line cpu_frequency "$cpu_frequency"
+line cpu_temp "$(j .cpu_temperature_c)"
+line modem_temp "$(j .modem_temperature_c)"
+line uptime "$(j .uptime)"
+line storage "$(j .storage_usage_percent)"
+line kernel "$(j .kernel_release)"
+board_snapshot="$(ubus call system board 2>/dev/null)"
+bj() { printf '%s' "$board_snapshot" | jsonfilter -e "@$1" 2>/dev/null; }
+line hardware_model "$(bj .model)"
+line cpu_architecture "$(bj .system)"
+line target_platform "$(bj .release.target)"
+line firmware_version "$(bj .release.description)"
+soc_machine="$(cat /sys/devices/soc0/machine 2>/dev/null)"
+soc_id="$(cat /sys/devices/soc0/soc_id 2>/dev/null)"
+line soc_model "$soc_machine · SoC $soc_id"
+modem_model="$(j .modem_model)"
+[ "$modem_model" = 0 ] && modem_model=
+if [ -z "$modem_model" ]; then
+	for remoteproc in /sys/class/remoteproc/remoteproc*; do
+		[ "$(cat "$remoteproc/firmware" 2>/dev/null)" = modem.mdt ] || continue
+		modem_model="$(cat "$remoteproc/name" 2>/dev/null)"
+		break
+	done
+fi
+line modem_model "$modem_model"
+line modem_revision "$(j .modem_revision)"
+line imei "$(j .imei)"
+carrier_state="$(j .carrier_aggregation_state)"
+carrier_count="$(j .carrier_count)"
+case "$carrier_state" in
+	active)
+		carrier_aggregation='已激活'
+		[ -z "$carrier_count" ] || carrier_aggregation="已激活 · ${carrier_count}CC"
+		;;
+	single) carrier_aggregation='当前单载波' ;;
+	unavailable|'') carrier_aggregation='暂未获得实时分量' ;;
+	*) carrier_aggregation="$carrier_state" ;;
+esac
+line carrier_aggregation "$carrier_aggregation"
+line carrier_aggregation_state "$carrier_state"
+line carrier_aggregation_capability "$(j .carrier_aggregation_capability)"
+line carrier_count "$carrier_count"
+line carrier_components "$(j .carrier_components)"
+line active_channels "$(j .active_channels)"
+line channel_bandwidths "$(j .channel_bandwidths)"
+line arfcn "$(j .arfcn)"
+line nr_arfcn "$(j .nr_arfcn)"
+
+bonding_control=/usr/libexec/xm14pro-bonding/control
+bonding_snapshot='{}'
+[ -x "$bonding_control" ] && bonding_snapshot="$(timeout 2 "$bonding_control" status 2>/dev/null)"
+[ -n "$bonding_snapshot" ] || bonding_snapshot='{}'
+bonding_value() {
+	printf '%s' "$bonding_snapshot" | jsonfilter -e "@$1" 2>/dev/null
+}
+bonding_phase="$(bonding_value .phase)"
+case "$bonding_phase" in
+	disabled|'') bonding_phase_text='未启用' ;;
+	starting) bonding_phase_text='正在启动' ;;
+	waiting_primary) bonding_phase_text='等待主卡' ;;
+	waiting_secondary) bonding_phase_text='正在连接辅卡' ;;
+	configuring) bonding_phase_text='正在建立负载均衡' ;;
+	online) bonding_phase_text='双卡聚合运行中' ;;
+	stopped) bonding_phase_text='已停止' ;;
+	error) bonding_phase_text='运行错误' ;;
+	*) bonding_phase_text="$bonding_phase" ;;
+esac
+bonding_paths=0
+[ "$(bonding_value .sim1.connected)" = true ] && bonding_paths=$((bonding_paths + 1))
+[ "$(bonding_value .sim2.connected)" = true ] && bonding_paths=$((bonding_paths + 1))
+line bonding_enabled "$(bonding_value .enabled)"
+line bonding_phase "$bonding_phase_text"
+line bonding_paths "$bonding_paths"
+line bonding_balance_active "$(bonding_value .balance_active)"
+line bonding_sim1_connected "$(bonding_value .sim1.connected)"
+line bonding_sim1_device "$(bonding_value .sim1.device)"
+line bonding_sim1_address "$(bonding_value .sim1.address)"
+line bonding_sim2_connected "$(bonding_value .sim2.connected)"
+line bonding_sim2_device "$(bonding_value .sim2.device)"
+line bonding_sim2_address "$(bonding_value .sim2.address)"
+if [ "$(bonding_value .balance_active)" = true ]; then
+	line rx_bytes "$(bonding_value .total_rx_bytes)"
+	line tx_bytes "$(bonding_value .total_tx_bytes)"
+fi
+
+ping_cache=/var/run/xm14display/ping
+ping_value=
+ping_stamp=0
+if [ -r "$ping_cache" ]; then
+	ping_stamp="$(sed -n 's/^updated=//p' "$ping_cache")"
+	ping_value="$(sed -n 's/^value=//p' "$ping_cache")"
+fi
+now="$(date +%s)"
+case "$ping_stamp" in ''|*[!0-9]*) ping_stamp=0 ;; esac
+if [ -z "$ping_value" ] || [ $((now - ping_stamp)) -ge 10 ]; then
+	ping_output="$(ping -4 -c 1 -W 1 223.5.5.5 2>/dev/null)"
+	ping_ms="$(printf '%s\n' "$ping_output" | sed -n 's/.*time=\([0-9.]*\).*/\1/p' | head -n 1)"
+	[ -n "$ping_ms" ] && ping_value="${ping_ms} ms" || ping_value='超时'
+	ping_tmp="$ping_cache.$$"
+	printf 'updated=%s\nvalue=%s\n' "$now" "$ping_value" >"$ping_tmp" && mv "$ping_tmp" "$ping_cache"
+fi
+line ping_latency "$ping_value"
+line qrtr_services "$(j .qrtr_services)"
+line voice_ready "$(j .voice_call_control)"
+line sms_ready "$(j .sms_send_control)"
+telephony_pages="$(uci -q get xm14display.main.telephony_pages)"
+[ "$telephony_pages" = 1 ] || telephony_pages=0
+line telephony_pages "$telephony_pages"
+for cell_option in cell_show_imei cell_show_cell cell_show_aggregation cell_show_signal; do
+	cell_value="$(uci -q get "xm14display.main.$cell_option")"
+	[ "$cell_value" = 0 ] || cell_value=1
+	line "$cell_option" "$cell_value"
+done
+call_count="$(j .active_call_count)"
+call_id="$(j .active_call_id)"
+call_state="$(j .active_call_state)"
+call_number="$(j .active_call_number)"
+audio_active="$(j .voice_audio_active)"
+audio_route="$(j .voice_audio_route)"
+audio_muted="$(j .voice_mic_muted)"
+call_volume="$(j .voice_call_volume)"
+line active_call_count "$call_count"
+line active_call_id "$call_id"
+line active_call_state "$call_state"
+line active_call_number "$call_number"
+line voice_audio_active "$audio_active"
+line voice_audio_route "$audio_route"
+line voice_mic_muted "$audio_muted"
+line voice_call_volume "$call_volume"
+telephony_state=/var/run/xm14display/telephony-state
+telephony_tmp="$telephony_state.$$"
+printf 'active_call_count=%s\nactive_call_id=%s\nactive_call_state=%s\nvoice_mic_muted=%s\nvoice_call_volume=%s\n' \
+	"$call_count" "$call_id" "$call_state" "$audio_muted" "$call_volume" >"$telephony_tmp" &&
+	mv "$telephony_tmp" "$telephony_state"
+if [ "$telephony_pages" = 1 ]; then
+	sms_snapshot="$(timeout 3 "$MODEM" messages 2>/dev/null)"
+	sms_field() { printf '%s' "$sms_snapshot" | jsonfilter -e "@.messages[0].$1" 2>/dev/null; }
+	latest_number="$(sms_field number)"
+	latest_text="$(sms_field text)"
+	latest_direction="$(sms_field direction)"
+	latest_time="$(sms_field timestamp)"
+	latest_delivery="$(sms_field delivery)"
+	latest_id="$(sms_field message_id)"
+	receipt_id="$(printf '%s' "$sms_snapshot" | jsonfilter -e '@.receipts[0].message_id' 2>/dev/null)"
+	if [ -n "$latest_id" ] && [ "$latest_id" = "$receipt_id" ]; then
+		latest_delivery="$(printf '%s' "$sms_snapshot" | jsonfilter -e '@.receipts[0].delivery' 2>/dev/null)"
+	fi
+	line sms_latest_number "$latest_number"
+	line sms_latest_text "$latest_text"
+	line sms_latest_direction "$latest_direction"
+	line sms_latest_time "$latest_time"
+	line sms_latest_delivery "${latest_delivery:-pending}"
+	line sms_draft_number "$(cat /var/run/xm14display/sms-to 2>/dev/null)"
+	line sms_draft_text "$(cat /var/run/xm14display/sms-text 2>/dev/null)"
+	line sms_focus "$(cat /var/run/xm14display/sms-focus 2>/dev/null)"
+	sms_result="$(cat /var/run/xm14display/sms-result 2>/dev/null)"
+	case "$sms_result" in
+		*'"ok":true'*) sms_result='已提交给运营商，正在等待送达回执' ;;
+		*'"ok":false'*) sms_error="$(printf '%s' "$sms_result" | jsonfilter -e '@.error' 2>/dev/null)"; sms_result="发送失败：${sms_error:-未知错误}" ;;
+	esac
+	line sms_result "$sms_result"
+	line phone_draft_number "$(cat /var/run/xm14display/phone-number 2>/dev/null)"
+	phone_result="$(cat /var/run/xm14display/phone-result 2>/dev/null)"
+	case "$phone_result" in
+		*'"ok":true'*) phone_result='电话操作已执行' ;;
+		*'"ok":false'*) phone_error="$(printf '%s' "$phone_result" | jsonfilter -e '@.error' 2>/dev/null)"; phone_result="操作失败：${phone_error:-未知错误}" ;;
+	esac
+	line phone_result "$phone_result"
+fi
+line nfc_enabled "$(uci -q get xm14peripherals.main.nfc)"
+[ -c /dev/nq-nci ] && line nfc_node true || line nfc_node false
+if ps w | grep -F '/odm/bin/hw/android.hardware.nqnfc-service.nxp' | grep -v grep >/dev/null 2>&1; then
+	line nfc_hal_running true
+else
+	line nfc_hal_running false
+fi
+if ps w | grep -F '/vendor/bin/xm14pro-nfc-service' | grep -v grep >/dev/null 2>&1; then
+	line nfc_service_running true
+else
+	line nfc_service_running false
+fi
+nfc_mode="$(uci -q get xm14peripherals.main.nfc_mode)"
+case "$nfc_mode" in share|copy) ;; *) nfc_mode=share ;; esac
+line nfc_mode "$nfc_mode"
+nfc_service_status=/usr/libexec/xm14pro-qwes/android-root/data/vendor/nfc/xm14/status.json
+nfc_stage="$(jsonfilter -i "$nfc_service_status" -e '@.stage' 2>/dev/null)"
+nfc_detail="$(jsonfilter -i "$nfc_service_status" -e '@.detail' 2>/dev/null)"
+nfc_source_bytes="$(jsonfilter -i "$nfc_service_status" -e '@.source_bytes' 2>/dev/null)"
+line nfc_stage "$nfc_stage"
+line nfc_detail "$nfc_detail"
+line nfc_source_bytes "${nfc_source_bytes:-0}"
+case "$nfc_stage" in share_active|await_source|reading_source|await_target|writing_target|copy_complete|mct_detected|mct_reading_source|mct_await_target|mct_writing_target) line nfc_ndef_available true ;; *) line nfc_ndef_available false ;; esac
+nfc_saved="$(find /etc/xm14pro-peripherals/nfc -type f -name '*.ndef' 2>/dev/null | wc -l | tr -d ' ')"
+line nfc_saved "${nfc_saved:-0}"
+nfc_selected="$(cat /etc/xm14pro-peripherals/nfc-selected 2>/dev/null)"
+nfc_selected_name=
+[ -n "$nfc_selected" ] && nfc_selected_name="$(cat "/etc/xm14pro-peripherals/nfc/$nfc_selected.ndef.name" 2>/dev/null)"
+[ -n "$nfc_selected_name" ] || nfc_selected_name='未选择'
+line nfc_selected_name "$nfc_selected_name"
+line infrared_enabled "$(uci -q get xm14peripherals.main.infrared)"
+[ -c /dev/ir_spi ] && line infrared_node true || line infrared_node false
+if ps w | grep -F '/vendor/bin/hw/android.hardware.ir-service.example' | grep -v grep >/dev/null 2>&1; then
+	line infrared_hal_running true
+else
+	line infrared_hal_running false
+fi
+infrared_saved="$(find /etc/xm14pro-peripherals/remotes -type f -name '*.remote' 2>/dev/null | wc -l | tr -d ' ')"
+line infrared_saved "${infrared_saved:-0}"
+infrared_catalog="$(wc -l </usr/share/xm14pro-ir/catalog.tsv 2>/dev/null | tr -d ' ')"
+infrared_ac_catalog="$(wc -l </usr/share/xm14pro-ac/protocols.tsv 2>/dev/null | tr -d ' ')"
+infrared_catalog=$(( ${infrared_catalog:-0} + ${infrared_ac_catalog:-0} ))
+line infrared_catalog "${infrared_catalog:-0}"
+infrared_selected="$(cat /etc/xm14pro-peripherals/infrared-selected 2>/dev/null)"
+infrared_selected_name=
+[ -n "$infrared_selected" ] && infrared_selected_name="$(cat "/etc/xm14pro-peripherals/remotes/$infrared_selected.remote.name" 2>/dev/null)"
+[ -n "$infrared_selected_name" ] || infrared_selected_name='未选择'
+line infrared_selected_name "$infrared_selected_name"
+infrared_source=
+[ -n "$infrared_selected" ] && infrared_source="$(cat "/etc/xm14pro-peripherals/remotes/$infrared_selected.remote.source" 2>/dev/null)"
+case "$infrared_source" in ac:*:*) infrared_selected_ac=true ;; *) infrared_selected_ac=false ;; esac
+line infrared_selected_ac "$infrared_selected_ac"
+infrared_ac_state="/etc/xm14pro-peripherals/remotes/$infrared_selected.remote.state"
+if [ "$infrared_selected_ac" = true ]; then
+	line infrared_ac_power "$(sed -n 's/^power=//p' "$infrared_ac_state" | head -n1)"
+	line infrared_ac_mode "$(sed -n 's/^mode=//p' "$infrared_ac_state" | head -n1)"
+	line infrared_ac_temp "$(sed -n 's/^temp=//p' "$infrared_ac_state" | head -n1)"
+	line infrared_ac_fan "$(sed -n 's/^fan=//p' "$infrared_ac_state" | head -n1)"
+	line infrared_ac_swingv "$(sed -n 's/^swingv=//p' "$infrared_ac_state" | head -n1)"
+	line infrared_ac_swingh "$(sed -n 's/^swingh=//p' "$infrared_ac_state" | head -n1)"
+fi
+nfc_last_result="$(sed -n 's/^result=//p' /var/run/xm14peripherals/nfc-probe 2>/dev/null | head -n 1)"
+[ -n "$nfc_last_result" ] || nfc_last_result='尚未执行硬件自检'
+line nfc_last_result "$nfc_last_result"
+infrared_last_result="$(sed -n 's/^result=//p' /var/run/xm14peripherals/infrared-send 2>/dev/null | head -n 1)"
+[ -n "$infrared_last_result" ] || infrared_last_result="$(sed -n 's/^result=//p' /var/run/xm14peripherals/infrared-test 2>/dev/null | head -n 1)"
+[ -n "$infrared_last_result" ] || infrared_last_result='尚未执行发射测试'
+line infrared_last_result "$infrared_last_result"
+[ -d /sys/class/power_supply/battery ] && line battery_available true || line battery_available false
+line battery "$(cat /sys/class/power_supply/battery/capacity 2>/dev/null)"
+line battery_status "$(cat /sys/class/power_supply/battery/status 2>/dev/null)"
+line battery_charge_type "$(cat /sys/class/power_supply/battery/charge_type 2>/dev/null)"
+battery_protocol="$(cat /sys/class/qcom-battery/usb_real_type 2>/dev/null)"
+[ -n "$battery_protocol" ] || battery_protocol="$(cat /sys/class/qcom-battery/real_type 2>/dev/null)"
+line battery_protocol "$battery_protocol"
+line input_online "$(cat /sys/class/power_supply/usb/online 2>/dev/null)"
+line battery_fastchg_mode "$(cat /sys/class/qcom-battery/fastchg_mode 2>/dev/null)"
+line battery_quick_charge_type "$(cat /sys/class/qcom-battery/quick_charge_type 2>/dev/null)"
+battery_temp="$(cat /sys/class/power_supply/battery/temp 2>/dev/null)"
+connector_temp="$(cat /sys/class/qcom-battery/connector_temp 2>/dev/null)"
+case "$battery_temp" in ''|*[!0-9-]*) battery_temp= ;; *) battery_temp="$(awk -v v="$battery_temp" 'BEGIN { printf "%.1f", v / 10 }')" ;; esac
+case "$connector_temp" in ''|*[!0-9-]*) connector_temp= ;; *) connector_temp="$(awk -v v="$connector_temp" 'BEGIN { printf "%.1f", v / 10 }')" ;; esac
+line battery_temp "$battery_temp"
+line connector_temp "$connector_temp"
+usb_voltage="$(cat /sys/class/power_supply/usb/voltage_now 2>/dev/null)"
+usb_current="$(cat /sys/class/power_supply/usb/current_now 2>/dev/null)"
+case "$usb_voltage" in
+	''|*[!0-9-]*) input_power= ;;
+	*) case "$usb_current" in
+		''|*[!0-9-]*) input_power= ;;
+		*) input_power="$(awk -v v="$usb_voltage" -v i="$usb_current" 'BEGIN { printf "%.2f", (v * i) / 1000000000000 }')" ;;
+	esac ;;
+esac
+line input_power "$input_power"
+line battery_health "$(cat /sys/class/power_supply/battery/health 2>/dev/null)"
+line battery_technology "$(cat /sys/class/power_supply/battery/technology 2>/dev/null)"
+line battery_voltage "$(cat /sys/class/power_supply/battery/voltage_now 2>/dev/null)"
+line battery_current "$(cat /sys/class/power_supply/battery/current_now 2>/dev/null)"
+line battery_charge_full "$(cat /sys/class/power_supply/battery/charge_full 2>/dev/null)"
+line battery_charge_design "$(cat /sys/class/power_supply/battery/charge_full_design 2>/dev/null)"
+line battery_cycle_count "$(cat /sys/class/power_supply/battery/cycle_count 2>/dev/null)"
+line battery_model "$(cat /sys/class/power_supply/battery/model_name 2>/dev/null)"
+line battery_soh "$(cat /sys/class/qcom-battery/soh 2>/dev/null)"
+line battery_cell_vendor "$(cat /sys/class/qcom-battery/cell_vendor 2>/dev/null)"
+line battery_pack_vendor "$(cat /sys/class/qcom-battery/pack_vendor_str 2>/dev/null)"
+line typec_data_role "$(cat /sys/class/typec/port0/data_role 2>/dev/null)"
+line typec_power_role "$(cat /sys/class/typec/port0/power_role 2>/dev/null)"
+line typec_power_mode "$(cat /sys/class/typec/port0/power_operation_mode 2>/dev/null)"
+line typec_pd_revision "$(cat /sys/class/typec/port0/usb_power_delivery_revision 2>/dev/null)"
+line typec_revision "$(cat /sys/class/typec/port0/usb_typec_revision 2>/dev/null)"
+line input_voltage "$(cat /sys/class/power_supply/usb/voltage_now 2>/dev/null)"
+line input_current "$(cat /sys/class/power_supply/usb/current_now 2>/dev/null)"
+line input_current_limit "$(cat /sys/class/power_supply/usb/input_current_limit 2>/dev/null)"
+line battery_moisture "$(cat /sys/class/qcom-battery/moisture_detection_status 2>/dev/null)"
+line battery_anti_burn "$(cat /sys/class/qcom-battery/anti_burn 2>/dev/null)"
+line battery_input_suspend "$(cat /sys/class/qcom-battery/input_suspend 2>/dev/null)"
+line battery_night_charging "$(cat /sys/class/qcom-battery/night_charging 2>/dev/null)"
+line battery_reverse_mode "$(cat /sys/class/qcom-battery/reverse_chg_mode 2>/dev/null)"
+line battery_reverse_state "$(cat /sys/class/qcom-battery/reverse_chg_state 2>/dev/null)"
+line battery_cp_master "$(cat /sys/class/qcom-battery/bq2597x_chip_ok 2>/dev/null)"
+line battery_cp_slave "$(cat /sys/class/qcom-battery/bq2597x_slave_chip_ok 2>/dev/null)"
+speed_state=/var/run/xm14display/speedtest
+if [ -r "$speed_state" ]; then
+	while IFS='=' read -r speed_key speed_value; do
+		case "$speed_key" in
+			state|phase|download_mbps|upload_mbps|servers|threads|message|updated)
+				line "speed_$speed_key" "$speed_value"
+				;;
+		esac
+	done <"$speed_state"
+else
+	line speed_state idle
+	line speed_phase idle
+	line speed_download_mbps 0
+	line speed_upload_mbps 0
+	line speed_servers 0
+	line speed_threads "$(uci -q get xm14display.main.speed_threads)"
+	line speed_message '点击表盘开始聚合测速'
+fi
+line brightness "$(uci -q get xm14display.main.brightness)"
+line screen_timeout "$(uci -q get xm14display.main.screen_timeout)"
+line always_on "$(uci -q get xm14display.main.always_on)"
+line refresh_interval "$(uci -q get xm14display.main.refresh_interval)"
+line speed_duration "$(uci -q get xm14display.main.speed_duration)"

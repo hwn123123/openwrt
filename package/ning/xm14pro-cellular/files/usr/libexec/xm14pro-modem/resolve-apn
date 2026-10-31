@@ -1,0 +1,87 @@
+#!/bin/sh
+
+TAG=xm14-cellular
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+valid_apn() {
+	case "$1" in
+		''|'--'|*[!A-Za-z0-9._-]*) return 1 ;;
+		*) return 0 ;;
+	esac
+}
+
+home_network() {
+	timeout -k 2 15 qmicli -d qrtr://0 \
+		--nas-bind-subscription="$1" --nas-get-home-network 2>/dev/null
+}
+
+home_field() {
+	printf '%s\n' "$1" | awk -F"'" -v label="$2:" '
+		{
+			line = $0
+			sub(/^[[:space:]]*/, "", line)
+			if (index(line, label) == 1 && NF >= 2) { print $2; exit }
+		}'
+}
+
+carrier_apn() {
+	# Default internet APNs from the phone carrier database. Match numeric MNC
+	# values as well as zero-padded output because QMI may return either form.
+	case "$1:$2" in
+		460:0|460:00|460:2|460:02|460:4|460:04|460:7|460:07|460:8|460:08|460:20) printf '%s\n' cmnet ;;
+		460:1|460:01|460:6|460:06|460:9|460:09|460:30) printf '%s\n' 3gnet ;;
+		460:3|460:03|460:5|460:05|460:11|460:12|460:99) printf '%s\n' ctnet ;;
+		460:13) printf '%s\n' cmnet ;;
+		460:15) printf '%s\n' cbnet ;;
+		*) return 1 ;;
+	esac
+}
+
+subscription=$(cat /var/run/xm14pro/qmi-subscription 2>/dev/null)
+case "$subscription" in
+	0) slot=1; subscription_name=primary ;;
+	1) slot=2; subscription_name=secondary ;;
+	*)
+		log "no active physical SIM subscription is available for APN selection"
+		return 1 2>/dev/null || exit 1
+		;;
+esac
+
+configured=$(uci -q get "xm14cellular.main.sim${slot}_apn")
+if [ -n "$configured" ]; then
+	valid_apn "$configured" || {
+		log "SIM $slot APN override contains unsupported characters"
+		return 1 2>/dev/null || exit 1
+	}
+	source="SIM $slot user override"
+	apn=$configured
+else
+	home=$(home_network "$subscription_name")
+	mcc=$(home_field "$home" MCC)
+	mnc=$(home_field "$home" MNC)
+	apn=$(carrier_apn "$mcc" "$mnc")
+	source="SIM $slot home carrier $mcc/$mnc"
+fi
+
+if ! valid_apn "$apn"; then
+	return 1 2>/dev/null || exit 1
+fi
+
+current=$(uci -q get network.cellular.apn)
+legacy_profile=$(uci -q get network.cellular.profile_id)
+if [ "$current" != "$apn" ] || [ -n "$legacy_profile" ]; then
+	uci -q set "network.cellular.apn=$apn"
+	uci -q delete network.cellular.profile_id
+	uci -q commit network
+	# netifd caches protocol options. Reload only when the resolved APN
+	# changes, so the USB LAN is not needlessly disturbed on every reconnect.
+	ubus call network reload >/dev/null 2>&1 || true
+	log "cellular APN updated from $source"
+else
+	log "cellular APN confirmed from $source"
+fi
+
+printf '%s\n' "$apn"

@@ -1,0 +1,496 @@
+#!/bin/sh
+
+TAG=xm14-balance
+STATE_ROOT=/var/run/xm14pro-bonding
+RUNTIME_FILE=$STATE_ROOT/runtime
+SECONDARY_NAME=bond-secondary
+SECONDARY_STATE=/var/run/xm14pro/dsi-${SECONDARY_NAME}.state
+SECONDARY_ERROR=/var/run/xm14pro/dsi-${SECONDARY_NAME}.error
+SECONDARY_STOP=/var/run/xm14pro/dsi-stop-${SECONDARY_NAME}
+PRIMARY_STATE=/var/run/xm14pro/dsi-cellular.state
+
+SIM1_TABLE=201
+SIM2_TABLE=202
+SIM1_MARK_PRIORITY=11801
+SIM2_MARK_PRIORITY=11802
+SIM1_SOURCE_PRIORITY=11811
+SIM2_SOURCE_PRIORITY=11812
+SIM1_MARK=0x10000
+SIM2_MARK=0x20000
+MARK_MASK=0x30000
+
+phase=starting
+error=
+primary_subscription=
+secondary_subscription=
+sim1_device=
+sim1_address=
+sim2_device=
+sim2_address=
+sim1_rx_rate=0
+sim1_tx_rate=0
+sim2_rx_rate=0
+sim2_tx_rate=0
+sim1_rx_bytes=0
+sim1_tx_bytes=0
+sim2_rx_bytes=0
+sim2_tx_bytes=0
+sim1_rx_packets=0
+sim1_tx_packets=0
+sim2_rx_packets=0
+sim2_tx_packets=0
+sim1_rx_errors=0
+sim1_tx_errors=0
+sim2_rx_errors=0
+sim2_tx_errors=0
+sim1_runtime_apn=
+sim2_runtime_apn=
+balance_active=0
+started_at="$(date +%s)"
+secondary_pid=
+stopping=0
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+ipt() {
+	iptables -w 5 "$@"
+}
+
+value() {
+	sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
+}
+
+counter() {
+	local device="$1" name="$2" result
+	result="$(cat "/sys/class/net/$device/statistics/$name" 2>/dev/null)"
+	case "$result" in ''|*[!0-9]*) result=0 ;; esac
+	printf '%s\n' "$result"
+}
+
+publish() {
+	local temporary="$RUNTIME_FILE.$$"
+	local total_rx_rate total_tx_rate total_rx_bytes total_tx_bytes
+	total_rx_rate=$((sim1_rx_rate + sim2_rx_rate))
+	total_tx_rate=$((sim1_tx_rate + sim2_tx_rate))
+	total_rx_bytes=$((sim1_rx_bytes + sim2_rx_bytes))
+	total_tx_bytes=$((sim1_tx_bytes + sim2_tx_bytes))
+	mkdir -p "$STATE_ROOT" || return 1
+	{
+		printf 'phase=%s\n' "$phase"
+		printf 'error=%s\n' "$error"
+		printf 'primary_subscription=%s\n' "$primary_subscription"
+		printf 'secondary_subscription=%s\n' "$secondary_subscription"
+		printf 'sim1_device=%s\n' "$sim1_device"
+		printf 'sim1_address=%s\n' "$sim1_address"
+		printf 'sim2_device=%s\n' "$sim2_device"
+		printf 'sim2_address=%s\n' "$sim2_address"
+		printf 'sim1_runtime_apn=%s\n' "$sim1_runtime_apn"
+		printf 'sim2_runtime_apn=%s\n' "$sim2_runtime_apn"
+		printf 'sim1_rx_rate=%s\n' "$sim1_rx_rate"
+		printf 'sim1_tx_rate=%s\n' "$sim1_tx_rate"
+		printf 'sim2_rx_rate=%s\n' "$sim2_rx_rate"
+		printf 'sim2_tx_rate=%s\n' "$sim2_tx_rate"
+		printf 'sim1_rx_bytes=%s\n' "$sim1_rx_bytes"
+		printf 'sim1_tx_bytes=%s\n' "$sim1_tx_bytes"
+		printf 'sim2_rx_bytes=%s\n' "$sim2_rx_bytes"
+		printf 'sim2_tx_bytes=%s\n' "$sim2_tx_bytes"
+		printf 'sim1_rx_packets=%s\n' "$sim1_rx_packets"
+		printf 'sim1_tx_packets=%s\n' "$sim1_tx_packets"
+		printf 'sim2_rx_packets=%s\n' "$sim2_rx_packets"
+		printf 'sim2_tx_packets=%s\n' "$sim2_tx_packets"
+		printf 'sim1_rx_errors=%s\n' "$sim1_rx_errors"
+		printf 'sim1_tx_errors=%s\n' "$sim1_tx_errors"
+		printf 'sim2_rx_errors=%s\n' "$sim2_rx_errors"
+		printf 'sim2_tx_errors=%s\n' "$sim2_tx_errors"
+		printf 'total_rx_rate=%s\n' "$total_rx_rate"
+		printf 'total_tx_rate=%s\n' "$total_tx_rate"
+		printf 'total_rx_bytes=%s\n' "$total_rx_bytes"
+		printf 'total_tx_bytes=%s\n' "$total_tx_bytes"
+		printf 'balance_active=%s\n' "$balance_active"
+		printf 'started_at=%s\n' "$started_at"
+	} > "$temporary" || return 1
+	mv -f "$temporary" "$RUNTIME_FILE"
+}
+
+fail() {
+	phase=error
+	error="$1"
+	balance_active=0
+	publish
+	log "$error"
+	exit 1
+}
+
+valid_apn() {
+	case "$1" in ''|*[!A-Za-z0-9._-]*) return 1 ;; *) return 0 ;; esac
+}
+
+valid_weight() {
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+	[ "$1" -ge 1 ] 2>/dev/null && [ "$1" -le 100 ] 2>/dev/null
+}
+
+subscription_name() {
+	case "$1" in
+		0) printf 'primary\n' ;;
+		1) printf 'secondary\n' ;;
+		2) printf 'tertiary\n' ;;
+		*) return 1 ;;
+	esac
+}
+
+subscription_plmn() {
+	local subscription raw
+	subscription="$(subscription_name "$1")" || return 1
+	raw="$(timeout -k 2 15 qmicli -d qrtr://0 \
+		--nas-bind-subscription="$subscription" --nas-get-cell-location-info 2>/dev/null)"
+	printf '%s\n' "$raw" | awk -F"'" '
+		/^[[:space:]]*PLMN:/ && $2 ~ /^[0-9][0-9][0-9][0-9][0-9][0-9]?$/ { print $2; exit }
+	'
+}
+
+automatic_apn() {
+	local plmn
+	plmn="$(subscription_plmn "$1")"
+	case "$plmn" in
+		46000|46002|46004|46007|46008) printf 'CMNET\n' ;;
+		46001|46006|46009) printf '3GNET\n' ;;
+		46003|46005|46011|46012) printf 'CTNET\n' ;;
+		46015) printf 'CBNET\n' ;;
+		*) return 1 ;;
+	esac
+}
+
+remove_rule() {
+	while ip -4 rule del priority "$1" >/dev/null 2>&1; do :; done
+}
+
+delete_jump() {
+	local table="$1" chain="$2"
+	shift 2
+	while ipt -t "$table" -C "$chain" "$@" >/dev/null 2>&1; do
+		ipt -t "$table" -D "$chain" "$@" >/dev/null 2>&1 || break
+	done
+}
+
+drop_chain() {
+	local table="$1" chain="$2"
+	ipt -t "$table" -F "$chain" >/dev/null 2>&1 || true
+	ipt -t "$table" -X "$chain" >/dev/null 2>&1 || true
+}
+
+cleanup_firewall() {
+	delete_jump mangle PREROUTING -i usb0 -j XMBAL_MARK
+	delete_jump mangle PREROUTING -i nwrt-ap -j XMBAL_MARK
+	delete_jump mangle OUTPUT -j XMBAL_MARK
+	delete_jump mangle FORWARD -j XMBAL_MSS
+	delete_jump nat POSTROUTING -j XMBAL_NAT
+	delete_jump filter INPUT -j XMBAL_IN
+	delete_jump filter FORWARD -j XMBAL_FWD
+	drop_chain mangle XMBAL_MARK
+	drop_chain mangle XMBAL_MSS
+	drop_chain nat XMBAL_NAT
+	drop_chain filter XMBAL_IN
+	drop_chain filter XMBAL_FWD
+
+	# Remove the superseded server-tunnel chains during the first upgrade.
+	delete_jump nat POSTROUTING -j XMBOND_NAT
+	delete_jump mangle FORWARD -j XMBOND_MSS
+	drop_chain nat XMBOND_NAT
+	drop_chain mangle XMBOND_MSS
+}
+
+cleanup() {
+	local count=0
+	[ "$stopping" = 0 ] || return 0
+	stopping=1
+	balance_active=0
+	remove_rule "$SIM1_SOURCE_PRIORITY"
+	remove_rule "$SIM2_SOURCE_PRIORITY"
+	remove_rule "$SIM1_MARK_PRIORITY"
+	remove_rule "$SIM2_MARK_PRIORITY"
+	remove_rule 11901
+	remove_rule 11902
+	remove_rule 12001
+	remove_rule 12002
+	remove_rule 13000
+	ip -4 route flush table "$SIM1_TABLE" >/dev/null 2>&1 || true
+	ip -4 route flush table "$SIM2_TABLE" >/dev/null 2>&1 || true
+	ip -4 route flush table 203 >/dev/null 2>&1 || true
+	cleanup_firewall
+	: > "$SECONDARY_STOP"
+	while [ -n "$secondary_pid" ] && kill -0 "$secondary_pid" 2>/dev/null && [ "$count" -lt 12 ]; do
+		count=$((count + 1))
+		sleep 1
+	done
+	if [ -n "$secondary_pid" ] && kill -0 "$secondary_pid" 2>/dev/null; then
+		kill "$secondary_pid" 2>/dev/null || true
+	fi
+	rm -f "$SECONDARY_STATE"
+}
+
+terminate() {
+	phase=stopped
+	error=
+	balance_active=0
+	publish
+	exit 0
+}
+
+setup_table() {
+	local state_file="$1" table="$2" source_priority="$3"
+	local device address gateway
+	device="$(value "$state_file" device)"
+	address="$(value "$state_file" ipv4_address)"
+	gateway="$(value "$state_file" ipv4_gateway)"
+	[ -n "$device" ] && [ -n "$address" ] && [ -n "$gateway" ] || return 1
+	[ -e "/sys/class/net/$device" ] || return 1
+	ip -4 route flush table "$table" >/dev/null 2>&1 || true
+	remove_rule "$source_priority"
+	ip -4 route replace default via "$gateway" dev "$device" src "$address" onlink table "$table" || return 1
+	ip -4 rule add priority "$source_priority" from "$address/32" lookup "$table" || return 1
+	[ ! -w "/proc/sys/net/ipv4/conf/$device/rp_filter" ] || printf '0\n' > "/proc/sys/net/ipv4/conf/$device/rp_filter"
+}
+
+state_alive() {
+	local state_file="$1" device address
+	device="$(value "$state_file" device)"
+	address="$(value "$state_file" ipv4_address)"
+	[ -n "$device" ] && [ -n "$address" ] || return 1
+	ip -4 address show dev "$device" 2>/dev/null | grep -q "inet ${address}/"
+}
+
+setup_rules() {
+	remove_rule "$SIM1_MARK_PRIORITY"
+	remove_rule "$SIM2_MARK_PRIORITY"
+	ip -4 rule add priority "$SIM1_MARK_PRIORITY" fwmark "$SIM1_MARK/$MARK_MASK" lookup "$SIM1_TABLE" || return 1
+	ip -4 rule add priority "$SIM2_MARK_PRIORITY" fwmark "$SIM2_MARK/$MARK_MASK" lookup "$SIM2_TABLE" || return 1
+}
+
+private_destinations() {
+	printf '%s\n' \
+		0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 \
+		169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 \
+		224.0.0.0/4 240.0.0.0/4
+}
+
+pin_link_dns() {
+	local state_file="$1" mark="$2" key address
+	for key in ipv4_dns1 ipv4_dns2; do
+		address="$(value "$state_file" "$key")"
+		case "$address" in ''|*[!0-9.]*) continue ;; esac
+		ipt -t mangle -A XMBAL_MARK -d "$address/32" \
+			-j MARK --set-xmark "$mark/$MARK_MASK" || return 1
+		ipt -t mangle -A XMBAL_MARK -d "$address/32" -j RETURN || return 1
+	done
+}
+
+setup_firewall() {
+	local probability destination
+	probability="$(awk -v one="$sim1_weight" -v two="$sim2_weight" 'BEGIN { printf "%.6f", one / (one + two) }')"
+	cleanup_firewall
+
+	ipt -t mangle -N XMBAL_MARK || return 1
+	for destination in $(private_destinations); do
+		ipt -t mangle -A XMBAL_MARK -d "$destination" -j RETURN || return 1
+	done
+	pin_link_dns "$sim1_state" "$SIM1_MARK" || return 1
+	pin_link_dns "$sim2_state" "$SIM2_MARK" || return 1
+	ipt -t mangle -A XMBAL_MARK -j CONNMARK --restore-mark --nfmask "$MARK_MASK" --ctmask "$MARK_MASK" || return 1
+	ipt -t mangle -A XMBAL_MARK -m conntrack --ctstate NEW -m mark --mark "0x0/$MARK_MASK" \
+		-m statistic --mode random --probability "$probability" \
+		-j MARK --set-xmark "$SIM1_MARK/$MARK_MASK" || return 1
+	ipt -t mangle -A XMBAL_MARK -m conntrack --ctstate NEW -m mark --mark "0x0/$MARK_MASK" \
+		-j MARK --set-xmark "$SIM2_MARK/$MARK_MASK" || return 1
+	ipt -t mangle -A XMBAL_MARK -m conntrack --ctstate NEW \
+		-j CONNMARK --save-mark --nfmask "$MARK_MASK" --ctmask "$MARK_MASK" || return 1
+	ipt -t mangle -A XMBAL_MARK -j RETURN || return 1
+	ipt -t mangle -I PREROUTING 1 -i usb0 -j XMBAL_MARK || return 1
+	ipt -t mangle -I PREROUTING 1 -i nwrt-ap -j XMBAL_MARK || return 1
+	ipt -t mangle -I OUTPUT 1 -j XMBAL_MARK || return 1
+
+	ipt -t nat -N XMBAL_NAT || return 1
+	ipt -t nat -A XMBAL_NAT -m mark --mark "$SIM1_MARK/$MARK_MASK" -o "$sim1_device" -j MASQUERADE || return 1
+	ipt -t nat -A XMBAL_NAT -m mark --mark "$SIM2_MARK/$MARK_MASK" -o "$sim2_device" -j MASQUERADE || return 1
+	ipt -t nat -A XMBAL_NAT -j RETURN || return 1
+	ipt -t nat -I POSTROUTING 1 -j XMBAL_NAT || return 1
+
+	ipt -t mangle -N XMBAL_MSS || return 1
+	ipt -t mangle -A XMBAL_MSS -o "$sim1_device" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || return 1
+	ipt -t mangle -A XMBAL_MSS -o "$sim2_device" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu || return 1
+	ipt -t mangle -A XMBAL_MSS -j RETURN || return 1
+	ipt -t mangle -I FORWARD 1 -j XMBAL_MSS || return 1
+
+	ipt -t filter -N XMBAL_IN || return 1
+	ipt -t filter -A XMBAL_IN -i "$sim1_device" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_IN -i "$sim2_device" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_IN -i "$sim1_device" -p icmp -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_IN -i "$sim2_device" -p icmp -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_IN -i "$sim1_device" -j DROP || return 1
+	ipt -t filter -A XMBAL_IN -i "$sim2_device" -j DROP || return 1
+	ipt -t filter -A XMBAL_IN -j RETURN || return 1
+	ipt -t filter -I INPUT 1 -j XMBAL_IN || return 1
+
+	ipt -t filter -N XMBAL_FWD || return 1
+	ipt -t filter -A XMBAL_FWD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_FWD -i usb0 -o "$sim1_device" -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_FWD -i usb0 -o "$sim2_device" -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_FWD -i nwrt-ap -o "$sim1_device" -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_FWD -i nwrt-ap -o "$sim2_device" -j ACCEPT || return 1
+	ipt -t filter -A XMBAL_FWD -i "$sim1_device" -j DROP || return 1
+	ipt -t filter -A XMBAL_FWD -i "$sim2_device" -j DROP || return 1
+	ipt -t filter -A XMBAL_FWD -j RETURN || return 1
+	ipt -t filter -I FORWARD 1 -j XMBAL_FWD || return 1
+}
+
+rules_active() {
+	ip -4 rule show | grep -q "fwmark $SIM1_MARK/$MARK_MASK.*lookup $SIM1_TABLE" &&
+	ip -4 rule show | grep -q "fwmark $SIM2_MARK/$MARK_MASK.*lookup $SIM2_TABLE" &&
+	ipt -t mangle -C PREROUTING -i usb0 -j XMBAL_MARK >/dev/null 2>&1 &&
+	ipt -t mangle -C PREROUTING -i nwrt-ap -j XMBAL_MARK >/dev/null 2>&1 &&
+	ipt -t mangle -C OUTPUT -j XMBAL_MARK >/dev/null 2>&1
+}
+
+sample_initial() {
+	previous_sample="$(date +%s)"
+	previous_sim1_rx="$(counter "$sim1_device" rx_bytes)"
+	previous_sim1_tx="$(counter "$sim1_device" tx_bytes)"
+	previous_sim2_rx="$(counter "$sim2_device" rx_bytes)"
+	previous_sim2_tx="$(counter "$sim2_device" tx_bytes)"
+}
+
+sample_links() {
+	local now elapsed
+	now="$(date +%s)"
+	elapsed=$((now - previous_sample))
+	[ "$elapsed" -gt 0 ] || elapsed=1
+	sim1_rx_bytes="$(counter "$sim1_device" rx_bytes)"
+	sim1_tx_bytes="$(counter "$sim1_device" tx_bytes)"
+	sim2_rx_bytes="$(counter "$sim2_device" rx_bytes)"
+	sim2_tx_bytes="$(counter "$sim2_device" tx_bytes)"
+	sim1_rx_rate=$(((sim1_rx_bytes - previous_sim1_rx) / elapsed))
+	sim1_tx_rate=$(((sim1_tx_bytes - previous_sim1_tx) / elapsed))
+	sim2_rx_rate=$(((sim2_rx_bytes - previous_sim2_rx) / elapsed))
+	sim2_tx_rate=$(((sim2_tx_bytes - previous_sim2_tx) / elapsed))
+	[ "$sim1_rx_rate" -ge 0 ] || sim1_rx_rate=0
+	[ "$sim1_tx_rate" -ge 0 ] || sim1_tx_rate=0
+	[ "$sim2_rx_rate" -ge 0 ] || sim2_rx_rate=0
+	[ "$sim2_tx_rate" -ge 0 ] || sim2_tx_rate=0
+	sim1_rx_packets="$(counter "$sim1_device" rx_packets)"
+	sim1_tx_packets="$(counter "$sim1_device" tx_packets)"
+	sim2_rx_packets="$(counter "$sim2_device" rx_packets)"
+	sim2_tx_packets="$(counter "$sim2_device" tx_packets)"
+	sim1_rx_errors="$(counter "$sim1_device" rx_errors)"
+	sim1_tx_errors="$(counter "$sim1_device" tx_errors)"
+	sim2_rx_errors="$(counter "$sim2_device" rx_errors)"
+	sim2_tx_errors="$(counter "$sim2_device" tx_errors)"
+	previous_sample="$now"
+	previous_sim1_rx="$sim1_rx_bytes"
+	previous_sim1_tx="$sim1_tx_bytes"
+	previous_sim2_rx="$sim2_rx_bytes"
+	previous_sim2_tx="$sim2_tx_bytes"
+}
+
+trap terminate INT TERM
+trap cleanup EXIT
+
+mkdir -p "$STATE_ROOT" || exit 1
+chmod 700 "$STATE_ROOT"
+publish
+
+enabled="$(uci -q get xm14bonding.main.enabled)"
+sim1_apn="$(uci -q get xm14bonding.main.sim1_apn)"
+sim2_apn="$(uci -q get xm14bonding.main.sim2_apn)"
+sim1_weight="$(uci -q get xm14bonding.main.sim1_weight)"
+sim2_weight="$(uci -q get xm14bonding.main.sim2_weight)"
+
+[ "$enabled" = 1 ] || fail '双卡负载均衡未启用'
+[ -z "$sim1_apn" ] || valid_apn "$sim1_apn" || fail 'SIM 1 APN 格式无效'
+[ -z "$sim2_apn" ] || valid_apn "$sim2_apn" || fail 'SIM 2 APN 格式无效'
+valid_weight "$sim1_weight" || fail 'SIM 1 分流权重无效'
+valid_weight "$sim2_weight" || fail 'SIM 2 分流权重无效'
+
+phase=waiting_primary
+publish
+count=0
+while ! state_alive "$PRIMARY_STATE" && [ "$count" -lt 90 ]; do
+	count=$((count + 1))
+	sleep 1
+done
+state_alive "$PRIMARY_STATE" || fail '当前移动数据链路未就绪'
+primary_subscription="$(value "$PRIMARY_STATE" qmi_subscription)"
+case "$primary_subscription" in
+	0) secondary_subscription=1 ;;
+	1) secondary_subscription=0 ;;
+	*) fail '当前数据卡不是实体 SIM 1 或 SIM 2' ;;
+esac
+publish
+
+if [ "$secondary_subscription" = 0 ]; then secondary_apn="$sim1_apn"; else secondary_apn="$sim2_apn"; fi
+if [ -z "$secondary_apn" ]; then secondary_apn="$(automatic_apn "$secondary_subscription")"; fi
+if [ -z "$secondary_apn" ]; then secondary_apn="$(uci -q get network.cellular.apn)"; fi
+if ! valid_apn "$secondary_apn"; then secondary_apn="$(/usr/libexec/xm14pro-modem/resolve-apn 2>/dev/null)"; fi
+valid_apn "$secondary_apn" || fail '无法确定辅卡 APN，请在页面中手动设置'
+
+phase=waiting_secondary
+publish
+rm -f "$SECONDARY_STATE" "$SECONDARY_ERROR" "$SECONDARY_STOP"
+/usr/libexec/xm14pro-modem/dsi-session "$SECONDARY_NAME" "$secondary_subscription" "$secondary_apn" &
+secondary_pid=$!
+count=0
+while [ ! -s "$SECONDARY_STATE" ] && [ ! -s "$SECONDARY_ERROR" ] && kill -0 "$secondary_pid" 2>/dev/null && [ "$count" -lt 120 ]; do
+	count=$((count + 1))
+	sleep 1
+done
+if [ -s "$SECONDARY_ERROR" ]; then fail "辅卡数据链路建立失败：$(cat "$SECONDARY_ERROR")"; fi
+state_alive "$SECONDARY_STATE" || fail '辅卡数据链路未就绪'
+[ "$(value "$SECONDARY_STATE" qmi_subscription)" = "$secondary_subscription" ] || fail '辅卡数据会话绑定到了错误的 SIM'
+
+if [ "$primary_subscription" = 0 ]; then
+	sim1_state="$PRIMARY_STATE"; sim2_state="$SECONDARY_STATE"
+	sim1_runtime_apn="$(uci -q get network.cellular.apn)"; sim2_runtime_apn="$secondary_apn"
+else
+	sim1_state="$SECONDARY_STATE"; sim2_state="$PRIMARY_STATE"
+	sim1_runtime_apn="$secondary_apn"; sim2_runtime_apn="$(uci -q get network.cellular.apn)"
+fi
+sim1_device="$(value "$sim1_state" device)"
+sim1_address="$(value "$sim1_state" ipv4_address)"
+sim2_device="$(value "$sim2_state" device)"
+sim2_address="$(value "$sim2_state" ipv4_address)"
+[ "$sim1_device" != "$sim2_device" ] || fail '两张 SIM 没有获得独立数据接口'
+[ "$sim1_address" != "$sim2_address" ] || fail '两张 SIM 没有获得独立 IPv4 地址'
+
+phase=configuring
+publish
+setup_table "$sim1_state" "$SIM1_TABLE" "$SIM1_SOURCE_PRIORITY" || fail 'SIM 1 独立路由建立失败'
+setup_table "$sim2_state" "$SIM2_TABLE" "$SIM2_SOURCE_PRIORITY" || fail 'SIM 2 独立路由建立失败'
+setup_rules || fail '双卡分流路由规则建立失败'
+setup_firewall || fail '双卡分流防火墙规则建立失败'
+sample_initial
+sleep 1
+sample_links
+phase=online
+error=
+balance_active=1
+publish
+log "dual-SIM local balancing active: SIM1=$sim1_device SIM2=$sim2_device weights=$sim1_weight:$sim2_weight"
+
+while kill -0 "$secondary_pid" 2>/dev/null; do
+	state_alive "$sim1_state" && state_alive "$sim2_state" || break
+	if ! rules_active; then
+		setup_rules && setup_firewall || fail '双卡分流规则恢复失败'
+	fi
+	sleep 2
+	sample_links
+	phase=online
+	error=
+	balance_active=1
+	publish
+done
+
+if [ -n "$secondary_pid" ] && ! kill -0 "$secondary_pid" 2>/dev/null; then
+	fail '辅卡数据会话已中断'
+fi
+fail '双卡数据链路已中断'

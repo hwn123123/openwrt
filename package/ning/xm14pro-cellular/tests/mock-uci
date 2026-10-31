@@ -1,0 +1,6 @@
+#!/bin/sh
+case "$*" in
+	"-q get xm14cellular.main.allowedmode"|"-q get xm14cellular.main.preferredmode") exit 1 ;;
+	"-q get xm14cellular.main.roaming") echo 0 ;;
+	*) printf 'uci %s\n' "$*" >>"$XM14PRO_CELLULAR_TEST_LOG" ;;
+esac

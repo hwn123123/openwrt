@@ -1,0 +1,88 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=08
+STOP=88
+USE_PROCD=1
+
+quiesce_wifi_profile() {
+	local section
+	# Keep netifd away from the vendor-created NAN/P2P interfaces while CNSS
+	# performs its asynchronous calibration.  These are UCI tmpfs deltas only;
+	# the known-good persistent profile is not overwritten.
+	for section in $(uci -q show wireless 2>/dev/null |
+		sed -n 's/^wireless\.\([^.=]*\)=wifi-\(device\|iface\)$/\1/p'); do
+		uci -q set "wireless.$section.disabled=1"
+	done
+}
+
+start_service() {
+	local enabled adsp audio touch wifi cellular nfc infrared wifi_loaded=0
+	config_load xm14modules
+	config_get_bool enabled main enabled 0
+	[ "$enabled" -eq 1 ] || return 0
+
+	config_get_bool adsp main adsp 1
+	config_get_bool audio main audio 1
+	config_get_bool touch main touch 1
+	config_get_bool wifi main wifi 0
+	config_get_bool cellular main cellular 0
+	config_get_bool nfc main nfc 0
+	config_get_bool infrared main infrared 0
+	# Register Xiaomi's loader before S11xm14pro-adsp requests the boot.  The
+	# loader owns the ADSP/DTB/power sequence; this stage deliberately does not
+	# write remoteproc/state or /sys/kernel/boot_adsp/boot.
+	if [ "$adsp" -eq 1 ]; then
+		/usr/sbin/xm14pro-stock-modules adsp-loader ||
+			logger -t xm14-stock-modules "could not register the stock ADSP loader"
+	fi
+	if [ "$audio" -eq 1 ]; then
+		/usr/sbin/xm14pro-stock-modules audio ||
+			logger -t xm14-stock-modules "could not register the stock audio stack"
+	fi
+	if [ "$touch" -eq 1 ]; then
+		/usr/sbin/xm14pro-stock-modules touch ||
+			logger -t xm14-stock-modules "could not start the stock Synaptics touch stack"
+	fi
+	if [ "$wifi" -eq 1 ]; then
+		quiesce_wifi_profile
+		if /usr/sbin/xm14pro-stock-modules wifi; then
+			wifi_loaded=1
+		else
+			logger -t xm14-stock-modules "could not start the stock Wi-Fi stack"
+		fi
+	fi
+	if [ "$cellular" -eq 1 ]; then
+		/usr/sbin/xm14pro-stock-modules cellular
+	fi
+	if [ "$nfc" -eq 1 ]; then
+		/usr/sbin/xm14pro-stock-modules nfc ||
+			logger -t xm14-stock-modules "could not register the stock NFC/eSE devices"
+	fi
+	if [ "$infrared" -eq 1 ]; then
+		/usr/sbin/xm14pro-stock-modules infrared ||
+			logger -t xm14-stock-modules "could not register the stock infrared transmitter"
+	fi
+
+	# CNSS calibration takes roughly 30 seconds on this hardware.  Waiting for
+	# it inside S08 serialized every later OpenWrt service, including USB,
+	# uhttpd and the dashboard.  The worker preserves the exact NAN deletion
+	# and AP-profile order while allowing unrelated services to start now.
+	if [ "$wifi_loaded" -eq 1 ]; then
+		procd_open_instance wifi_ready
+		procd_set_param command /usr/libexec/xm14pro/wifi-ready
+		procd_set_param stdout 1
+		procd_set_param stderr 1
+		procd_close_instance
+	fi
+}
+
+stop_service() {
+	# Unloading a live Qualcomm PCIe/IPA stack is not safe. A controlled reboot
+	# applies a disabled configuration without touching Android partitions.
+	return 0
+}
+
+reload_service() {
+	/usr/sbin/xm14pro-wifi-profile apply >/dev/null 2>&1 || true
+}

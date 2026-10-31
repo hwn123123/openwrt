@@ -1,0 +1,239 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+. /usr/share/libubox/jshn.sh
+
+POWER_ROOT=/sys/class/power_supply
+QCOM_ROOT=/sys/class/qcom-battery
+TYPEC_ROOT=/sys/class/typec
+
+read_value() {
+	[ -r "$1" ] || return 1
+	# Several Xiaomi/Qualcomm sysfs attributes intentionally omit a trailing
+	# newline. POSIX read returns failure at EOF even though it captured the
+	# value, so use cat here and preserve those real one-byte states.
+	value="$(cat "$1" 2>/dev/null)" || return 1
+	printf '%s' "$value"
+}
+
+is_integer() {
+	local digits="$1"
+	case "$digits" in -*) digits="${digits#-}" ;; esac
+	case "$digits" in ''|*[!0-9]*) return 1 ;; esac
+	return 0
+}
+
+add_file_string() {
+	local key="$1" file="$2" value
+	value="$(read_value "$file")" || return 0
+	[ -n "$value" ] && json_add_string "$key" "$value"
+}
+
+add_file_int() {
+	local key="$1" file="$2" value
+	value="$(read_value "$file")" || return 0
+	is_integer "$value" || return 0
+	json_add_int "$key" "$value"
+}
+
+find_control() {
+	local candidate
+	case "$1" in
+		charge_end_threshold)
+			set -- "$POWER_ROOT/battery/charge_control_end_threshold" \
+				"$POWER_ROOT/battery/charge_stop_threshold" ;;
+		charge_start_threshold)
+			set -- "$POWER_ROOT/battery/charge_control_start_threshold" \
+				"$POWER_ROOT/battery/charge_start_threshold" ;;
+		charging_enabled)
+			set -- "$POWER_ROOT/battery/charging_enabled" \
+				"$POWER_ROOT/battery/battery_charging_enabled" ;;
+		input_current_limit)
+			set -- "$POWER_ROOT/usb/input_current_limit" \
+				"$POWER_ROOT/battery/input_current_limit" ;;
+		constant_charge_current_max)
+			set -- "$POWER_ROOT/battery/constant_charge_current_max" ;;
+		reverse_charging)
+			set -- "$QCOM_ROOT/reverse_chg_mode" \
+				"$POWER_ROOT/battery/reverse_chg_mode" \
+				"$POWER_ROOT/wireless/reverse_chg_mode" \
+				"$POWER_ROOT/usb/reverse_chg_mode" ;;
+		input_suspended)
+			set -- "$QCOM_ROOT/input_suspend" ;;
+		night_charging)
+			set -- "$QCOM_ROOT/night_charging" ;;
+		*) return 1 ;;
+	esac
+	for candidate in "$@"; do
+		[ -e "$candidate" ] || continue
+		printf '%s' "$candidate"
+		return 0
+	done
+	return 1
+}
+
+add_controls() {
+	local key path value
+	json_add_object controls
+	for key in charge_end_threshold charge_start_threshold charging_enabled \
+		input_current_limit constant_charge_current_max reverse_charging \
+		input_suspended night_charging; do
+		path="$(find_control "$key")" || continue
+		value="$(read_value "$path" 2>/dev/null)"
+		json_add_object "$key"
+		json_add_string path "$path"
+		json_add_boolean writable "$([ -w "$path" ] && printf 1 || printf 0)"
+		[ -n "$value" ] && json_add_string value "$value"
+		json_close_object
+	done
+	json_close_object
+}
+
+add_xiaomi_status() {
+	local property
+	json_add_object xiaomi
+	if [ -d "$QCOM_ROOT" ]; then
+		for property in real_type usb_real_type typec_mode current_state \
+			cell_vendor pack_vendor pack_vendor_str batt_device_name \
+			adapter_id adapter_svid wireless_type; do
+			add_file_string "$property" "$QCOM_ROOT/$property"
+		done
+		for property in quick_charge_type fastchg_mode pd_verifed apdo_max \
+			power_max constant_power connector_temp connector_temp2 \
+			moisture_detection_en moisture_detection_status anti_burn cc_short_vbus ntc_alarm \
+			cc_orientation usb_typec_compliant soh soh_new fg1_soh fg1_cycle \
+			fg1_fcc fg1_rm fg1_rsoc fg1_ai battcont_online chip_ok \
+			bq2597x_chip_ok bq2597x_slave_chip_ok bq2597x_bus_voltage \
+			bq2597x_bus_current reverse_chg_mode reverse_chg_state \
+			otg_ui_support input_suspend night_charging charge_control_en \
+			smart_chg smart_batt lpd_charging lpd_control reverse_quick_charge \
+			wireless_boost_en wls_fc_flag restrict_chg restrict_cur remaining_time; do
+			add_file_int "$property" "$QCOM_ROOT/$property"
+		done
+	fi
+	json_close_object
+}
+
+add_typec_status() {
+	local property port="$TYPEC_ROOT/port0"
+	json_add_object typec
+	json_add_boolean available "$([ -d "$port" ] && printf 1 || printf 0)"
+	if [ -d "$port" ]; then
+		for property in data_role power_role power_operation_mode preferred_role \
+			usb_power_delivery_revision usb_typec_revision; do
+			add_file_string "$property" "$port/$property"
+		done
+		json_add_boolean partner_present \
+			"$([ -e "$TYPEC_ROOT/port0-partner" ] && printf 1 || printf 0)"
+	fi
+	json_close_object
+}
+
+add_supply() {
+	local dir="$1" name="${1##*/}" property
+	json_add_object ""
+	json_add_string name "$name"
+	for property in type status health present online capacity capacity_level \
+		technology usb_type scope model_name manufacturer serial_number charge_type; do
+		add_file_string "$property" "$dir/$property"
+	done
+	for property in temp temp_ambient voltage_now voltage_min voltage_max \
+		current_now current_max power_now charge_now charge_full charge_full_design \
+		energy_now energy_full energy_full_design cycle_count time_to_empty_now \
+		time_to_full_now constant_charge_current constant_charge_current_max \
+		constant_charge_voltage constant_charge_voltage_max input_current_limit \
+		charge_control_limit charge_control_limit_max charge_control_start_threshold \
+		charge_control_end_threshold; do
+		add_file_int "$property" "$dir/$property"
+	done
+	json_close_object
+}
+
+status() {
+	local dir type temp kind count=0 uptime_value
+	json_init
+	json_add_boolean ok 1
+	json_add_array supplies
+	if [ -d "$POWER_ROOT" ]; then
+		for dir in "$POWER_ROOT"/*; do
+			[ -d "$dir" ] || continue
+			add_supply "$dir"
+			count=$((count + 1))
+		done
+	fi
+	json_close_array
+	json_add_int supply_count "$count"
+	json_add_boolean driver_available "$([ "$count" -gt 0 ] && printf 1 || printf 0)"
+
+	json_add_array thermals
+	for dir in /sys/class/thermal/thermal_zone*; do
+		[ -d "$dir" ] || continue
+		type="$(read_value "$dir/type" 2>/dev/null)"
+		# The compact tr implementation shipped in this image treats POSIX
+		# character classes as literal sets; thermal-zone names are ASCII.
+		kind="$(printf '%s' "$type" | tr A-Z a-z)"
+		case "$kind" in
+			*batt*|*battery*) kind=battery ;;
+			*usb*|*connector*) kind=connector ;;
+			*charger*|*chg*) kind=charger ;;
+			*wireless*|*wls*) kind=wireless ;;
+			*pmic*) kind=pmic ;;
+			*) continue ;;
+		esac
+		temp="$(read_value "$dir/temp" 2>/dev/null)" || continue
+		json_add_object ""
+		json_add_string name "$type"
+		json_add_string kind "$kind"
+		json_add_int temp "$temp"
+		json_close_object
+	done
+	json_close_array
+	add_xiaomi_status
+	add_typec_status
+	add_controls
+	uptime_value="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	[ -n "$uptime_value" ] && json_add_int uptime "$uptime_value"
+	json_dump
+}
+
+control() {
+	local key="$1" value="$2" path min max actual
+	path="$(find_control "$key")" || {
+		printf '{"ok":false,"error":"control is not exposed by the active battery driver"}\n'
+		return 1
+	}
+	[ -w "$path" ] || {
+		printf '{"ok":false,"error":"control exists but is read-only"}\n'
+		return 1
+	}
+	is_integer "$value" || {
+		printf '{"ok":false,"error":"value must be an integer"}\n'; return 1
+	}
+	case "$key" in
+		charge_end_threshold|charge_start_threshold) min=40; max=100 ;;
+		charging_enabled|reverse_charging|input_suspended|night_charging) min=0; max=1 ;;
+		input_current_limit|constant_charge_current_max) min=0; max=20000000 ;;
+	esac
+	[ "$value" -ge "$min" ] 2>/dev/null && [ "$value" -le "$max" ] 2>/dev/null || {
+		printf '{"ok":false,"error":"value is outside the safe range"}\n'; return 1
+	}
+	printf '%s\n' "$value" > "$path" || {
+		printf '{"ok":false,"error":"kernel rejected the requested value"}\n'; return 1
+	}
+	actual="$(read_value "$path")"
+	[ "$actual" = "$value" ] || {
+		printf '{"ok":false,"error":"kernel did not keep the requested value"}\n'; return 1
+	}
+	json_init
+	json_add_boolean ok 1
+	json_add_string control "$key"
+	json_add_string value "$actual"
+	json_dump
+}
+
+case "${1:-status}" in
+	status) status ;;
+	control) shift; control "$@" ;;
+	*) printf '{"ok":false,"error":"usage: xm14pro-battery {status|control KEY VALUE}"}\n'; exit 2 ;;
+esac
+

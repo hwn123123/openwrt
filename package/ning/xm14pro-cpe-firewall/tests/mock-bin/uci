@@ -1,0 +1,11 @@
+#!/bin/sh
+case "$*" in
+	*network.*.device*) exit 1 ;;
+	*xm14cpe.main.enabled*) echo 1 ;;
+	*xm14cpe.main.wifi_forward*) echo 1 ;;
+	*xm14cpe.main.usb_forward*) echo 1 ;;
+	*xm14cpe.main.block_wan_management*) echo 1 ;;
+	*xm14cpe.main.allow_wan_ping*) echo 1 ;;
+	*xm14cpe.main.tcp_mss_clamp*) echo 1 ;;
+	*) exit 1 ;;
+esac

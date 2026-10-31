@@ -1,0 +1,15 @@
+{
+	"xm14pro-android-switch": {
+		"description": "Switch to Android slot A",
+		"read": {
+			"file": {
+				"/usr/libexec/xm14pro-android-switch": [ "list", "exec" ]
+			}
+		},
+		"write": {
+			"file": {
+				"/usr/libexec/xm14pro-android-switch": [ "list", "exec" ]
+			}
+		}
+	}
+}

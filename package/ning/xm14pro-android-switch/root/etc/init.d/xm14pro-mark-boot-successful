@@ -1,0 +1,21 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=99
+
+mark_current_nwrt_boot() {
+	grep -Eq 'androidboot\.slot_suffix[[:space:]]*=[[:space:]]*"?_b"?' \
+		/proc/bootconfig 2>/dev/null || return 0
+
+	if ! /usr/libexec/xm14pro-android-switch mark-successful >/dev/null 2>&1; then
+		logger -t xm14pro-slot 'failed to mark the current B-slot NWRT boot successful'
+	fi
+}
+
+boot() {
+	mark_current_nwrt_boot
+}
+
+start() {
+	mark_current_nwrt_boot
+}

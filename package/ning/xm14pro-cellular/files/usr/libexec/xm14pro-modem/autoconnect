@@ -1,0 +1,83 @@
+#!/bin/sh
+
+TAG=xm14-cellular
+UIM_SETTLE_SECONDS=8
+
+log() {
+	logger -t "$TAG" "$*"
+}
+
+interface_active() {
+	local status
+
+	status="$(ubus call network.interface.cellular status 2>/dev/null)" || return 1
+	printf '%s\n' "$status" | jsonfilter -e '@.up' 2>/dev/null | grep -qx true &&
+		return 0
+	printf '%s\n' "$status" | jsonfilter -e '@.pending' 2>/dev/null | grep -qx true
+}
+
+refresh_radio_state() {
+	local now updated
+	interface_active || return 0
+	now="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	updated="$(sed -n 's/^updated_uptime=//p' /var/run/xm14pro/radio-state 2>/dev/null | tail -n 1)"
+	case "$now:$updated" in
+		*[!0-9:]*) updated=0 ;;
+	esac
+	[ $((now - updated)) -ge 15 ] || return 0
+	/usr/libexec/xm14pro-modem/radio-status >/dev/null 2>&1 ||
+		log "read-only NAS radio status refresh failed"
+}
+
+refresh_telecom_state() {
+	local subscription cached sms_ready ims_ready
+	interface_active || return 0
+	subscription="$(cat /var/run/xm14pro/qmi-subscription 2>/dev/null)"
+	cached="$(sed -n 's/^subscription=//p' /var/run/xm14pro/telecom-state 2>/dev/null | tail -n 1)"
+	sms_ready="$(sed -n 's/^sms_route_query=//p' /var/run/xm14pro/telecom-state 2>/dev/null | tail -n 1)"
+	ims_ready="$(sed -n 's/^ims_registration_query=//p' /var/run/xm14pro/telecom-state 2>/dev/null | tail -n 1)"
+	[ "$cached" = "$subscription" ] && [ "$sms_ready" = 1 ] && [ "$ims_ready" = 1 ] && return 0
+	/usr/libexec/xm14pro-modem/telecom-status >/dev/null 2>&1 ||
+		log "phone-service status refresh is pending"
+}
+
+wait_for_uim_settle() {
+	local now updated remaining
+
+	updated="$(sed -n 's/^updated_uptime=//p' /var/run/xm14pro/uim-state 2>/dev/null | tail -n 1)"
+	now="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	case "$now" in ''|*[!0-9]*) return 0 ;; esac
+	case "$updated" in ''|*[!0-9]*) return 0 ;; esac
+	remaining=$((updated + UIM_SETTLE_SECONDS - now))
+	[ "$remaining" -gt 0 ] || return 0
+	log "waiting ${remaining}s for the stock data service after UIM provisioning"
+	sleep "$remaining"
+}
+
+# A ready UIM and published subscription precede Xiaomi's stock data-service
+# readiness.  Calling DSI in that short interval returns CM NO_SERVICE
+# (3/2001), even though the same call succeeds a few seconds later.  Use the
+# UIM completion timestamp as the phone-specific readiness boundary; generic
+# NAS registration is deliberately not used as a gate.
+wait_for_uim_settle
+
+while :; do
+	if [ "$(uci -q get xm14cellular.main.enabled)" != 0 ] &&
+	   [ "$(uci -q get xm14cellular.main.autoconnect)" != 0 ] &&
+	   [ -s /var/run/xm14pro/qmi-subscription ] &&
+	   [ ! -e /var/run/xm14pro/data-slot-switching ] &&
+	   ! interface_active; then
+		if /usr/libexec/xm14pro-modem/resolve-apn >/dev/null 2>&1; then
+			log "bringing up cellular through the stock Xiaomi DSI runtime"
+			ifup cellular >/dev/null 2>&1 || log "cellular DSI connection attempt failed"
+		else
+			log "current SIM has no usable APN yet; postponing cellular connection"
+		fi
+	fi
+	refresh_radio_state
+	refresh_telecom_state
+	interval=$(uci -q get xm14cellular.main.reconnect_interval)
+	case "$interval" in ''|*[!0-9]*) interval=20 ;; esac
+	[ "$interval" -ge 5 ] || interval=5
+	sleep "$interval"
+done

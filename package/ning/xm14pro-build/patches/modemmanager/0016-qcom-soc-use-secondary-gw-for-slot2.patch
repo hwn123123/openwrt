@@ -1,0 +1,128 @@
+From: nwrt Xiaomi 14 Pro integration
+Subject: [PATCH] qcom-soc: use the secondary GW session for SIM slot 2
+
+Android leaves a SIM inserted in physical slot 2 attached to the Secondary
+GW provisioning session.  The Primary GW index is intentionally absent in
+that state.  ModemManager can already expose slot 2 as the active SIM, but
+its common card parser and transparent-file reads still assume Primary GW,
+which makes every SIM file request fail with UimUninitialized.
+
+Accept the valid Secondary GW index when Primary GW is absent, without
+changing provisioning.  For qcom-soc SIM objects representing slot 2, use
+the Secondary GW session for read-only UIM file access.  Slot 1 and all
+other plugins retain the upstream Primary GW behaviour.
+
+--- a/src/mm-modem-helpers-qmi.c
++++ b/src/mm-modem-helpers-qmi.c
+@@ -2881,6 +2881,8 @@ mm_qmi_uim_get_card_status_output_parse (gpointer
+     QmiMessageUimGetCardStatusOutputCardStatusCardsElementApplicationsElementV2 *app;
+     GArray      *cards;
+     guint16      index_gw_primary = 0xFFFF;
++    guint16      index_gw_secondary = 0xFFFF;
++    gboolean     using_gw_secondary = FALSE;
+     guint8       gw_primary_slot_i = 0;
+     guint8       gw_primary_application_i = 0;
+     MMModemLock  lock = MM_MODEM_LOCK_UNKNOWN;
+@@ -2892,19 +2894,27 @@ mm_qmi_uim_get_card_status_output_parse (gpointer
+     qmi_message_uim_get_card_status_output_get_card_status (
+         output,
+         &index_gw_primary,
+         NULL, /* index_1x_primary */
+-        NULL, /* index_gw_secondary */
++        &index_gw_secondary,
+         NULL, /* index_1x_secondary */
+         &cards,
+         NULL);
+ 
+     if (cards->len == 0) {
+         g_set_error (error, QMI_CORE_ERROR, QMI_CORE_ERROR_FAILED,
+                      "No cards reported");
+         return FALSE;
+     }
+ 
++    /* DSDS phone firmware may intentionally leave Primary GW unset while the
++     * inserted SIM in slot 2 is provisioned as Secondary GW.  Selecting the
++     * reported session is read-only and must not create or switch sessions. */
++    if (index_gw_primary == 0xFFFF && index_gw_secondary != 0xFFFF) {
++        index_gw_primary = index_gw_secondary;
++        using_gw_secondary = TRUE;
++    }
++
+     /* Look for the primary GW slot and application.
+      * If we don't have valid GW primary slot index and application index, assume
+      * we're missing the SIM altogether */
+     gw_primary_slot_i        = ((index_gw_primary & 0xFF00) >> 8);
+@@ -2917,7 +2934,8 @@ mm_qmi_uim_get_card_status_output_parse (gpointer
+                      "GW primary session index unknown");
+         return FALSE;
+     }
+-    mm_obj_dbg (log_object, "GW primary session index: %u",     gw_primary_slot_i);
++    mm_obj_dbg (log_object, "GW %s session index: %u",
++                using_gw_secondary ? "secondary" : "primary", gw_primary_slot_i);
+ 
+     if (gw_primary_application_i == 0xFF) {
+         g_set_error (error,
+@@ -2926,7 +2944,8 @@ mm_qmi_uim_get_card_status_output_parse (gpointer
+                      "GW primary application index unknown");
+         return FALSE;
+     }
+-    mm_obj_dbg (log_object, "GW primary application index: %u", gw_primary_application_i);
++    mm_obj_dbg (log_object, "GW %s application index: %u",
++                using_gw_secondary ? "secondary" : "primary", gw_primary_application_i);
+ 
+     /* Validate slot index */
+     if (gw_primary_slot_i >= cards->len) {
+--- a/src/mm-sim-qmi.c
++++ b/src/mm-sim-qmi.c
+@@ -45,6 +45,27 @@ static const guint16 mf_file_path[]  = { 0x3F00 };
+ static const guint16 adf_file_path[] = { 0x3F00, 0x7FFF };
+ 
+ /*****************************************************************************/
++/* UIM provisioning session */
++
++static QmiUimSessionType
++uim_provisioning_session_type (MMSimQmi *self)
++{
++    MMBaseModem      *modem = NULL;
++    QmiUimSessionType session_type = QMI_UIM_SESSION_TYPE_PRIMARY_GW_PROVISIONING;
++
++    g_object_get (self,
++                  MM_BASE_SIM_MODEM, &modem,
++                  NULL);
++    if (modem &&
++        g_strcmp0 (mm_base_modem_get_plugin (modem), "qcom-soc") == 0 &&
++        mm_base_sim_get_slot_number (MM_BASE_SIM (self)) == 2)
++        session_type = QMI_UIM_SESSION_TYPE_SECONDARY_GW_PROVISIONING;
++    g_clear_object (&modem);
++
++    return session_type;
++}
++
++/*****************************************************************************/
+ 
+ static gboolean
+ ensure_qmi_client (GTask       *task,
+@@ -275,6 +296,7 @@ uim_read (MMSimQmi            *self,
+     gsize i;
+     QmiMessageUimReadTransparentInput *input;
+     GArray *aid;
++    QmiUimSessionType session_type;
+ 
+     task = g_task_new (self, NULL, callback, user_data);
+ 
+@@ -291,10 +313,14 @@ uim_read (MMSimQmi            *self,
+     }
+ 
+     input = qmi_message_uim_read_transparent_input_new ();
++    session_type = uim_provisioning_session_type (self);
++    mm_obj_dbg (self, "using %s UIM session for slot %u file read",
++                qmi_uim_session_type_get_string (session_type),
++                mm_base_sim_get_slot_number (MM_BASE_SIM (self)));
+     aid = g_array_new (FALSE, FALSE, sizeof (guint8)); /* empty AID */
+     qmi_message_uim_read_transparent_input_set_session (
+         input,
+-        QMI_UIM_SESSION_TYPE_PRIMARY_GW_PROVISIONING,
++        session_type,
+         aid,
+         NULL);
+     g_array_unref (aid);

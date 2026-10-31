@@ -1,0 +1,19 @@
+#!/bin/sh
+
+ROOT=/usr/libexec/xm14pro-qwes/android-root
+PLACEHOLDER="$ROOT/system/lib64/libcom.android.tethering.connectivity_native.so"
+
+[ -x "$ROOT/vendor/bin/nicmd" ] || {
+	echo 'stock nicmd is missing' >&2
+	exit 1
+}
+[ -x "$ROOT/system/bin/bootstrap/linker64" ] || {
+	echo 'Android linker64 is missing' >&2
+	exit 1
+}
+
+if [ -e "$PLACEHOLDER.linkcheck-only" ]; then
+	echo 'NOTICE: connectivity_native is an ABI placeholder; nicmd start is prohibited.' >&2
+fi
+
+exec chroot "$ROOT" /system/bin/bootstrap/linker64 --list /vendor/bin/nicmd

@@ -1,0 +1,18 @@
+{
+	"xm14pro-battery": {
+		"description": "Access real Xiaomi battery telemetry and supported controls",
+		"read": {
+			"uci": [ "xm14battery" ],
+			"file": {
+				"/usr/libexec/xm14pro-battery": [ "list", "exec" ]
+			}
+		},
+		"write": {
+			"uci": [ "xm14battery" ],
+			"file": {
+				"/usr/libexec/xm14pro-battery": [ "list", "exec" ]
+			}
+		}
+	}
+}
+

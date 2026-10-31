@@ -1,0 +1,9 @@
+{
+	"admin/services/xm14pro-display": {
+		"title": "Screen",
+		"order": 26,
+		"action": { "type": "view", "path": "services/xm14pro-display" },
+		"depends": { "acl": [ "xm14pro-display" ] }
+	}
+}
+

@@ -1,0 +1,7 @@
+#!/bin/sh
+case "$*" in
+	*network.interface.cellular*) echo '{"data":{"device":"rmnet_data0"}}' ;;
+	*network.interface.wifi_lan*) echo '{"l3_device":"wlan0"}' ;;
+	*network.interface.usb_lan*) echo '{"l3_device":"usb0"}' ;;
+	*) echo '{}' ;;
+esac

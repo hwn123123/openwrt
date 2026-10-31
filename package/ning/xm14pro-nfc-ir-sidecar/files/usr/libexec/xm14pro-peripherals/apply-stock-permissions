@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+
+install_directory() {
+	local mode="$1"
+	local owner="$2"
+	local group="$3"
+	local path="$4"
+
+	mkdir -p "$path" || return 1
+	chown "$owner:$group" "$path" || return 1
+	chmod "$mode" "$path"
+}
+
+install_directory 0770 1027 1027 "$ANDROID_ROOT/data/nfc" || exit 1
+install_directory 0770 1027 1027 "$ANDROID_ROOT/data/vendor/nfc" || exit 1
+install_directory 0700 1000 1027 "$ANDROID_ROOT/data/vendor/nfc/xm14" || exit 1
+install_directory 0770 1027 1027 "$ANDROID_ROOT/data/vendor/secure_element" || exit 1
+
+if [ -e /dev/nq-nci ]; then
+	chown 1027:1027 /dev/nq-nci || exit 1
+	chmod 0660 /dev/nq-nci || exit 1
+fi
+if [ -e /dev/ir_spi ]; then
+	chown 1000:1000 /dev/ir_spi || exit 1
+	chmod 0660 /dev/ir_spi || exit 1
+fi
+
+exit 0

@@ -1,0 +1,60 @@
+From: nwrt Xiaomi 14 Pro support <ning@localhost>
+Subject: [PATCH] qmicli: bind and query IMS settings on one client
+
+The X80 modem keeps IMS Settings subscription binding on the allocated QMI
+client.  Allow --ims-bind to precede a read-only IMS Settings query on the
+same client instead of treating bind and query as two conflicting actions.
+
+--- a/src/qmicli/qmicli-ims.c
++++ b/src/qmicli/qmicli-ims.c
+@@ -88,8 +88,7 @@ qmicli_ims_options_enabled (void)
+     if (checked)
+         return !!n_actions;
+ 
+-    n_actions = ((bind_flag >= 0) +
+-                 get_services_enabled_flag +
++    n_actions = (get_services_enabled_flag +
+                  noop_flag);
+ 
+     if (n_actions > 1) {
+@@ -128,12 +127,19 @@ operation_shutdown (gboolean operation_status)
+ 
+ #if defined HAVE_QMI_MESSAGE_IMS_BIND
+ 
++void qmicli_ims_run (QmiDevice      *device,
++                     QmiClientIms   *client,
++                     GCancellable   *cancellable);
++
+ static void
+ bind_ready (QmiClientIms *client,
+             GAsyncResult *res)
+ {
+     QmiMessageImsBindOutput *output;
+     g_autoptr(GError) error = NULL;
++    QmiDevice     *next_device;
++    QmiClientIms  *next_client;
++    GCancellable  *next_cancellable;
+ 
+     output = qmi_client_ims_bind_finish (client, res, &error);
+     if (!output) {
+@@ -151,8 +157,19 @@ bind_ready (QmiClientIms *client,
+ 
+     g_print ("[%s] IMS Settings bind successful\n", qmi_device_get_path_display (ctx->device));
+ 
++    next_device = g_object_ref (ctx->device);
++    next_client = g_object_ref (ctx->client);
++    next_cancellable = g_object_ref (ctx->cancellable);
+     qmi_message_ims_bind_output_unref (output);
+-    operation_shutdown (TRUE);
++    context_free (ctx);
++    ctx = NULL;
++    bind_flag = -1;
++
++    qmicli_ims_run (next_device, next_client, next_cancellable);
++
++    g_object_unref (next_cancellable);
++    g_object_unref (next_client);
++    g_object_unref (next_device);
+ }
+ 
+ #endif /* HAVE_QMI_MESSAGE_IMS_BIND */

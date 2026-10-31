@@ -1,0 +1,64 @@
+#!/bin/sh
+
+STATE_DIR=/var/run/xm14pro
+SUBSCRIPTION_FILE=$STATE_DIR/qmi-subscription
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+LAUNCHER=/usr/libexec/xm14pro-nicm/dsi-dial-launcher
+
+qmi_subscription="$3"
+[ -n "$qmi_subscription" ] || qmi_subscription="$(sed -n '1p' "$SUBSCRIPTION_FILE" 2>/dev/null)"
+case "$qmi_subscription" in
+	0) dsi_subscription=1 ;;
+	1) dsi_subscription=2 ;;
+	2) dsi_subscription=3 ;;
+	*)
+		echo "No valid runtime SIM subscription is available" >&2
+		exit 2
+		;;
+esac
+
+apn="$1"
+if [ -z "$apn" ]; then
+	apn="$(/usr/libexec/xm14pro-modem/resolve-apn 2>/dev/null)" || exit 3
+fi
+case "$apn" in
+	''|*[!A-Za-z0-9._-]*)
+		echo "The runtime APN is empty or contains unsupported characters" >&2
+		exit 3
+		;;
+esac
+
+ip_setting="$(uci -q get xm14cellular.main.iptype)"
+case "$ip_setting" in
+	ipv4) ip_version=4 ;;
+	ipv6) ip_version=6 ;;
+	ipv4v6|'') ip_version=10 ;;
+	*)
+		echo "Unsupported IP type: $ip_setting" >&2
+		exit 4
+		;;
+esac
+
+hold_seconds="${2:-600}"
+case "$hold_seconds" in
+	''|*[!0-9]*)
+		echo "Hold time must be a positive number of seconds" >&2
+		exit 5
+		;;
+esac
+[ "$hold_seconds" -gt 0 ] 2>/dev/null || exit 5
+
+stop_identifier="${4:-cellular}"
+case "$stop_identifier" in
+	''|*[!A-Za-z0-9_.-]*)
+		echo "Stop identifier contains unsupported characters" >&2
+		exit 5
+		;;
+esac
+[ "${#stop_identifier}" -le 32 ] || exit 5
+
+mkdir -p "$STATE_DIR" || exit 6
+rm -f "$STATE_DIR/dsi-stop-$stop_identifier"
+
+exec "$LAUNCHER" "$ANDROID_ROOT" "$dsi_subscription" "$apn" \
+	"$ip_version" "$hold_seconds" "$stop_identifier"

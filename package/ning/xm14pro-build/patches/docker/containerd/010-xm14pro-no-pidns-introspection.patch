@@ -1,0 +1,16 @@
+--- a/plugins/services/introspection/pidns_linux.go
++++ b/plugins/services/introspection/pidns_linux.go
+@@ -25,6 +25,13 @@ func statPIDNS(pid int) (uint64, error) {
+ 	f := fmt.Sprintf("/proc/%d/ns/pid", pid)
+ 	st, err := os.Stat(f)
+ 	if err != nil {
++		// Xiaomi's stock shennong GKI deliberately disables CONFIG_PID_NS.
++		// containerd otherwise refuses to report server information and Docker
++		// cannot finish starting. A zero inode accurately means that this kernel
++		// has no PID namespace support.
++		if os.IsNotExist(err) {
++			return 0, nil
++		}
+ 		return 0, err
+ 	}
+ 	stSys, ok := st.Sys().(*syscall.Stat_t)

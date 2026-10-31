@@ -1,0 +1,95 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+ANDROID_ROOT=/usr/libexec/xm14pro-qwes/android-root
+SLOT_A=/system/bin/xm14-slot-a
+MARK_SUCCESSFUL=/system/bin/xm14-mark-boot-successful
+SLOT_STATE=/system/bin/xm14-b-slot-state-code
+LINKER=/system/bin/bootstrap/linker64
+UFS_COMPAT=/system/lib64/libxm14pro-force-ufs.so
+
+require_xm14pro_ufs() {
+	grep -F 'androidboot.hardware.sku = "shennong"' /proc/bootconfig >/dev/null 2>&1 ||
+		json_error 'This device is not Xiaomi 14 Pro (shennong)'
+	grep -F 'androidboot.bootdevice = "1d84000.ufshc"' /proc/bootconfig >/dev/null 2>&1 ||
+		json_error 'Unexpected boot storage controller'
+	[ "$(readlink -f /dev/block/bootdevice/by-name/xbl_a 2>/dev/null)" = /dev/sdb1 ] ||
+		json_error 'Unexpected xbl_a mapping'
+	[ "$(readlink -f /dev/block/bootdevice/by-name/xbl_b 2>/dev/null)" = /dev/sdc1 ] ||
+		json_error 'Unexpected xbl_b mapping'
+	[ -c /dev/bsg/ufs-bsg0 ] || json_error 'UFS boot control device is unavailable'
+}
+
+normalize_by_name_links() {
+	local link target resolved block_target
+
+	for link in /dev/block/by-name/*; do
+		[ -L "$link" ] || continue
+		target="$(readlink "$link" 2>/dev/null)" ||
+			json_error 'Failed to inspect UFS partition links'
+		case "$target" in
+			../sd*|/dev/sd*)
+				resolved="$(readlink -f "$link" 2>/dev/null)" ||
+					json_error 'Failed to resolve a UFS partition link'
+				case "$resolved" in
+					/dev/sd[a-z][0-9]*) ;;
+					*) json_error 'Unexpected UFS partition link target' ;;
+				esac
+				[ -b "$resolved" ] || json_error 'UFS partition link target is unavailable'
+				block_target="/dev/block/${resolved##*/}"
+				[ -b "$block_target" ] || json_error 'Android UFS block link is unavailable'
+				ln -snf "$block_target" "$link" ||
+					json_error 'Failed to normalize UFS partition links'
+				;;
+		esac
+	done
+}
+
+json_error() {
+	printf '{"ok":false,"error":"%s"}\n' "$1"
+	exit 1
+}
+
+require_running_slot_b() {
+	grep -E 'androidboot\.slot_suffix[[:space:]]*=[[:space:]]*"?_b"?' \
+		/proc/bootconfig >/dev/null 2>&1 ||
+		json_error 'Refusing to mark a boot other than slot B successful'
+}
+
+case "${1:-}" in
+	switch)
+		[ -x "$ANDROID_ROOT$LINKER" ] || json_error 'Android linker is unavailable'
+		[ -x "$ANDROID_ROOT$SLOT_A" ] || json_error 'xm14-slot-a is unavailable'
+		[ -f "$ANDROID_ROOT$UFS_COMPAT" ] || json_error 'UFS compatibility library is unavailable'
+		require_xm14pro_ufs
+		normalize_by_name_links
+		LD_PRELOAD="$UFS_COMPAT" chroot "$ANDROID_ROOT" "$LINKER" "$SLOT_A" ||
+			json_error 'Failed to select Android slot A'
+		sync
+		(sleep 1; reboot) >/dev/null 2>&1 &
+		printf '{"ok":true}\n'
+		;;
+	mark-successful)
+		[ -x "$ANDROID_ROOT$LINKER" ] || json_error 'Android linker is unavailable'
+		[ -x "$ANDROID_ROOT$MARK_SUCCESSFUL" ] ||
+			json_error 'Boot-success helper is unavailable'
+		[ -x "$ANDROID_ROOT$SLOT_STATE" ] ||
+			json_error 'B-slot state verifier is unavailable'
+		[ -f "$ANDROID_ROOT$UFS_COMPAT" ] ||
+			json_error 'UFS compatibility library is unavailable'
+		require_running_slot_b
+		require_xm14pro_ufs
+		normalize_by_name_links
+		LD_PRELOAD="$UFS_COMPAT" chroot "$ANDROID_ROOT" "$LINKER" \
+			"$MARK_SUCCESSFUL" || json_error 'Failed to mark slot B successful'
+		LD_PRELOAD="$UFS_COMPAT" chroot "$ANDROID_ROOT" "$LINKER" \
+			"$SLOT_STATE"
+		state=$?
+		[ "$state" -eq 21 ] || json_error "Unexpected B-slot state code: $state"
+		sync
+		printf '{"ok":true,"slot":"_b","state":21}\n'
+		;;
+	*)
+		json_error 'usage: xm14pro-android-switch {switch|mark-successful}'
+		;;
+esac

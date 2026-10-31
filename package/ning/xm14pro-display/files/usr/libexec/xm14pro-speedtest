@@ -1,0 +1,156 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Real IPv4 multi-server, multi-thread aggregate throughput test.
+
+RUN_DIR=/var/run/xm14display
+STATE="$RUN_DIR/speedtest"
+LOCK="$RUN_DIR/speedtest.lock"
+SERVERS=/etc/xm14pro-speedtest/servers.conf
+work=
+worker_pids=
+
+cleanup_test() {
+	local pid
+	# Normally every worker has already been waited for.  This also guarantees
+	# that an interrupted test cannot leave download/upload curl workers alive.
+	for pid in $worker_pids; do
+		kill "$pid" 2>/dev/null || true
+	done
+	for pid in $worker_pids; do
+		wait "$pid" 2>/dev/null || true
+	done
+	worker_pids=
+	[ -z "$work" ] || rm -rf "$work"
+}
+
+wait_workers() {
+	local pid
+	for pid in $worker_pids; do
+		wait "$pid" 2>/dev/null || true
+	done
+	worker_pids=
+}
+
+write_state() {
+	local tmp="$STATE.$$"
+	{
+		printf 'state=%s\n' "$1"
+		printf 'phase=%s\n' "$2"
+		printf 'download_mbps=%s\n' "${3:-0}"
+		printf 'upload_mbps=%s\n' "${4:-0}"
+		printf 'servers=%s\n' "${5:-0}"
+		printf 'threads=%s\n' "${6:-0}"
+		printf 'message=%s\n' "${7:-}"
+		printf 'updated=%s\n' "$(date +%s)"
+	} >"$tmp" && mv "$tmp" "$STATE"
+}
+
+valid_number() {
+	case "$1" in ''|*[!0-9]*) return 1 ;; esac
+}
+
+run_test() {
+	local duration threads selected count i base total download upload message
+	duration="$(uci -q get xm14display.main.speed_duration)"
+	threads="$(uci -q get xm14display.main.speed_threads)"
+	valid_number "$duration" || duration=5
+	valid_number "$threads" || threads=8
+	[ "$duration" -ge 3 ] 2>/dev/null || duration=5
+	[ "$duration" -le 30 ] 2>/dev/null || duration=30
+	[ "$threads" -ge 2 ] 2>/dev/null || threads=8
+	[ "$threads" -le 16 ] 2>/dev/null || threads=16
+
+	mkdir -p "$RUN_DIR"
+	work="/tmp/xm14pro-speedtest.$$"
+	mkdir -p "$work"
+	trap 'cleanup_test' EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	trap 'exit 129' HUP
+	write_state running probe 0 0 0 "$threads" '正在并发探测国内节点'
+
+	i=0
+	while IFS='|' read -r name base; do
+		case "$name" in ''|'#'*) continue ;; esac
+		i=$((i + 1))
+		(
+			result="$(curl -4 -k -L -sS --connect-timeout 2 --max-time 3 \
+				-o /dev/null -w '%{http_code} %{time_total}' "$base/hello" 2>/dev/null)"
+			case "$result" in 200\ *) printf '%s|%s|%s\n' "${result#200 }" "$name" "$base" >"$work/probe.$i" ;; esac
+		) &
+		worker_pids="$worker_pids $!"
+	done <"$SERVERS"
+	wait_workers
+	selected="$work/selected"
+	: >"$selected"
+	cat "$work"/probe.* 2>/dev/null | sort -n | head -n 4 >"$selected"
+	count="$(wc -l <"$selected" | tr -d ' ')"
+	if [ "$count" -eq 0 ]; then
+		write_state error idle 0 0 0 "$threads" '暂无可达国内测速节点'
+		return 1
+	fi
+	message="$(awk -F'|' 'BEGIN{s=""}{s=s (s?" + ":"") $2}END{print s}' "$selected")"
+
+	write_state running download 0 0 "$count" "$threads" "$message"
+	i=0
+	while [ "$i" -lt "$threads" ]; do
+		i=$((i + 1))
+		base="$(awk -F'|' -v n="$(((i - 1) % count + 1))" 'NR==n {print $3}' "$selected")"
+		(
+			curl -4 -k -L -sS --connect-timeout 2 --max-time "$duration" \
+				-o /dev/null -w '%{size_download}\n' \
+				"$base/download?size=1000000000&nwrt=$$-$i" 2>/dev/null || true
+		) >"$work/down.$i" &
+		worker_pids="$worker_pids $!"
+	done
+	wait_workers
+	total="$(awk '{s+=$1} END{printf "%.0f",s+0}' "$work"/down.* 2>/dev/null)"
+	download="$(awk -v b="${total:-0}" -v s="$duration" 'BEGIN{printf "%.1f", b*8/s/1000000}')"
+
+	# A shared sparse source gives each worker a Content-Length without consuming
+	# hundreds of MiB of flash or RAM. Bytes are counted from curl itself.
+	dd if=/dev/zero of="$work/upload.bin" bs=1 count=0 seek=536870912 2>/dev/null
+	write_state running reset "$download" 0 "$count" "$threads" "$message"
+	# Give the physical speedometer enough time to return to zero before the
+	# actual upload workers start. This is a real test phase, not a UI delay.
+	sleep 2
+	write_state running upload "$download" 0 "$count" "$threads" "$message"
+	i=0
+	while [ "$i" -lt "$threads" ]; do
+		i=$((i + 1))
+		base="$(awk -F'|' -v n="$(((i - 1) % count + 1))" 'NR==n {print $3}' "$selected")"
+		(
+			curl -4 -k -L -sS --connect-timeout 2 --max-time "$duration" \
+				-o /dev/null -H 'Content-Type: application/octet-stream' \
+				--data-binary @"$work/upload.bin" -w '%{size_upload}\n' \
+				"$base/upload" 2>/dev/null || true
+		) >"$work/up.$i" &
+		worker_pids="$worker_pids $!"
+	done
+	wait_workers
+	total="$(awk '{s+=$1} END{printf "%.0f",s+0}' "$work"/up.* 2>/dev/null)"
+	upload="$(awk -v b="${total:-0}" -v s="$duration" 'BEGIN{printf "%.1f", b*8/s/1000000}')"
+	write_state running finish "$download" "$upload" "$count" "$threads" "$message"
+	sleep 2
+	write_state done idle "$download" "$upload" "$count" "$threads" "$message"
+}
+
+case "$1" in
+	start)
+		mkdir -p "$RUN_DIR"
+		("$0" run >/dev/null 2>&1) &
+		;;
+	run)
+		mkdir -p "$RUN_DIR"
+		exec 9>"$LOCK"
+		flock -n 9 || exit 0
+		run_test
+		;;
+	status)
+		[ -r "$STATE" ] && cat "$STATE" || write_state idle idle 0 0 0 0 '点击表盘开始聚合测速'
+		;;
+	*)
+		echo "usage: $0 {start|run|status}" >&2
+		exit 2
+		;;
+esac
