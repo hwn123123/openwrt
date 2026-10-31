@@ -12,6 +12,7 @@ DEFAULT = TOPDIR / (
     "view/status/include/60_wifi.js"
 )
 target = Path(sys.argv[1]) if len(sys.argv) == 2 else DEFAULT
+network_target = TOPDIR / "feeds/luci/modules/luci-base/htdocs/luci-static/resources/network.js"
 
 old = """\t\t\ttasks.push(L.resolveDefault(radios_networks_hints[i].getAssocList(), []).then(L.bind((net, list) => {
 \t\t\t\tnet.assoclist = list.sort((a, b) => a.mac.localeCompare(b.mac));
@@ -48,3 +49,31 @@ elif source.count(old) == 1:
     print(f"installed LuCI Wi-Fi compatibility: {target}")
 else:
     raise SystemExit(f"refusing to patch changed LuCI Wi-Fi source: {target}")
+
+# The Network → Wireless page calls WifiNetwork.getAssocList() directly, so
+# fixing only the Status page still leaves the Xiaomi cfg80211 dump flood.
+core_old = "\tgetAssocList() {\n\t\tconst tasks = [];"
+core_new = """\tgetAssocList() {
+\t\tif (this.getIfname() == 'nwrt-ap') {
+\t\t\t// Use hostapd's authoritative associated-station cache. The stock
+\t\t\t// cfg80211 dump asks the Xiaomi driver for one peer past the end.
+\t\t\tconst getClients = rpc.declare({ object: 'hostapd.nwrt-ap', method: 'get_clients' });
+\t\t\tconst width = parseInt((uci.get('wireless', this.getWifiDeviceName(), 'htmode') || '').replace(/\\D/g, ''), 10) || 20;
+\t\t\treturn L.resolveDefault(getClients(), { clients: {} }).then(data =>
+\t\t\t\tObject.entries(data.clients || {}).filter(([mac, client]) => client.authorized).map(([mac, client]) => ({
+\t\t\t\t\tmac: mac.toUpperCase(),
+\t\t\t\t\tsignal: Number(client.signal) || -110,
+\t\t\t\t\tnoise: 0,
+\t\t\t\t\trx: { rate: (Number(client.rate?.rx) || 0) / 100, mhz: width },
+\t\t\t\t\ttx: { rate: (Number(client.rate?.tx) || 0) / 100, mhz: width }
+\t\t\t\t})).sort((a, b) => a.mac.localeCompare(b.mac)));
+\t\t}
+\t\tconst tasks = [];"""
+core_source = network_target.read_text(encoding="utf-8")
+if core_new in core_source:
+    print(f"LuCI network Wi-Fi compatibility already installed: {network_target}")
+elif core_source.count(core_old) == 1:
+    network_target.write_text(core_source.replace(core_old, core_new, 1), encoding="utf-8")
+    print(f"installed LuCI network Wi-Fi compatibility: {network_target}")
+else:
+    raise SystemExit(f"refusing to patch changed LuCI network source: {network_target}")
