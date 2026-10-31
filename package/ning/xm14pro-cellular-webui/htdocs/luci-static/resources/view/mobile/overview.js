@@ -146,15 +146,15 @@ function aggregationLabel(s) {
 	switch (s.carrier_aggregation_state || s.carrier_aggregation) {
 	case 'active': return count && count > 1 ? _('Active · %s CC').format(count) : _('Active');
 	case 'single': return _('Single carrier now');
-	case 'unavailable': return _('Live allocation unavailable');
+	case 'unavailable': return _('Aggregation not verified');
 	default: return _('Waiting for radio data');
 	}
 }
 
 function aggregationCapability(s) {
-	if (s.carrier_aggregation_capability === 'supported')
-		return _('Supported · 5G Sub-6 up to %s CC').format(mobile.text(s.carrier_aggregation_max_sub6_cc, '5'));
-	return _('Capability unavailable');
+	if (s.carrier_aggregation_capability === 'supported' && number(s.carrier_aggregation_max_sub6_cc) > 0)
+		return _('Verified maximum: %s CC').format(s.carrier_aggregation_max_sub6_cc);
+	return _('Capability not verified');
 }
 
 function bondingPhase(bonding) {
@@ -198,7 +198,7 @@ function cellularDisplayPanel(settings, save) {
 	return mobile.panel(_('Physical screen cellular details'), _('Choose the data shown on the device cellular page'), 'phone', [
 		displaySetting(_('Show IMEI'), _('Complete device identifier'), 'cell_show_imei', settings, save),
 		displaySetting(_('Show serving cell'), _('Cell ID / NCI, PCI, TAC and ARFCN'), 'cell_show_cell', settings, save),
-		displaySetting(_('Show carrier aggregation'), _('Hardware capability and current component carriers'), 'cell_show_aggregation', settings, save),
+		displaySetting(_('Show carrier aggregation'), _('Observable radio entries and aggregation status'), 'cell_show_aggregation', settings, save),
 		displaySetting(_('Show signal details'), _('Live RSSI, RSRP, RSRQ and SINR'), 'cell_show_signal', settings, save)
 	], '', 'xm14-cell-display-panel');
 }
@@ -308,19 +308,9 @@ function listValues(value) {
 	return String(value).split(/\s*,\s*/).filter(Boolean);
 }
 
-function totalBandwidth(value) {
-	var items = listValues(value), total = 0, found = 0;
-	items.forEach(function(item) {
-		var match = item.match(/([0-9]+(?:\.[0-9]+)?)/);
-		if (match) { total += Number(match[1]); found++; }
-	});
-	if (!found) return '—';
-	return (Math.round(total * 10) / 10) + ' MHz';
-}
-
 function carrierAggregationPanel(s, aggregationStatus) {
 	var count = number(s.carrier_count) || 0;
-	var maximum = mobile.text(s.carrier_aggregation_max_sub6_cc, '5');
+	var maximum = number(s.carrier_aggregation_max_sub6_cc);
 	var components = listValues(s.carrier_components);
 	var channels = listValues(s.active_channels);
 	var bandwidths = listValues(s.channel_bandwidths);
@@ -334,8 +324,8 @@ function carrierAggregationPanel(s, aggregationStatus) {
 		var channel = parts[1] || channels[i] || '—';
 		componentNodes.push(E('article', { 'class': 'xm14-ca-component ' + (i === 0 ? 'is-primary' : '') }, [
 			E('div', { 'class': 'xm14-ca-component-head' }, [
-				E('span', {}, '分量载波 ' + (i + 1)),
-				E('b', {}, i === 0 ? '主分量' : '扩展分量')
+				E('span', {}, '射频记录 ' + (i + 1)),
+				E('b', {}, i === 0 ? '当前网络' : '其他记录')
 			]),
 			E('strong', {}, band),
 			E('small', {}, 'ARFCN ' + channel),
@@ -343,14 +333,14 @@ function carrierAggregationPanel(s, aggregationStatus) {
 		]));
 	}
 	if (!componentNodes.length)
-		componentNodes.push(E('div', { 'class': 'xm14-ca-empty' }, '正在等待基带上报实时分量载波'));
+		componentNodes.push(E('div', { 'class': 'xm14-ca-empty' }, '正在等待基带上报射频记录'));
 
-	return mobile.panel('5G 载波聚合', '基带与运营商网络实时分配的分量载波、信道和带宽', 'antenna', [
+	return mobile.panel('5G 射频与聚合', '基带上报的射频记录；聚合状态需独立验证', 'antenna', [
 		E('div', { 'class': 'xm14-ca-summary' }, [
 			cellularDatum('实时状态', aggregationStatus, s.access_technologies, stateTone),
-			cellularDatum('当前分量', count ? count + ' CC' : '—', components.join(' · '), stateTone),
-			cellularDatum('当前合计带宽', totalBandwidth(s.channel_bandwidths), bandwidths.join(' + '), stateTone),
-			cellularDatum('设备能力上限', '最高 ' + maximum + ' CC', '5G Sub-6', 'is-info')
+			cellularDatum('可见射频记录', count ? String(count) : '—', components.join(' · '), stateTone),
+			cellularDatum('可见带宽', bandwidths.join(' + ') || '—', '不代表聚合总带宽', stateTone),
+			cellularDatum('设备能力上限', maximum > 0 ? '最高 ' + maximum + ' CC' : '未验证', '需基带能力数据', 'is-info')
 		]),
 		E('div', { 'class': 'xm14-ca-components' }, componentNodes),
 		E('div', { 'class': 'xm14-ca-radio-row' }, [

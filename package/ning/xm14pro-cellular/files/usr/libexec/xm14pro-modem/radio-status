@@ -64,7 +64,6 @@ serving="$(query --nas-get-serving-system)"
 system="$(query --nas-get-system-info)"
 operator="$(query --nas-get-operator-name)"
 cell="$(query --nas-get-cell-location-info)"
-ca="$(query --nas-get-lte-cphy-ca-info)"
 band="$(query --nas-get-rf-band-info)"
 dms_ids="$(query_device --dms-get-ids)"
 
@@ -119,23 +118,7 @@ radio_interfaces="$(printf '%s\n' "$serving" | awk -F"'" '
 		if ($2 != "none") { if (out != "") out = out ", "; out = out $2 }
 	}
 	END { print out }')"
-available_interfaces="$(printf '%s\n' "$system" | awk -F"'" '
-	/^[[:space:]]*(GSM|WCDMA|LTE|5G SA|5G NSA) service:/ {
-		name = $0
-		sub(/^[[:space:]]*/, "", name)
-		sub(/ service:.*/, "", name)
-		active = 1
-		next
-	}
-	active && /^[[:space:]]*Status:/ {
-		if ($2 == "available") {
-			if (out != "") out = out ", "
-			out = out name
-		}
-		active = 0
-	}
-	END { print out }')"
-[ -n "$radio_interfaces" ] || radio_interfaces="$available_interfaces"
+serving_radio_interfaces="$radio_interfaces"
 mcc="$(field "$operator" MCC)"
 mnc="$(field "$operator" MNC)"
 operator_name="$(field "$operator" 'Long name')"
@@ -184,14 +167,20 @@ cell_id="$(first_value \
 	"$(section_field "$system" LTE 'Cell ID')" \
 	"$(field "$cell" 'Cell ID')")"
 
-# Qualcomm reports NSA availability inside the LTE section instead of as a
-# standalone service.  Only call it active when the modem also reports an NR
-# measurement; this distinguishes the current serving RAT from mere support.
+# Service availability alone does not identify the serving network. Require a
+# registered packet session and a matching serving interface before labelling
+# the connection SA or NSA.
 nr_mode=
-if [ "$(field "$system" '5G NSA Available')" = yes ] && [ -n "$nr_rsrp" ]; then
-	nr_mode=NSA
-elif [ "$(service_field "$system" '5G SA' Status)" = available ]; then
-	nr_mode=SA
+if [ "$(field "$serving" 'Registration state')" = registered ] &&
+	[ "$(field "$serving" PS)" = attached ]; then
+	if [ "$serving_radio_interfaces" = 5gnr ] &&
+		[ "$(service_field "$system" '5G SA' Status)" = available ]; then
+		nr_mode=SA
+	elif printf '%s\n' "$serving_radio_interfaces" | grep -q 'lte'; then
+		if [ "$(field "$system" '5G NSA Available')" = yes ] && [ -n "$nr_rsrp" ]; then
+			nr_mode=NSA
+		fi
+	fi
 fi
 
 # QMI names the generic NR radio interface "5gnr".  Publish the registered
@@ -215,11 +204,9 @@ active_bands="$(printf '%s\n' "$band" | awk -F"'" '
 	}
 	END { print out }')"
 
-# NAS LTE CPHY only describes LTE/NSA aggregation and legitimately returns
-# InformationUnavailable on a pure 5G-SA serving cell.  RF-band information is
-# therefore used as the cross-RAT source for the currently allocated component
-# carriers.  Keep capability and live allocation as separate facts: the X75
-# hardware supports CA even when the network currently assigns one carrier.
+# NAS RF-band information reports observable radio entries, not a verified NR
+# carrier-aggregation state or hardware maximum. Keep the observations without
+# inventing an NR CA result.
 extended_carriers="$(printf '%s\n' "$band" | awk -F"'" '
 	/^Band Information \(Extended\):/ { active = 1; next }
 	/^Bandwidth:/ { active = 0 }
@@ -264,14 +251,8 @@ carrier_components="$(printf '%s\n' "$band" | awk -F"'" '
 	END { print out }')"
 
 carrier_aggregation_state=unavailable
-if printf '%s\n' "$ca" | grep -q 'Secondary Cell'; then
-	carrier_aggregation_state=active
-	[ "$carrier_count" -ge 2 ] 2>/dev/null || carrier_count=2
-elif [ "$carrier_count" -gt 1 ] 2>/dev/null; then
-	carrier_aggregation_state=active
-elif [ "$carrier_count" -eq 1 ] 2>/dev/null; then
-	carrier_aggregation_state=single
-fi
+# Do not infer aggregation from RF-band entry count or the mere presence of an
+# LTE CPHY "Secondary Cell" field; neither proves an active NR component.
 
 tmp="$STATE_FILE.$$"
 emit() {
@@ -304,8 +285,6 @@ emit() {
 	emit nr_bands "$(printf '%s\n' "$band" | awk -F"'" '/Active Band Class:/ && $2 ~ /(nr5g|n[0-9])/ && !seen[$2]++ { if (out != "") out = out ", "; out = out $2 } END { print out }')"
 	emit carrier_aggregation "$carrier_aggregation_state"
 	emit carrier_aggregation_state "$carrier_aggregation_state"
-	emit carrier_aggregation_capability supported
-	emit carrier_aggregation_max_sub6_cc 5
 	emit carrier_count "$carrier_count"
 	emit carrier_components "$carrier_components"
 	emit active_channels "$active_channels"

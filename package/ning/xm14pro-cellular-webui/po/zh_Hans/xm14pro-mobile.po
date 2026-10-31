@@ -805,8 +805,17 @@ msgstr "当前单载波"
 msgid "Live allocation unavailable"
 msgstr "暂未获得实时分量"
 
+msgid "Aggregation not verified"
+msgstr "聚合状态未验证"
+
 msgid "Waiting for radio data"
 msgstr "等待无线数据"
+
+msgid "Verified maximum: %s CC"
+msgstr "已验证上限：%s CC"
+
+msgid "Capability not verified"
+msgstr "设备聚合能力未验证"
 
 msgid "Supported · 5G Sub-6 up to %s CC"
 msgstr "硬件支持 · 5G Sub-6 最多 %sCC"
@@ -859,6 +868,9 @@ msgstr "显示载波聚合"
 msgid "Hardware capability and current component carriers"
 msgstr "硬件聚合能力与当前分量载波"
 
+msgid "Observable radio entries and aggregation status"
+msgstr "可见射频记录与聚合状态"
+
 msgid "Show signal details"
 msgstr "显示信号详情"
 
@@ -891,9 +903,6 @@ msgstr "配置的上网卡"
 
 msgid "Connected clients"
 msgstr "已连接客户端"
-
-msgid "Country code"
-msgstr "监管域国家码"
 
 msgid "DNS servers"
 msgstr "DNS 服务器"
@@ -1396,7 +1405,7 @@ msgid "Network session"
 msgstr "网络会话"
 
 msgid "New message"
-msgstr "发送短信"
+msgstr "新短信"
 
 msgid "No active call."
 msgstr "当前没有通话。"
@@ -1418,12 +1427,6 @@ msgstr "未注册"
 
 msgid "Searching"
 msgstr "正在搜网"
-
-msgid "Available"
-msgstr "可用"
-
-msgid "Running"
-msgstr "运行中"
 
 msgid "Online"
 msgstr "在线"
@@ -1721,9 +1724,6 @@ msgstr "开启通知"
 
 msgid "Incoming call"
 msgstr "来电"
-
-msgid "New message"
-msgstr "新短信"
 
 msgid "Notifications are blocked in the browser site settings."
 msgstr "浏览器的网站设置已阻止通知。"

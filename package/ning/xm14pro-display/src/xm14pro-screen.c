@@ -802,7 +802,7 @@ static void data_defaults(struct live_data *data) {
     copy_value(data->imei, sizeof(data->imei), "正在读取");
     copy_value(data->carrier_aggregation, sizeof(data->carrier_aggregation), "暂未获得实时分量");
     copy_value(data->carrier_aggregation_state, sizeof(data->carrier_aggregation_state), "unavailable");
-    copy_value(data->carrier_aggregation_capability, sizeof(data->carrier_aggregation_capability), "supported");
+    copy_value(data->carrier_aggregation_capability, sizeof(data->carrier_aggregation_capability), "unknown");
     copy_value(data->carrier_components, sizeof(data->carrier_components), "--");
     copy_value(data->active_channels, sizeof(data->active_channels), "--");
     copy_value(data->channel_bandwidths, sizeof(data->channel_bandwidths), "--");
@@ -1888,18 +1888,18 @@ static void draw_cellular_details_page(struct canvas *c,
     if (data->cell_show_aggregation) {
         const char *capability =
             !strcmp(data->carrier_aggregation_capability, "supported") ?
-            "X75 硬件支持 · 5G Sub-6 最多 5CC" : "硬件能力未知";
+            "硬件支持聚合；上限未验证" : "聚合能力尚未验证";
         bold_text(c, 90, 1515, data->carrier_aggregation, 57,
                   !strcmp(data->carrier_aggregation_state, "active") ? C_GREEN : C_CYAN);
         text(c, 90, 1605, capability, 34, C_MUTED);
         char count[48];
         if (data->carrier_count > 0)
-            snprintf(count, sizeof(count), "%d 个当前分量载波", data->carrier_count);
+            snprintf(count, sizeof(count), "%d 条可见射频记录", data->carrier_count);
         else
-            copy_value(count, sizeof(count), "暂无实时分量");
+            copy_value(count, sizeof(count), "暂无射频记录");
         label_value(c, 90, 1715, 570, "分量数", count, C_WHITE);
         label_value(c, 750, 1715, 560, "带宽", data->channel_bandwidths, C_WHITE);
-        text(c, 90, 1830, "载波明细", 34, C_MUTED);
+        text(c, 90, 1830, "射频记录", 34, C_MUTED);
         fit_text(c, 90, 1890, 1220, data->carrier_components, 34, C_WHITE);
     } else {
         centered_text(c, 720, 1660, "聚合信息已在 LuCI 中隐藏", 38, C_MUTED);

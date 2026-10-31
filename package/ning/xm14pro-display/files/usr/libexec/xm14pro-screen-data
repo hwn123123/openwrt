@@ -120,7 +120,7 @@ case "$carrier_state" in
 		[ -z "$carrier_count" ] || carrier_aggregation="已激活 · ${carrier_count}CC"
 		;;
 	single) carrier_aggregation='当前单载波' ;;
-	unavailable|'') carrier_aggregation='暂未获得实时分量' ;;
+	unavailable|'') carrier_aggregation='聚合状态未验证' ;;
 	*) carrier_aggregation="$carrier_state" ;;
 esac
 line carrier_aggregation "$carrier_aggregation"
