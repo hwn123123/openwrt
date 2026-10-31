@@ -1091,6 +1091,14 @@ sim_record_action() {
 	[ "$(printf '%s\n' "$response" | jsonfilter -e '@.ok' 2>/dev/null)" = true ]
 }
 
+sim_cache_time() {
+	local cache="$1" stamp when
+	stamp="$(jsonfilter -i "$cache" -e '@.timestamp' 2>/dev/null)"
+	case "$stamp" in [0-9][0-9]-*) stamp="20$stamp" ;; esac
+	when="$(date -d "$stamp" +%Y%m%d%H%M.%S 2>/dev/null)"
+	[ -z "$when" ] || touch -t "$when" "$cache"
+}
+
 message_set_read() {
 	local id="$1" state="$2" marker unread temporary
 	marker="$(message_state_path "$id")" || return 1
@@ -1143,6 +1151,7 @@ sim_sync() {
 					temporary="$cache.$$"
 					sed "s/\"sim_tag\":\"[^\"]*\"/\"sim_tag\":\"$actual_tag\"/" "$cache" > "$temporary" && mv "$temporary" "$cache"
 				}
+				sim_cache_time "$cache"
 				continue
 			fi
 			decoded="$(timeout -k 2 12 /usr/sbin/xm14pro-telephony sms-read uim "$index" 2>/dev/null)" || continue
@@ -1150,6 +1159,7 @@ sim_sync() {
 			temporary="$cache.$$"
 			printf '%s\n' "$decoded" | sed "s/^{/{\"source\":\"sim\",\"sim_tag\":\"$actual_tag\",\"slot\":\"$slot\",\"sim_index\":$index,/" > "$temporary" || continue
 			mv "$temporary" "$cache" || continue
+			sim_cache_time "$cache"
 			imported=$((imported + 1))
 		done <<EOF
 $entries
