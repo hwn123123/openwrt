@@ -43,3 +43,15 @@ Android A-slot partitions and `userdata` are not part of the nwrt rootfs. The
 B slot contains only the Xiaomi-compatible boot chain and bounded rescue
 payload; generated manifests are marked `flashable=yes` only after validation.
 
+The current custom recovery has no ADB sideload entry. Do not use an obsolete
+fastboot installer or claim that the source tree includes a working recovery
+installer. The device-side recovery install path must be validated before the
+next full image deployment. This build layer only produces checked artifacts;
+it does not write to the phone.
+
+The `xm14pro-defaults` package removes unpublished package feeds and uses the
+USTC OpenWrt mirror entry point for generic ARM64 APK feeds. Snapshot requests
+may redirect to the upstream server. The pinned `xm14pro-openclash-core`
+package installs the OpenClash executable; proxy configuration remains a user
+setting and is not enabled by default.
+

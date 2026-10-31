@@ -25,6 +25,17 @@ first_matching_interface() {
 	return 1
 }
 
+active_cellular_interface() {
+	local dev
+	dev="$(ubus -S call network.interface.cellular status 2>/dev/null |
+		jsonfilter -q -e '@.data.device' 2>/dev/null | head -n 1)"
+	if [ -n "$dev" ] && interface_exists "$dev"; then
+		printf '%s' "$dev"
+		return 0
+	fi
+	first_matching_interface 'rmnet_data*'
+}
+
 json_init
 json_add_string platform "Xiaomi 14 Pro (shennong)"
 json_add_string kernel "$(uname -r)"
@@ -46,7 +57,7 @@ json_close_object
 
 json_add_object interfaces
 json_add_string wifi "$(first_matching_interface 'wlan*')"
-json_add_string cellular "$(first_matching_interface 'rmnet_data*')"
+json_add_string cellular "$(active_cellular_interface)"
 interface_exists usb0 && json_add_string usb usb0 || json_add_string usb ""
 json_close_object
 

@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-defaults
 PKG_VERSION:=1.0
-PKG_RELEASE:=7
+PKG_RELEASE:=8
 PKG_LICENSE:=GPL-2.0-only
 PKGARCH:=all
 
@@ -37,6 +37,7 @@ define Package/xm14pro-defaults/install
 	$(INSTALL_BIN) ./files/90-xm14pro-defaults $(1)/etc/uci-defaults/90-xm14pro-defaults
 	$(INSTALL_BIN) ./files/91-xm14pro-network $(1)/etc/uci-defaults/91-xm14pro-network
 	$(INSTALL_BIN) ./files/92-xm14pro-docker $(1)/etc/uci-defaults/92-xm14pro-docker
+	$(INSTALL_BIN) ./files/93-xm14pro-feeds $(1)/etc/uci-defaults/93-xm14pro-feeds
 endef
 
 $(eval $(call BuildPackage,xm14pro-defaults))

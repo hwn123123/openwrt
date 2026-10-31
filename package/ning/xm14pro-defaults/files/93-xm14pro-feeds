@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# The private xm14pro target and OpenClash feeds are not published at the
+# upstream OpenWrt snapshot URLs. Keep only generic aarch64 feeds and use
+# the USTC China mirror entry point for them.
+
+repo=/etc/apk/repositories.d/distfeeds.list
+[ -f "$repo" ] || exit 0
+
+tmp="$(mktemp "${repo}.XXXXXX")" || exit 1
+trap 'rm -f "$tmp"' EXIT HUP INT TERM
+sed \
+	-e '\|^https://downloads.openwrt.org/snapshots/targets/xm14pro/armv8/packages/packages\.adb$|d' \
+	-e '\|^https://downloads.openwrt.org/snapshots/packages/aarch64_generic/openclash/packages\.adb$|d' \
+	-e 's|^https://downloads.openwrt.org/snapshots/packages/aarch64_generic/|https://mirrors.ustc.edu.cn/openwrt/snapshots/packages/aarch64_generic/|' \
+	"$repo" > "$tmp" || exit 1
+chmod 0644 "$tmp"
+mv -f "$tmp" "$repo"
+trap - EXIT HUP INT TERM
+exit 0
