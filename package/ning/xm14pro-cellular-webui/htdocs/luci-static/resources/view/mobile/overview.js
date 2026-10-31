@@ -435,7 +435,7 @@ function dashboard(s, bonding) {
 			row(_('LTE band capabilities'), s.lte_band_capabilities), row(_('NR band capabilities'), s.nr_band_capabilities),
 			row(_('Active bands'), s.active_bands), row(_('LTE bands'), s.lte_bands), row(_('NR bands'), s.nr_bands),
 			row(_('Aggregation capability'), aggregationCapability(s)), row(_('Current aggregation'), aggregationStatus),
-			row(_('Component carriers'), s.carrier_components), row(_('Channel bandwidth'), s.channel_bandwidths), row(_('Active channels'), s.active_channels),
+			row(_('Observable RF entries'), s.carrier_components), row(_('Channel bandwidth'), s.channel_bandwidths), row(_('Active channels'), s.active_channels),
 			row(_('DMS maximum RX rate'), s.max_rx_rate), row(_('DMS maximum TX rate'), s.max_tx_rate)
 		]),
 		card(_('Data counters'), [

@@ -832,6 +832,9 @@ msgstr "当前聚合状态"
 msgid "Component carriers"
 msgstr "分量载波"
 
+msgid "Observable RF entries"
+msgstr "基带可见射频记录"
+
 msgid "Channel bandwidth"
 msgstr "信道带宽"
 
