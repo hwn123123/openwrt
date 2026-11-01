@@ -1,0 +1,76 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+MODULE_DIR=/usr/lib/xm14pro/camera-modules
+KERNEL=6.1.138-android14-11-g0c3d559bcd85-ab14529422
+. /usr/share/libubox/jshn.sh
+
+module_loaded() {
+	local name="${1%.ko}"
+	name="$(printf '%s' "$name" | tr '-' '_')"
+	[ -d "/sys/module/$name" ]
+}
+
+count_nodes() {
+	local node count=0
+	for node in "$1"*; do
+		[ -e "$node" ] && count=$((count + 1))
+	done
+	printf '%s' "$count"
+}
+
+status() {
+	local camera=0 media video subdev last_error
+	module_loaded camera.ko && camera=1
+	media="$(count_nodes /dev/media)"
+	video="$(count_nodes /dev/video)"
+	subdev="$(count_nodes /dev/v4l-subdev)"
+	last_error="$(dmesg 2>/dev/null | grep 'CAM_ERR:' | tail -n 1 | cut -c 1-220)"
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean driver_loaded "$camera"
+	json_add_int media_nodes "$media"
+	json_add_int video_nodes "$video"
+	json_add_int subdevices "$subdev"
+	json_add_boolean capture_ready 0
+	json_add_string capture_detail '相机取流服务尚未接入；驱动节点不等于可拍照'
+	json_add_string last_kernel_error "$last_error"
+	json_dump
+}
+
+fail() {
+	json_init
+	json_add_boolean ok 0
+	json_add_string error "$1"
+	json_dump
+	exit 1
+}
+
+load_module() {
+	local file="$1" output
+	module_loaded "$file" && return 0
+	[ -r "$MODULE_DIR/$file" ] || fail "缺少原厂模块：$file"
+	if ! output="$(/usr/libexec/xm14pro/insmod "$MODULE_DIR/$file" 2>&1)"; then
+		logger -t xm14pro-camera "failed to load $file: $output"
+		fail "无法加载 $file；请查看系统日志"
+	fi
+}
+
+case "${1:-status}" in
+	status)
+		status
+		;;
+	load)
+		[ "$(uname -r)" = "$KERNEL" ] || fail '当前内核版本与摄像头模块不匹配'
+		grep -q 'androidboot.slot_suffix = "_b"' /proc/bootconfig 2>/dev/null ||
+			fail '当前不是 NWRT 的 B 槽'
+		for file in ipclite.ko smmu_proxy_dlkm.ko synx-driver.ko cameralog.ko camera.ko; do
+			load_module "$file"
+		done
+		[ -e /dev/video0 ] || fail '摄像头模块已加载，但设备节点未出现'
+		status
+		;;
+	*)
+		fail '不支持的摄像头操作'
+		;;
+esac

@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: GPL-2.0-only
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=xm14pro-camera-kernel
+PKG_VERSION:=1.0
+PKG_RELEASE:=1
+PKG_LICENSE:=LicenseRef-Xiaomi-Qualcomm-Proprietary
+PKG_FLAGS:=nonshared
+RSTRIP:=:
+
+include $(INCLUDE_DIR)/package.mk
+
+# Stock vendor modules reference drivers supplied by Xiaomi's early boot
+# images. They are not OpenWrt library packages; keep the exception scoped to
+# this unmodified binary-module package.
+define CheckDependencies
+endef
+
+define Package/xm14pro-camera-kernel
+  SECTION:=utils
+  CATEGORY:=Utilities
+  TITLE:=Xiaomi 14 Pro camera kernel adapter
+  DEPENDS:=+xm14pro-stock-modules +libubox
+endef
+
+define Package/xm14pro-camera-kernel/description
+ Stages the unmodified OS3.0.309.0 camera modules and provides an on-demand
+ loader and status command. Camera capture still requires a userspace provider.
+endef
+
+define Build/Compile
+endef
+
+define Package/xm14pro-camera-kernel/install
+	$(INSTALL_DIR) $(1)/usr/lib/xm14pro/camera-modules
+	$(CP) ./files/usr/lib/xm14pro/camera-modules/*.ko \
+		$(1)/usr/lib/xm14pro/camera-modules/
+	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-camera
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/control \
+		$(1)/usr/libexec/xm14pro-camera/control
+endef
+
+$(eval $(call BuildPackage,xm14pro-camera-kernel))

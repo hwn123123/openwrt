@@ -19,6 +19,7 @@ define Device/xiaomi_14_pro
   DEVICE_PACKAGES := xm14pro-boot-shim xm14pro-defaults xm14pro-usb-gadget \
 	xm14pro-boot-health xm14pro-platform xm14pro-stock-modules xm14pro-dms-stub \
 	xm14pro-telephony-sidecar xm14pro-audio-sidecar xm14pro-audio-webui \
+	xm14pro-camera-kernel xm14pro-camera-webui \
 	xm14pro-nfc-ir-sidecar xm14pro-peripherals-webui xm14pro-nicm xm14pro-cellular xm14pro-bonding \
 	xm14pro-openclash-compat \
 	qcom-rmtfs qcom-pd-mapper qcom-tqftpserv \

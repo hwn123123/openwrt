@@ -1,0 +1,5 @@
+efaa8cf7d530fd006dc00f77a368f3261e791616e236b5f7107aa62a00668489  files/usr/lib/xm14pro/camera-modules/camera.ko
+f861fd5f45bf5f4e7073f2cbadf4486e1b0889566e142b6d6c0e38803f4bfa06  files/usr/lib/xm14pro/camera-modules/cameralog.ko
+bb99a31a97414879d7def75127da34589671a154e8d69715f466bbbfa2eaf09d  files/usr/lib/xm14pro/camera-modules/ipclite.ko
+7319c866f889964039b09f0707a1fe29e853bcfbd6642eab3b947ffdd251ce63  files/usr/lib/xm14pro/camera-modules/smmu_proxy_dlkm.ko
+b336ae60408808c55071de9f6fef922d6fef83dd20012fecee24f84f4fc2cd1a  files/usr/lib/xm14pro/camera-modules/synx-driver.ko
