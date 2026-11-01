@@ -23,6 +23,20 @@ static char previous[8192];
 static unsigned int repeated;
 static time_t last_report;
 
+static int has_error_word(const char *message, size_t length)
+{
+	static const char *const words[] = {
+		"error", "fail", "denied", "timeout"
+	};
+	for (size_t i = 0; i < sizeof(words) / sizeof(words[0]); ++i) {
+		size_t word_length = strlen(words[i]);
+		for (size_t offset = 0; offset + word_length <= length; ++offset)
+			if (strncasecmp(message + offset, words[i], word_length) == 0)
+				return 1;
+	}
+	return 0;
+}
+
 static void report_repeated(void)
 {
 	if (!repeated)
@@ -61,13 +75,14 @@ static void print_record(const unsigned char *buf, ssize_t length)
 		message[message_length - 1] == '\r'))
 		message_length--;
 
-	/* Android marks missing service waits as INFO. Keep those and all WARN+
-	 * records while discarding normal INFO/DEBUG traffic. */
+	/* Some vendor faults are tagged INFO. Keep explicit fault words and missing
+	 * service waits along with all WARN+ records. */
 	if (priority < ANDROID_LOG_WARN &&
 	    !(priority == ANDROID_LOG_INFO &&
-	      memmem(message, message_length,
-		     "Waited one second for vendor.qti.data.nwmgr.INwMgr",
-		     sizeof("Waited one second for vendor.qti.data.nwmgr.INwMgr") - 1)))
+	      (has_error_word(message, message_length) ||
+	       memmem(message, message_length,
+		      "Waited one second for vendor.qti.data.nwmgr.INwMgr",
+		      sizeof("Waited one second for vendor.qti.data.nwmgr.INwMgr") - 1))))
 		return;
 
 	if (snprintf(current, sizeof(current), "android-log: %s: %.*s", tag,
