@@ -1,0 +1,7 @@
+/base-recovery.img
+/selector-base.img
+/assets/adb_keys-host.pub
+/output/
+*.log
+__pycache__/
+*.pyc

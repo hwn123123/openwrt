@@ -56,18 +56,66 @@ require_running_slot_b() {
 		json_error 'Refusing to mark a boot other than slot B successful'
 }
 
+select_android_slot_a() {
+	[ -x "$ANDROID_ROOT$LINKER" ] || json_error 'Android linker is unavailable'
+	[ -x "$ANDROID_ROOT$SLOT_A" ] || json_error 'xm14-slot-a is unavailable'
+	[ -f "$ANDROID_ROOT$UFS_COMPAT" ] || json_error 'UFS compatibility library is unavailable'
+	require_xm14pro_ufs
+	normalize_by_name_links
+	LD_PRELOAD="$UFS_COMPAT" chroot "$ANDROID_ROOT" "$LINKER" "$SLOT_A" ||
+		json_error 'Failed to select Android slot A'
+}
+
+clear_recovery_request() {
+	local misc_device actual_sha
+	[ -b /dev/block/by-name/misc ] || json_error 'Recovery request partition is unavailable'
+	misc_device=$(readlink -f /dev/block/by-name/misc 2>/dev/null) ||
+		json_error 'Failed to resolve recovery request partition'
+	[ "$misc_device" = /dev/sda11 ] || json_error 'Unexpected recovery request partition mapping'
+	[ "$(cat /sys/class/block/sda11/size 2>/dev/null)" = 8192 ] ||
+		json_error 'Unexpected recovery request partition size'
+	dd if=/dev/zero of=/dev/block/by-name/misc bs=2048 count=1 conv=notrunc 2>/dev/null ||
+		json_error 'Failed to clear the recovery request'
+	sync
+	actual_sha=$(dd if=/dev/block/by-name/misc bs=2048 count=1 2>/dev/null |
+		sha256sum | cut -d ' ' -f 1)
+	[ "$actual_sha" = e5a00aa9991ac8a5ee3109844d84a55583bd20572ad3ffcd42792f3c36b183ad ] ||
+		json_error 'Recovery request read-back verification failed'
+}
+
+schedule_reboot() {
+	sync
+	(sleep 1; reboot) >/dev/null 2>&1 &
+}
+
 case "${1:-}" in
 	switch)
-		[ -x "$ANDROID_ROOT$LINKER" ] || json_error 'Android linker is unavailable'
-		[ -x "$ANDROID_ROOT$SLOT_A" ] || json_error 'xm14-slot-a is unavailable'
-		[ -f "$ANDROID_ROOT$UFS_COMPAT" ] || json_error 'UFS compatibility library is unavailable'
 		require_xm14pro_ufs
 		normalize_by_name_links
-		LD_PRELOAD="$UFS_COMPAT" chroot "$ANDROID_ROOT" "$LINKER" "$SLOT_A" ||
-			json_error 'Failed to select Android slot A'
-		sync
-		(sleep 1; reboot) >/dev/null 2>&1 &
+		clear_recovery_request
+		select_android_slot_a
+		schedule_reboot
 		printf '{"ok":true}\n'
+		;;
+	recovery)
+		require_running_slot_b
+		[ -b /dev/block/by-name/misc ] || json_error 'Recovery request partition is unavailable'
+		misc_device=$(readlink -f /dev/block/by-name/misc 2>/dev/null) ||
+			json_error 'Failed to resolve recovery request partition'
+		[ "$misc_device" = /dev/sda11 ] ||
+			json_error 'Unexpected recovery request partition mapping'
+		[ "$(cat /sys/class/block/sda11/size 2>/dev/null)" = 8192 ] ||
+			json_error 'Unexpected recovery request partition size'
+		select_android_slot_a
+		printf '%-32s' boot-recovery | tr ' ' '\000' |
+			dd of=/dev/block/by-name/misc bs=32 count=1 conv=notrunc 2>/dev/null ||
+			json_error 'Failed to request recovery boot'
+		sync
+		[ "$(dd if=/dev/block/by-name/misc bs=32 count=1 2>/dev/null |
+			tr -d '\000')" = boot-recovery ] ||
+			json_error 'Recovery boot request verification failed'
+		schedule_reboot
+		printf '{"ok":true,"target":"shared-recovery"}\n'
 		;;
 	mark-successful)
 		[ -x "$ANDROID_ROOT$LINKER" ] || json_error 'Android linker is unavailable'
@@ -90,6 +138,6 @@ case "${1:-}" in
 		printf '{"ok":true,"slot":"_b","state":21}\n'
 		;;
 	*)
-		json_error 'usage: xm14pro-android-switch {switch|mark-successful}'
+		json_error 'usage: xm14pro-android-switch {switch|recovery|mark-successful}'
 		;;
 esac

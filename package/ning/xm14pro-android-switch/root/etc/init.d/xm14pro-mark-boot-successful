@@ -7,6 +7,19 @@ mark_current_nwrt_boot() {
 	grep -Eq 'androidboot\.slot_suffix[[:space:]]*=[[:space:]]*"?_b"?' \
 		/proc/bootconfig 2>/dev/null || return 0
 
+	# On this device, a B-slot reboot-to-recovery request can still enter the
+	# NWRT boot shim.  Keep the BCB request intact and hand the next boot to
+	# slot A, whose recovery selector can serve both systems.
+	if [ -b /dev/block/by-name/misc ] &&
+		[ "$(dd if=/dev/block/by-name/misc bs=32 count=1 2>/dev/null |
+			tr -d '\000')" = boot-recovery ]; then
+		logger -t xm14pro-slot 'B-slot recovery request: redirecting to shared recovery on A'
+		if /usr/libexec/xm14pro-android-switch recovery >/dev/null 2>&1; then
+			return 0
+		fi
+		logger -t xm14pro-slot 'failed to redirect B-slot recovery request to A'
+	fi
+
 	if ! /usr/libexec/xm14pro-android-switch mark-successful >/dev/null 2>&1; then
 		logger -t xm14pro-slot 'failed to mark the current B-slot NWRT boot successful'
 	fi

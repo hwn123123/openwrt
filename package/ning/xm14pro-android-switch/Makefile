@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-android-switch
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=8
+PKG_RELEASE:=13
 PKG_LICENSE:=LicenseRef-Xiaomi-Qualcomm-Proprietary
 
 # These are Android bionic executables and libraries. OpenWrt's sstrip removes
@@ -15,7 +15,7 @@ LUCI_NAME:=luci-app-xm14pro-android-switch
 LUCI_TYPE:=app
 LUCI_BASENAME:=xm14pro-android-switch
 LUCI_TITLE:=Switch Xiaomi 14 Pro to Android slot A
-LUCI_DESCRIPTION:=A single-purpose LuCI button that calls the verified Recovery slot-A command and reboots.
+LUCI_DESCRIPTION:=Switch to Android or enter the shared A/B recovery selector.
 LUCI_DEPENDS:=@TARGET_xm14pro_armv8 +luci-base +rpcd +xm14pro-qwes
 LUCI_PKGARCH:=aarch64_generic
 LUCI_MAINTAINER:=ning
