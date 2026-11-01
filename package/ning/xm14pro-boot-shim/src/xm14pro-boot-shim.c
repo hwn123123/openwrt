@@ -529,6 +529,19 @@ static int load_module_recursive(const char *path, unsigned int depth) {
      * finally soft post-dependencies. */
     load_soft_dependencies(path, true, depth);
 
+    /* UFS is itself loaded from this list. Its partitions are unavailable
+     * during the initial /dev scan, so publish them immediately before
+     * block2mtd opens the stock panic-log partition. */
+    if (strcmp(path, MODULE_DIRECTORY "/block2mtd.ko") == 0) {
+        for (unsigned int attempt = 0; attempt < 20; ++attempt) {
+            refresh_block_devices();
+            if (access("/dev/block/by-name/oops", R_OK) == 0) break;
+            usleep(100000);
+        }
+        if (access("/dev/block/by-name/oops", R_OK) != 0)
+            log_message("oops partition unavailable before block2mtd");
+    }
+
     int module = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (module < 0) {
         log_message("open module %s failed: %s", path, strerror(errno));

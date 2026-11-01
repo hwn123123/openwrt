@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-boot-shim
 PKG_VERSION:=0.25
-PKG_RELEASE:=1
+PKG_RELEASE:=3
 PKG_LICENSE:=GPL-2.0-only
 
 include $(INCLUDE_DIR)/package.mk

@@ -22,9 +22,10 @@ The static PID 1 performs this sequence:
 
 1. create a bounded static `/dev` set (the stock kernel has no `devtmpfs`) and
    mount `proc`, `sysfs` and `tmpfs`;
-2. load the stock vendor `modules.load` and `modules.load.recovery` entries in
-   dependency order so the UFS and DWC3 USB paths are both available;
-3. create `/dev/block` and `/dev/block/by-name` from sysfs partition metadata;
+2. start the stock vendor recovery module list in dependency order, including
+   the UFS controller that discovers the phone's partitions;
+3. create `/dev/block` and `/dev/block/by-name` from sysfs immediately before
+   `block2mtd` opens the `oops` partition, then finish the module list;
 4. resolve `/dev/block/by-name/linux_root` and mount it directly as ext4;
 5. move the required stock firmware mounts into the persistent root and enter
    its `/sbin/init`;
