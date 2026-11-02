@@ -43,6 +43,16 @@ Starting the provider and camera server then still returned zero camera IDs;
 the remaining helper services and Binder bridges need proper implementations.
 The temporary shim and permissive test stubs are not part of this package.
 
+The private Binder service manager must also run as Android UID 1000 after
+`chroot`: binderfs retains the first context manager UID, and launching a
+replacement as root returns `EPERM`. The camera server needs its stock
+`u:r:cameraserver:s0` domain; without it, `media.camera` is not registered.
+With those identities, the provider, sensor and allocator helpers, and the
+temporary Binder bridges registered in the private manager, but camera
+enumeration still returned zero devices and a snapshot timed out. These are
+startup findings, not a working cold-boot path. All probe processes were
+stopped after the check.
+
 To rebuild the client, set `ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` to the
 Android NDK and a matching extracted stock system library directory, then run
 `src/build-snapshot.sh`. The checked-in arm64 binary's SHA-256 is
