@@ -1,49 +1,53 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Use a friendly NWRT platform name in LuCI without changing board identity."""
+"""Keep device identity out of the public LuCI overview."""
 
 from pathlib import Path
+import re
 
 
 top = Path(__file__).resolve().parents[3]
 view = top / "feeds/luci/modules/luci-mod-status/htdocs/luci-static/resources/view/status/include/10_system.js"
 source = view.read_text(encoding="utf-8")
 
+kernel_code = (
+    "\t\tvar kernelMatch = String(boardinfo.kernel || '').match(/^\\d+\\.\\d+\\.\\d+/);\n"
+    "\t\tvar displayedKernel = kernelMatch ? 'Linux ' + kernelMatch[0] : _('unknown');\n\n"
+    "\t\tvar fields = ["
+)
 
-def patch(old: str, new: str, marker: str = "") -> None:
-    global source
-    if (marker or new) in source:
-        return
-    if source.count(old) != 1:
-        raise SystemExit(f"refusing to patch changed LuCI system view: {view}")
-    source = source.replace(old, new, 1)
+if "var kernelMatch = String(boardinfo.kernel || '')" not in source:
+    # Replace the older patch as a whole so its model and Android wording
+    # cannot survive when this installer is rerun on an existing build tree.
+    source, legacy_count = re.subn(
+        r"\t\tvar target = L\.isObject\(boardinfo\.release\).*?\t\tvar fields = \[",
+        lambda _: kernel_code,
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if not legacy_count:
+        old = "\t\tvar fields = ["
+        if source.count(old) != 1:
+            raise SystemExit(f"refusing to patch changed LuCI system view: {view}")
+        source = source.replace(old, kernel_code, 1)
 
+for row in (
+    "\t\t\t_('Model'),            boardinfo.model,\n",
+    "\t\t\t_('Target Platform'),  displayedTarget,\n",
+    "\t\t\t_('Target Platform'),  (L.isObject(boardinfo.release) ? boardinfo.release.target : ''),\n",
+):
+    source = source.replace(row, "")
 
-patch(
-    "\t\tvar fields = [",
-    "\t\tvar target = L.isObject(boardinfo.release) ? boardinfo.release.target : '';\n"
-    "\t\tvar displayedTarget = target === 'xm14pro/armv8' ? 'NWRT · Xiaomi 14 Pro' : target;\n\n"
-    "\t\tvar fields = [",
-    "var displayedTarget = target === 'xm14pro/armv8'",
-)
-patch(
-    "\t\tvar fields = [",
-    "\t\tvar stockKernel = target === 'xm14pro/armv8' && /^6\\.1\\.138-android14-/.test(boardinfo.kernel || '');\n"
-    "\t\tvar displayedKernel = stockKernel ? E('details', { 'title': boardinfo.kernel }, [\n"
-    "\t\t\tE('summary', {}, '6.1.138 · 小米原厂内核（NWRT 适配）'),\n"
-    "\t\t\tE('code', {}, boardinfo.kernel)\n"
-    "\t\t]) : boardinfo.kernel;\n\n"
-    "\t\tvar fields = [",
-    "var displayedKernel = stockKernel",
-)
-patch(
-    "\t\t\t_('Target Platform'),  (L.isObject(boardinfo.release) ? boardinfo.release.target : ''),",
-    "\t\t\t_('Target Platform'),  displayedTarget,",
-)
-patch(
-    "\t\t\t_('Kernel Version'),   boardinfo.kernel,",
-    "\t\t\t_('Kernel Version'),   displayedKernel,",
-)
+old_kernel = "\t\t\t_('Kernel Version'),   boardinfo.kernel,"
+new_kernel = "\t\t\t_('Kernel Version'),   displayedKernel,"
+if old_kernel in source:
+    source = source.replace(old_kernel, new_kernel, 1)
+elif new_kernel not in source:
+    raise SystemExit(f"refusing to patch changed LuCI kernel row: {view}")
+
+if "_('Target Platform')" in source or "_('Model')" in source:
+    raise SystemExit(f"device identity row remains in LuCI system view: {view}")
 
 view.write_text(source, encoding="utf-8")
-print("installed LuCI NWRT platform label; board target and running kernel remain unchanged")
+print("removed LuCI device identity rows; running kernel version remains truthful")

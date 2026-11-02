@@ -1,6 +1,6 @@
 {
 	"xm14pro-wifi-clients": {
-		"description": "Read associated clients on the Xiaomi 14 Pro access point",
+		"description": "Read associated clients on the NWRT access point",
 		"read": {
 			"ubus": {
 				"hostapd.nwrt-ap": [ "get_clients" ]

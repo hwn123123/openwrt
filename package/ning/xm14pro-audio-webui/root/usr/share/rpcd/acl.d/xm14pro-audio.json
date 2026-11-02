@@ -1,6 +1,6 @@
 {
 	"xm14pro-audio": {
-		"description": "管理小米 14 Pro 音频与通话声路",
+		"description": "管理音频与通话声路",
 		"read": {
 			"uci": [ "xm14audio" ],
 			"file": {

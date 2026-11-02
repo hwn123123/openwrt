@@ -1,6 +1,6 @@
 {
 	"xm14pro-peripherals": {
-		"description": "管理小米 14 Pro NFC 与红外功能",
+		"description": "管理 NFC 与红外功能",
 		"read": {
 			"uci": [ "xm14peripherals" ],
 			"file": {
