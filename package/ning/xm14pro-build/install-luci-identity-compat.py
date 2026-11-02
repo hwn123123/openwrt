@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Keep device identity out of the public LuCI overview."""
+"""Keep hardware identity out of the LuCI overview without changing ubus."""
 
 from pathlib import Path
 import re
@@ -32,12 +32,19 @@ if "var kernelMatch = String(boardinfo.kernel || '')" not in source:
             raise SystemExit(f"refusing to patch changed LuCI system view: {view}")
         source = source.replace(old, kernel_code, 1)
 
+source = source.replace("\t\t\t_('Model'),            boardinfo.model,\n", "")
+
+target_row = "\t\t\t_('Target Platform'),  'nwrt/openwrt',\n"
 for row in (
-    "\t\t\t_('Model'),            boardinfo.model,\n",
     "\t\t\t_('Target Platform'),  displayedTarget,\n",
     "\t\t\t_('Target Platform'),  (L.isObject(boardinfo.release) ? boardinfo.release.target : ''),\n",
 ):
-    source = source.replace(row, "")
+    source = source.replace(row, target_row)
+if target_row not in source:
+    architecture_row = "\t\t\t_('Architecture'),     boardinfo.system,\n"
+    if source.count(architecture_row) != 1:
+        raise SystemExit(f"refusing to patch changed LuCI architecture row: {view}")
+    source = source.replace(architecture_row, architecture_row + target_row, 1)
 
 old_kernel = "\t\t\t_('Kernel Version'),   boardinfo.kernel,"
 new_kernel = "\t\t\t_('Kernel Version'),   displayedKernel,"
@@ -46,8 +53,8 @@ if old_kernel in source:
 elif new_kernel not in source:
     raise SystemExit(f"refusing to patch changed LuCI kernel row: {view}")
 
-if "_('Target Platform')" in source or "_('Model')" in source:
-    raise SystemExit(f"device identity row remains in LuCI system view: {view}")
+if source.count(target_row) != 1 or "_('Model')" in source:
+    raise SystemExit(f"unexpected LuCI identity rows: {view}")
 
 view.write_text(source, encoding="utf-8")
-print("removed LuCI device identity rows; running kernel version remains truthful")
+print("LuCI target label is nwrt/openwrt; board target and running kernel remain unchanged")
