@@ -3,7 +3,8 @@
 		"description": "查看并启动小米 14 Pro 摄像头内核驱动",
 		"read": {
 			"file": {
-				"/usr/libexec/xm14pro-camera/control": [ "list", "exec" ]
+				"/usr/libexec/xm14pro-camera/control": [ "list", "exec" ],
+				"/tmp/xm14pro-camera/*": [ "read" ]
 			}
 		},
 		"write": {

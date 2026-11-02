@@ -3,7 +3,38 @@
 
 MODULE_DIR=/usr/lib/xm14pro/camera-modules
 KERNEL=6.1.138-android14-11-g0c3d559bcd85-ab14529422
+CAMERA_ROOT=/mnt/nwrt-data/camera-android-root
+SNAPSHOT_BIN=/usr/libexec/xm14pro-camera/camera-snapshot
+SNAPSHOT_DIR=/tmp/xm14pro-camera
 . /usr/share/libubox/jshn.sh
+
+capture_services_ready() {
+	[ -x "$SNAPSHOT_BIN" ] && [ -x "$CAMERA_ROOT/system/bin/bootstrap/linker64" ] &&
+		[ -e "$CAMERA_ROOT/dev/binder" ] &&
+		ps w | grep -q '[c]ameraserver' &&
+		ps w | grep -q '[v]endor.qti.camera.provider-service_64'
+}
+
+add_cameras() {
+	json_add_array cameras
+	json_add_object ''
+	json_add_string id 1
+	json_add_string name '前置'
+	json_close_object
+	json_add_object ''
+	json_add_string id 2
+	json_add_string name '主摄'
+	json_close_object
+	json_add_object ''
+	json_add_string id 3
+	json_add_string name '超广角'
+	json_close_object
+	json_add_object ''
+	json_add_string id 4
+	json_add_string name '长焦'
+	json_close_object
+	json_close_array
+}
 
 module_loaded() {
 	local name="${1%.ko}"
@@ -48,9 +79,58 @@ status() {
 	json_add_int media_nodes "$media"
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
-	json_add_boolean capture_ready 0
-	json_add_string capture_detail '相机取流服务尚未接入；驱动节点不等于可拍照'
+	if capture_services_ready; then
+		json_add_boolean capture_ready 1
+		json_add_string capture_detail '四颗独立镜头可逐帧拍照；逻辑多摄与录像仍在适配'
+	else
+		json_add_boolean capture_ready 0
+		json_add_string capture_detail '相机取流服务未就绪；请检查私有 Android 相机服务'
+	fi
+	add_cameras
 	json_add_string last_kernel_error "$last_error"
+	json_dump
+}
+
+snapshot() {
+	local id="$1" temp output capture_log rc
+	case "$id" in
+		1|2|3|4) ;;
+		*) fail '无效摄像头：可选 1、2、3、4' ;;
+	esac
+	capture_services_ready || fail '相机取流服务未就绪'
+	mkdir -p "$SNAPSHOT_DIR" || fail '无法创建拍照目录'
+	chmod 700 "$SNAPSHOT_DIR"
+	if ! mkdir "$SNAPSHOT_DIR/.capture-lock" 2>/dev/null; then
+		fail '另一张照片正在拍摄，请稍后再试'
+	fi
+	trap 'rmdir "$SNAPSHOT_DIR/.capture-lock" 2>/dev/null' EXIT INT TERM
+	# Run only inside the isolated Android root. Never remount or modify slot A.
+	if ! cmp -s "$SNAPSHOT_BIN" "$CAMERA_ROOT/data/local/tmp/xm14pro-camera-snapshot"; then
+		cp "$SNAPSHOT_BIN" "$CAMERA_ROOT/data/local/tmp/xm14pro-camera-snapshot" || fail '无法部署拍照程序'
+		chmod 755 "$CAMERA_ROOT/data/local/tmp/xm14pro-camera-snapshot"
+	fi
+	temp="/data/local/tmp/xm14pro-frame-$id.jpg"
+	output="$SNAPSHOT_DIR/frame-$id.jpg"
+	capture_log="$SNAPSHOT_DIR/capture-$id.log"
+	rm -f "$CAMERA_ROOT$temp" "$output"
+	env ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_I18N_ROOT=/apex/com.android.i18n \
+		XM14_PROPERTY_SERVICE_ABSENT=1 XM14_BINDER_MANAGERS_READY=1 \
+		LD_LIBRARY_PATH=/apex/com.android.os.statsd/lib64:/apex/com.android.i18n/lib64:/system/lib64:/vendor/lib64:/odm/lib64:/system_ext/lib64 \
+		LD_PRELOAD=/system/lib64/libcamera-am-test.so:/system/lib64/libcamera-permission-test.so:/vendor/lib64/libxm14pro_telephony_compat.so:/vendor/lib64/libxm14pro_audio_properties.so \
+		timeout 30 chroot "$CAMERA_ROOT" /system/bin/bootstrap/linker64 \
+		/data/local/tmp/xm14pro-camera-snapshot "$id" "$temp" >"$capture_log" 2>&1
+	rc=$?
+	if [ "$rc" -ne 0 ] || [ ! -s "$CAMERA_ROOT$temp" ]; then
+		fail "拍照失败（代码 $rc）：$(tail -n 2 "$capture_log" | tr '\n' ' ' | cut -c 1-180)"
+	fi
+	cp "$CAMERA_ROOT$temp" "$output.tmp" || fail '无法保存照片'
+	mv -f "$output.tmp" "$output"
+	chmod 600 "$output"
+	json_init
+	json_add_boolean ok 1
+	json_add_string mime image/jpeg
+	json_add_string path "$output"
+	json_add_string camera "$id"
 	json_dump
 }
 
@@ -88,6 +168,9 @@ case "${1:-status}" in
 		[ -s /usr/lib/firmware/CAMERA_ICP.mbn ] || fail '缺少相机 ICP 固件'
 		[ -s /usr/lib/firmware/evass.mbn ] || fail '缺少相机 EVA 固件'
 		status
+		;;
+	snapshot)
+		snapshot "${2:-}"
 		;;
 	*)
 		fail '不支持的摄像头操作'
