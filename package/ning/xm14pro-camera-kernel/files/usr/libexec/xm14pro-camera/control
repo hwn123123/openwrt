@@ -20,8 +20,9 @@ count_nodes() {
 }
 
 status() {
-	local camera=0 media video subdev last_error
+	local camera=0 firmware=0 media video subdev last_error
 	module_loaded camera.ko && camera=1
+	[ -s /usr/lib/firmware/CAMERA_ICP.mbn ] && firmware=1
 	media="$(count_nodes /dev/media)"
 	video="$(count_nodes /dev/video)"
 	subdev="$(count_nodes /dev/v4l-subdev)"
@@ -29,6 +30,7 @@ status() {
 	json_init
 	json_add_boolean ok 1
 	json_add_boolean driver_loaded "$camera"
+	json_add_boolean firmware_ready "$firmware"
 	json_add_int media_nodes "$media"
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
@@ -68,6 +70,7 @@ case "${1:-status}" in
 			load_module "$file"
 		done
 		[ -e /dev/video0 ] || fail '摄像头模块已加载，但设备节点未出现'
+		[ -s /usr/lib/firmware/CAMERA_ICP.mbn ] || fail '缺少相机 ICP 固件'
 		status
 		;;
 	*)

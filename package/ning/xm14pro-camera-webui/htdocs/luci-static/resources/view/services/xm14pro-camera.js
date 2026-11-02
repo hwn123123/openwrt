@@ -51,6 +51,7 @@ function content(data, update) {
 		E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, '硬件状态'),
 			row('内核驱动', loaded ? '已加载' : '未加载'),
+			row('ICP 固件', data.firmware_ready ? '已安装' : '缺失'),
 			row('媒体设备', String(data.media_nodes || 0)),
 			row('视频设备', String(data.video_nodes || 0)),
 			row('摄像头子设备', String(data.subdevices || 0)),
