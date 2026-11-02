@@ -53,7 +53,11 @@ end=$(( $(date +%s) + duration ))
 while discharging && [ "$(date +%s)" -le "$end" ]; do
 	cell=$(cellular_interface)
 	[ -n "$cell" ] || cell=-
-	clients=$(iw dev nwrt-ap station dump 2>/dev/null | awk '/^Station / {n++} END {print n+0}')
+	# The Xiaomi cfg80211 station dump overruns the final peer and floods
+	# the kernel log. hostapd already has the authoritative AP client cache.
+	clients=$(ubus call hostapd.nwrt-ap get_clients 2>/dev/null |
+		jsonfilter -e '@.clients.*.authorized' 2>/dev/null |
+		awk '$0 == "true" {n++} END {print n+0}')
 	radio=$(/usr/libexec/xm14pro-modem/control status 2>/dev/null)
 	radio_mode=$(jsonfilter -s "$radio" -e '@.access_technologies' 2>/dev/null | tr ',\n\r' ';  ')
 	[ -n "$radio_mode" ] || radio_mode=-
