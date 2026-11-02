@@ -41,10 +41,10 @@ msgid "Diagnostics"
 msgstr "诊断日志"
 
 msgid "All values below come from the live nwrt backend. Missing data stays unknown."
-msgstr "以下数值全部来自当前 nwrt 后端；读不到的数据明确标为暂不可读。"
+msgstr "以下数值全部来自当前 NWRT 后端；读不到的数据明确标为暂不可读。"
 
 msgid "Verified phone behaviour"
-msgstr "已验证的手机行为"
+msgstr "已验证的设备行为"
 
 msgid "Function"
 msgstr "功能"
@@ -53,7 +53,7 @@ msgid "Android evidence"
 msgstr "安卓日志证据"
 
 msgid "nwrt implementation"
-msgstr "nwrt 实现状态"
+msgstr "NWRT 实现状态"
 
 msgid "Modem"
 msgstr "基带"
@@ -104,10 +104,10 @@ msgid "Voice calls and IMS"
 msgstr "语音通话与 IMS"
 
 msgid "Requires a native QMI WMS / Qualcomm IMS bridge in nwrt"
-msgstr "需要在 nwrt 中实现原生 QMI WMS / Qualcomm IMS 桥接层"
+msgstr "需要在 NWRT 中实现原生 QMI WMS / Qualcomm IMS 桥接层"
 
 msgid "Requires the RadioVoice / Qualcomm IMS execution layer in nwrt"
-msgstr "需要在 nwrt 中移植 RadioVoice / Qualcomm IMS 执行层"
+msgstr "需要在 NWRT 中移植 RadioVoice / Qualcomm IMS 执行层"
 
 msgid "QRTR is live, but ModemManager has not created a modem object"
 msgstr "QRTR 已运行，但 ModemManager 尚未创建基带对象"
@@ -158,10 +158,10 @@ msgid "Android path confirmed by capture"
 msgstr "安卓原厂路径已由日志确认"
 
 msgid "The stock system selected carrier profiles dynamically, created IMS and internet contexts, issued SETUP_DATA_CALL, and attached the resulting rmnet route. nwrt must reproduce this path through its phone-specific compatibility layer; it must not use a fixed APN or Quectel AT activation."
-msgstr "原厂系统会动态选择运营商配置，建立 IMS 和上网上下文，发起 SETUP_DATA_CALL，再接入 rmnet 路由。nwrt 必须通过手机专用兼容层复现该路径，不能使用固定 APN 或 Quectel AT 激活。"
+msgstr "原厂系统会动态选择运营商配置，建立 IMS 和上网上下文，发起 SETUP_DATA_CALL，再接入 rmnet 路由。NWRT 通过设备兼容层复现该路径，不能使用固定 APN 或 Quectel AT 激活。"
 
 msgid "Radio controls operate only through the detected phone-modem backend."
-msgstr "无线电控制只能对已真实发现的手机基带执行。"
+msgstr "无线电控制只能对已真实发现的设备基带执行。"
 
 msgid "Enable airplane mode"
 msgstr "开启飞行模式"
@@ -203,10 +203,10 @@ msgid "Data SIM saved; it takes effect on the next radio-stack start."
 msgstr "数据卡槽已保存，将在下次启动无线电栈时生效。"
 
 msgid "No active nwrt voice transport"
-msgstr "nwrt 语音传输尚未接通"
+msgstr "NWRT 语音传输尚未接通"
 
 msgid "No active nwrt SMS transport"
-msgstr "nwrt 短信传输尚未接通"
+msgstr "NWRT 短信传输尚未接通"
 
 msgid "Voice calls"
 msgstr "语音通话"
@@ -263,7 +263,7 @@ msgid "SMSC and cell broadcast"
 msgstr "短信中心与小区广播"
 
 msgid "Voice and IMS are separate from mobile-data dialing and use the phone vendor IMS path."
-msgstr "语音与 IMS 独立于移动数据拨号，它们使用手机厂商 IMS 路径。"
+msgstr "语音与 IMS 独立于移动数据拨号，它们使用小米 IMS 路径。"
 
 msgid "Cellular details"
 msgstr "蜂窝详细信息"
@@ -353,7 +353,7 @@ msgid "Current call"
 msgstr "当前通话"
 
 msgid "Phone functions covered"
-msgstr "本页覆盖的手机通话功能"
+msgstr "本页覆盖的通话功能"
 
 msgid "Outgoing and incoming calls"
 msgstr "呼出与来电"
@@ -413,7 +413,7 @@ msgid "Identifiers are read from the live modem object; unavailable values remai
 msgstr "设备标识直接从实时基带对象读取；读不到时保持空白。"
 
 msgid "Phone modem"
-msgstr "手机基带"
+msgstr "设备基带"
 
 msgid "Own number"
 msgstr "本机号码"
@@ -428,7 +428,7 @@ msgid "Privacy"
 msgstr "隐私"
 
 msgid "Read-only live diagnostics for the phone modem stack."
-msgstr "手机基带协议栈的只读实时诊断。"
+msgstr "设备基带协议栈的只读实时诊断。"
 
 msgid "Backend health"
 msgstr "后端健康状态"
@@ -491,7 +491,7 @@ msgid "Hang up"
 msgstr "挂断"
 
 msgid "Live status from the Xiaomi phone modem compatibility layer."
-msgstr "来自小米手机基带兼容层的实时状态。"
+msgstr "来自小米基带兼容层的实时状态。"
 
 msgid "Device status"
 msgstr "设备状态"
@@ -683,7 +683,7 @@ msgid "Device and backend"
 msgstr "设备与后端"
 
 msgid "Phone services"
-msgstr "手机服务"
+msgstr "通信服务"
 
 msgid "Signal and serving cell"
 msgstr "信号与服务小区"
@@ -725,13 +725,13 @@ msgid "SMS sending is unavailable"
 msgstr "短信发送当前不可用"
 
 msgid "The current nwrt backend has no active SMS transport."
-msgstr "当前 nwrt 后端尚无可用的短信传输通道。"
+msgstr "当前 NWRT 后端尚无可用的短信传输通道。"
 
 msgid "Calling is unavailable"
 msgstr "通话当前不可用"
 
 msgid "The current nwrt backend has no active voice transport."
-msgstr "当前 nwrt 后端尚无可用的语音传输通道。"
+msgstr "当前 NWRT 后端尚无可用的语音传输通道。"
 
 msgid "Device and diagnostics"
 msgstr "设备与诊断"
@@ -1291,7 +1291,7 @@ msgid "%s Wi-Fi clients"
 msgstr "%s 个 Wi-Fi 客户端"
 
 msgid "Real-time data from nwrt device interfaces"
-msgstr "数据来自 nwrt 设备实时接口"
+msgstr "数据来自 NWRT 设备实时接口"
 
 msgid "Refresh interval: 3 seconds"
 msgstr "刷新间隔：3 秒"
@@ -1300,7 +1300,7 @@ msgid "Stored message query"
 msgstr "本机短信存储查询"
 
 msgid "Rejected by phone firmware"
-msgstr "手机基带固件已拒绝"
+msgstr "基带固件已拒绝"
 
 msgid "Stored messages"
 msgstr "已存储短信"
@@ -1579,7 +1579,7 @@ msgid "Incoming"
 msgstr "来电"
 
 msgid "Kernel"
-msgstr "内核"
+msgstr "当前运行内核"
 
 msgid "LTE band capabilities"
 msgstr "LTE 频段能力"
@@ -1819,7 +1819,7 @@ msgid "Modem status"
 msgstr "基带状态"
 
 msgid "Native phone baseband"
-msgstr "手机原生基带"
+msgstr "原生基带"
 
 msgid "APN and data"
 msgstr "APN 与数据"
@@ -1897,7 +1897,7 @@ msgid "Cellular traffic"
 msgstr "蜂窝流量"
 
 msgid "nwrt runtime"
-msgstr "nwrt 运行时间"
+msgstr "NWRT 运行时间"
 
 msgid "Recent modem and CPE events"
 msgstr "最近的基带与 CPE 事件"

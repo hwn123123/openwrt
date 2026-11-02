@@ -146,7 +146,7 @@ msgid "Display settings"
 msgstr "显示设置"
 
 msgid "Enable phone screen"
-msgstr "启用手机屏幕"
+msgstr "启用设备屏幕"
 
 msgid "Start the native display service at boot"
 msgstr "开机自动启动原生屏幕服务"
