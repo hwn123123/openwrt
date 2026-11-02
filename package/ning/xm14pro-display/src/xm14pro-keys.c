@@ -24,6 +24,7 @@
 #define OVERLAY_FILE DISPLAY_RUN "/volume-overlay"
 #define SCREEN_OFF_FILE DISPLAY_RUN "/off"
 #define POWER_SLEEP_LOCK DISPLAY_RUN "/power-sleep-lock"
+#define POWER_MENU_FILE DISPLAY_RUN "/power-menu"
 #define CALL_ACTIVE_FILE "/var/run/xm14telephony/call-active"
 
 struct key_input {
@@ -46,6 +47,7 @@ static struct timespec power_down;
 static struct timespec last_power_action;
 static struct timespec last_wake_press;
 static bool power_held;
+static bool long_press_handled;
 static int wake_press_count;
 static bool persist_pending;
 static struct timespec persist_after;
@@ -290,6 +292,10 @@ static void persist_volumes(void)
 
 static void toggle_screen(void)
 {
+	if (access(POWER_MENU_FILE, F_OK) == 0) {
+		run_detached("/usr/libexec/xm14pro-display", "power-cancel", NULL, NULL);
+		return;
+	}
 	if (!screen_is_lit()) {
 		unlink(POWER_SLEEP_LOCK);
 		run_detached("/usr/libexec/xm14pro-display", "wake", NULL, NULL);
@@ -422,16 +428,17 @@ static void handle_key(unsigned int code, int value,
 	if (code != KEY_POWER)
 		return;
 	if (value == 1) {
-		power_button_enabled = read_display_boolean("power_button", true);
-		if (!power_button_enabled) {
-			power_held = false;
+		if (power_held)
 			return;
-		}
+		power_button_enabled = read_display_boolean("power_button", true);
 		power_held = true;
+		long_press_handled = false;
 		power_down = *now;
 	} else if (value == 0 && power_held) {
 		power_held = false;
-		if (seconds_between(now, &power_down) < 1.2)
+		if ((power_button_enabled || access(POWER_MENU_FILE, F_OK) == 0) &&
+		    !long_press_handled &&
+		    seconds_between(now, &power_down) < 1.2)
 			handle_power_short_press(now);
 	}
 }
@@ -491,6 +498,12 @@ int main(void)
 				;
 			clock_gettime(CLOCK_MONOTONIC, &now);
 			expire_wake_sequence(&now);
+			if (power_held && !long_press_handled &&
+			    seconds_between(&now, &power_down) >= 1.2) {
+				long_press_handled = true;
+				reset_wake_sequence();
+				run_detached("/usr/libexec/xm14pro-display", "power-menu", NULL, NULL);
+			}
 			if (result < 0 && errno != EINTR)
 				break;
 			for (int index = 0; index < count; index++) {

@@ -175,7 +175,9 @@ return view.extend({
 				return uci.apply();
 			}).then(function() {
 				if (name === 'enabled') return run(String(value) === '1' ? 'start' : 'stop');
-				return run('apply');
+				// uci.apply() already triggers xm14pro-display.reload_service().
+				// Calling apply again makes brightness and wake settings race.
+				return null;
 			});
 			commitQueue = task;
 			return task;

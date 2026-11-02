@@ -5,6 +5,8 @@
 
 BACKLIGHT=/sys/class/backlight/panel0-backlight
 RUN=/var/run/xm14display
+POWER_MENU=$RUN/power-menu
+POWER_CHOICE=$RUN/power-choice
 MODEM=/usr/libexec/xm14pro-modem/control
 
 config_value() {
@@ -35,6 +37,7 @@ set_brightness() {
 	[ "$max" -gt 0 ] 2>/dev/null || return 1
 	value=$((max * percent / 100))
 	[ "$percent" -eq 0 ] || [ "$value" -gt 0 ] || value=1
+	[ "$(cat "$BACKLIGHT/brightness" 2>/dev/null)" = "$value" ] && return 0
 	printf '%s\n' "$value" > "$BACKLIGHT/brightness"
 }
 
@@ -167,9 +170,12 @@ apply_config() {
 		# Applying settings while the panel is already lit counts as activity,
 		# but it must never wake a sleeping panel on its own.
 		touch "$RUN/wake"
-		set_brightness "$brightness" || true
 	fi
-	pkill -HUP -f '/usr/sbin/xm14pro-screen' >/dev/null 2>&1 || true
+	# The screen renderer owns backlight writes. Its HUP handler reloads the
+	# new setting and applies it once, so the old cached value cannot undo it.
+	for pid in $(pidof xm14pro-screen 2>/dev/null); do
+		kill -HUP "$pid" 2>/dev/null || true
+	done
 	printf '{"ok":true}\n'
 }
 
@@ -202,6 +208,39 @@ select_page() {
 	printf '{"ok":true}\n'
 }
 
+power_menu() {
+	mkdir -p "$RUN" || return 1
+	rm -f "$POWER_CHOICE" "$RUN/off"
+	: > "$POWER_MENU" || return 1
+	touch "$RUN/wake"
+	set_brightness "$(config_value brightness)" || true
+	printf '{"ok":true}\n'
+}
+
+power_choose() {
+	[ -e "$POWER_MENU" ] || { printf '{"ok":false,"error":"power menu closed"}\n'; return 1; }
+	case "$1" in reboot|poweroff) ;; *) printf '{"ok":false,"error":"invalid power choice"}\n'; return 1 ;; esac
+	printf '%s\n' "$1" > "$POWER_CHOICE" || return 1
+	printf '{"ok":true}\n'
+}
+
+power_cancel() {
+	rm -f "$POWER_CHOICE" "$POWER_MENU"
+	printf '{"ok":true}\n'
+}
+
+power_confirm() {
+	local choice
+	[ -e "$POWER_MENU" ] && [ -r "$POWER_CHOICE" ] || {
+		printf '{"ok":false,"error":"no power action selected"}\n'; return 1
+	}
+	choice="$(cat "$POWER_CHOICE")"
+	case "$choice" in reboot|poweroff) ;; *) printf '{"ok":false,"error":"invalid power choice"}\n'; return 1 ;; esac
+	rm -f "$POWER_CHOICE" "$POWER_MENU"
+	printf '{"ok":true}\n'
+	(sleep 1; "/sbin/$choice") </dev/null >/dev/null 2>&1 &
+}
+
 case "${1:-status}" in
 	status) status ;;
 	apply) apply_config ;;
@@ -224,6 +263,10 @@ case "${1:-status}" in
 		/usr/libexec/xm14pro-speedtest start >/dev/null 2>&1
 		printf '{"ok":true}\n'
 		;;
-	*) printf '{"ok":false,"error":"usage: xm14pro-display {status|apply|wake|sleep|page N|start|stop|restart|speedtest}"}\n'; exit 2 ;;
+	power-menu) power_menu ;;
+	power-choose) power_choose "${2:-}" ;;
+	power-cancel) power_cancel ;;
+	power-confirm) power_confirm ;;
+	*) printf '{"ok":false,"error":"usage: xm14pro-display {status|apply|wake|sleep|page N|start|stop|restart|speedtest|power-menu|power-choose reboot|power-choose poweroff|power-cancel|power-confirm}"}\n'; exit 2 ;;
 esac
 

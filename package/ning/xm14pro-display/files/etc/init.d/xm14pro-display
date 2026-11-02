@@ -12,6 +12,7 @@ start_service() {
 	config_get_bool boot_animation main boot_animation 1
 	[ "$enabled" -eq 1 ] || return 0
 	mkdir -p /var/run/xm14display
+	rm -f /var/run/xm14display/power-menu /var/run/xm14display/power-choice
 
 	# Remove the obsolete terminal renderer before claiming the two DSI halves.
 	for pid in $(pgrep -f '/usr/bin/kmscon.*xm14pro-screen' 2>/dev/null); do

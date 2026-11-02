@@ -38,6 +38,8 @@
 #define TAKEOVER_COMPLETE_FILE "/run/xm14display/takeover-complete"
 #define EARLY_SPLASH_STOP_FILE "/run/xm14display/early-splash-stop"
 #define VOLUME_OVERLAY_FILE "/var/run/xm14display/volume-overlay"
+#define POWER_MENU_FILE "/var/run/xm14display/power-menu"
+#define POWER_CHOICE_FILE "/var/run/xm14display/power-choice"
 #define EXTERNAL_REFRESH_FILE "/var/run/xm14display/refresh"
 #define BOOT_LOG_LINES 74
 #define BOOT_LOG_LENGTH 112
@@ -262,6 +264,7 @@ static void fit_text(struct canvas *c, int x, int y, int width,
                      const char *value, int size, uint32_t color);
 
 static volatile sig_atomic_t running = 1;
+static volatile sig_atomic_t reload_requested;
 static bool early_handoff_requested;
 static int footer_scroll_px;
 static int active_page_count = BASE_PAGE_COUNT;
@@ -2679,6 +2682,37 @@ static void touch_key(struct canvas *c, int x, int y, int w, int h,
     centered_text(c, x + w / 2, y + (h - 48) / 2, label, 42, color);
 }
 
+static int power_menu_choice(void) {
+    FILE *file = fopen(POWER_CHOICE_FILE, "r");
+    char choice[16] = "";
+    if (!file) return 0;
+    if (!fgets(choice, sizeof(choice), file)) choice[0] = 0;
+    fclose(file);
+    if (!strncmp(choice, "reboot", 6)) return 1;
+    if (!strncmp(choice, "poweroff", 8)) return 2;
+    return 0;
+}
+
+static void draw_power_menu(struct canvas *c) {
+    int choice = power_menu_choice();
+    blend_round_rect(c, 0, 0, c->width, c->height, 0, C_BLACK, 220);
+    framed_round_rect(c, 120, 960, 1200, 1240, 72, 4, C_BORDER, C_CARD_2);
+    centered_text(c, 720, 1050, choice ? "确认电源操作" : "电源菜单", 68, C_WHITE);
+    centered_text(c, 720, 1165,
+                  choice == 1 ? "确定重启 NWRT？" :
+                  choice == 2 ? "确定关闭设备？" :
+                  "选择操作，短按电源键可取消", 35, C_MUTED);
+    if (choice) {
+        touch_key(c, 220, 1540, 1000, 180,
+                  choice == 1 ? "确认重启" : "确认关机", C_CYAN, true);
+        touch_key(c, 220, 1790, 1000, 170, "取消", C_WHITE, false);
+    } else {
+        touch_key(c, 220, 1300, 1000, 180, "重新启动", C_CYAN, false);
+        touch_key(c, 220, 1540, 1000, 180, "关机", C_GREEN, false);
+        touch_key(c, 220, 1790, 1000, 170, "取消", C_WHITE, false);
+    }
+}
+
 static const char *delivery_label(const char *delivery) {
     if (!strcmp(delivery, "delivered")) return "已送达";
     if (!strcmp(delivery, "failed")) return "送达失败";
@@ -2855,7 +2889,7 @@ static int current_footer_position(int start, bool dragging) {
     return position;
 }
 
-static void render(struct canvas *c, const struct live_data *data,
+static void render_page(struct canvas *c, const struct live_data *data,
                    double rx_rate, double tx_rate, int page) {
     if (page == 1) { draw_network_page(c, data); return; }
     if (page == 2) { draw_speedtest_page(c, data, rx_rate, tx_rate); return; }
@@ -2878,6 +2912,12 @@ static void render(struct canvas *c, const struct live_data *data,
     draw_device(c, data);
     draw_qr_card(c);
     draw_footer(c, 0);
+}
+
+static void render(struct canvas *c, const struct live_data *data,
+                   double rx_rate, double tx_rate, int page) {
+    render_page(c, data, rx_rate, tx_rate, page);
+    if (access(POWER_MENU_FILE, F_OK) == 0) draw_power_menu(c);
 }
 
 static int read_integer_file(const char *path) {
@@ -3109,6 +3149,7 @@ static bool screen_is_awake(const struct live_data *data) {
     struct stat wake;
     time_t now = time(NULL);
     if (access("/var/run/xm14display/off", F_OK) == 0) return false;
+    if (access(POWER_MENU_FILE, F_OK) == 0) return true;
     if (!data->always_on && stat("/var/run/xm14display/wake", &wake) == 0 &&
         now - wake.st_mtime >= data->screen_timeout) return false;
     return true;
@@ -3121,6 +3162,11 @@ static void apply_backlight(const struct live_data *data) {
 static void stop_handler(int signal_number) {
     (void)signal_number;
     running = 0;
+}
+
+static void reload_handler(int signal_number) {
+    (void)signal_number;
+    reload_requested = 1;
 }
 
 static int create_state_file(const char *path) {
@@ -3422,6 +3468,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     size_t frame_size = (size_t)display->buffers[0].pitch * display->height;
     uint32_t *overlay_base = malloc(frame_size);
     bool overlay_visible = false;
+    bool power_menu_was_visible = access(POWER_MENU_FILE, F_OK) == 0;
+    int previous_power_choice = power_menu_choice();
     char sampled_speed_phase[24] = "";
     double rx_rate = 0.0, tx_rate = 0.0;
     load_data(&data);
@@ -3481,6 +3529,11 @@ static int run_dashboard(struct display *display, bool already_modeset) {
               16667U : 100000U));
         usleep(wait_us);
         if (!running) break;
+		if (reload_requested) {
+			reload_requested = 0;
+			load_data(&data);
+			apply_backlight(&data);
+		}
 
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -3498,6 +3551,27 @@ static int run_dashboard(struct display *display, bool already_modeset) {
             volume_overlay.active = false;
             overlay_visible = false;
             continue;
+        }
+
+        bool power_menu_visible = access(POWER_MENU_FILE, F_OK) == 0;
+        int selected_power_choice = power_menu_visible ? power_menu_choice() : 0;
+        if (power_menu_visible || power_menu_was_visible) {
+            if (power_menu_visible != power_menu_was_visible ||
+                selected_power_choice != previous_power_choice) {
+                int next = display->visible ? 0 : 1;
+                struct canvas canvas = {display->width, display->height,
+                                        display->buffers[next].pitch,
+                                        display->buffers[next].pixels};
+                render(&canvas, &data, rx_rate, tx_rate, previous_page);
+                if (present(display, next, false) != 0)
+                    fprintf(stderr, "xm14pro-screen: power menu frame failed: %s\n",
+                            strerror(errno));
+                overlay_visible = false;
+            }
+            power_menu_was_visible = power_menu_visible;
+            previous_power_choice = selected_power_choice;
+            was_awake = true;
+            if (power_menu_visible) continue;
         }
 
         bool overlay_changed = update_volume_overlay(&now);
@@ -3779,7 +3853,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
 int main(int argc, char **argv) {
     signal(SIGINT, stop_handler);
     signal(SIGTERM, stop_handler);
-    signal(SIGHUP, SIG_IGN);
+    signal(SIGHUP, reload_handler);
     mkdir("/var/run/xm14display", 0755);
     int wake = open("/var/run/xm14display/wake", O_WRONLY | O_CREAT, 0644);
     if (wake >= 0) { futimens(wake, NULL); close(wake); }

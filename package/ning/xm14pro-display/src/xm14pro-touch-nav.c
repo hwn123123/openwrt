@@ -22,6 +22,8 @@
 #define WAKE_FILE RUN_DIR "/wake"
 #define OFF_FILE RUN_DIR "/off"
 #define POWER_SLEEP_LOCK RUN_DIR "/power-sleep-lock"
+#define POWER_MENU_FILE RUN_DIR "/power-menu"
+#define POWER_CHOICE_FILE RUN_DIR "/power-choice"
 #define REFRESH_FILE RUN_DIR "/refresh"
 #define SMS_TO_FILE RUN_DIR "/sms-to"
 #define SMS_TEXT_FILE RUN_DIR "/sms-text"
@@ -89,6 +91,35 @@ static int find_touch(char *path, size_t size, struct input_absinfo *xinfo,
 static void touch_file(const char *path) {
     int fd = open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
     if (fd >= 0) { futimens(fd, NULL); close(fd); }
+}
+
+static void power_menu_action(const char *action, const char *choice) {
+    pid_t child = fork();
+    if (child != 0) return;
+    if (choice)
+        execl("/usr/libexec/xm14pro-display", "xm14pro-display",
+              action, choice, (char *)NULL);
+    else
+        execl("/usr/libexec/xm14pro-display", "xm14pro-display",
+              action, (char *)NULL);
+    _exit(127);
+}
+
+static void handle_power_menu_touch(int x, int y) {
+    if (x < 220 || x > 1220) return;
+    if (access(POWER_CHOICE_FILE, F_OK) == 0) {
+        if (y >= 1540 && y <= 1720)
+            power_menu_action("power-confirm", NULL);
+        else if (y >= 1790 && y <= 1960)
+            power_menu_action("power-cancel", NULL);
+    } else {
+        if (y >= 1300 && y <= 1480)
+            power_menu_action("power-choose", "reboot");
+        else if (y >= 1540 && y <= 1720)
+            power_menu_action("power-choose", "poweroff");
+        else if (y >= 1790 && y <= 1960)
+            power_menu_action("power-cancel", NULL);
+    }
 }
 
 static bool suppress_power_sleep_touch(const struct input_event *event) {
@@ -607,6 +638,8 @@ int main(void) {
             } else if (event.type == EV_SYN && event.code == SYN_REPORT &&
                        touching && start_x >= 0 && current_x >= 0 &&
                        start_y >= 0 && current_y >= 0) {
+				if (access(POWER_MENU_FILE, F_OK) == 0)
+					continue;
                 int span = xinfo.maximum - xinfo.minimum;
                 int yspan = yinfo.maximum - yinfo.minimum;
                 bool began_in_footer = span > 0 && yspan > 0 &&
@@ -636,6 +669,20 @@ int main(void) {
                 int span = xinfo.maximum - xinfo.minimum;
                 int yspan = yinfo.maximum - yinfo.minimum;
                 int delta = current_x - start_x;
+				if (access(POWER_MENU_FILE, F_OK) == 0) {
+					if (span > 0 && yspan > 0 &&
+					    abs(delta) < span / 12 &&
+					    abs(current_y - start_y) < yspan / 12) {
+						int screen_x = (current_x - xinfo.minimum) * SCREEN_WIDTH / span;
+						int screen_y = (current_y - yinfo.minimum) * SCREEN_HEIGHT / yspan;
+						handle_power_menu_touch(screen_x, screen_y);
+					}
+					if (footer_tracking) unlink(FOOTER_DRAG_FILE);
+					start_x = current_x = start_y = current_y = -1;
+					footer_tracking = false;
+					touching = false;
+					continue;
+				}
                 int page = read_page();
                 bool update_page = true;
                 bool footer_gesture = span > 0 && yspan > 0 &&
