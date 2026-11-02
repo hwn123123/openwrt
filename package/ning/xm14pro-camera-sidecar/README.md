@@ -53,6 +53,13 @@ enumeration still returned zero devices and a snapshot timed out. These are
 startup findings, not a working cold-boot path. All probe processes were
 stopped after the check.
 
+A clean B-slot reboot reproduced the zero-camera result after all private
+services registered. The kernel also logged `cam_mem_mgr_init: Error in
+getting force cache alloc flag` during module load, followed by a successful
+ICP firmware download. The log does not yet establish which of these events
+causes enumeration to fail. The AP and 5G SA connection remained available
+after the reboot; the private camera services were stopped again.
+
 To rebuild the client, set `ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` to the
 Android NDK and a matching extracted stock system library directory, then run
 `src/build-snapshot.sh`. The checked-in arm64 binary's SHA-256 is
