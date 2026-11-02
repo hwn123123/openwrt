@@ -56,6 +56,7 @@ function content(data, update) {
 			row('CVP 处理器', cvpReady ? '已就绪' : '未就绪'),
 			row('ICP 固件', data.firmware_ready ? '已安装' : '缺失'),
 			row('EVA 固件', data.eva_firmware_ready ? '已安装' : '缺失'),
+			row('防抖固件', data.ois_firmware_ready ? '已安装' : '缺失'),
 			row('媒体设备', String(data.media_nodes || 0)),
 			row('视频设备', String(data.video_nodes || 0)),
 			row('摄像头子设备', String(data.subdevices || 0)),

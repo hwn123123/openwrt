@@ -19,12 +19,21 @@ count_nodes() {
 	printf '%s' "$count"
 }
 
+ois_firmware_ready() {
+	local file
+	for file in shennong_tele_bu24618_ois.prog shennong_wide_bu24721_ois_ii.prog shennong_wide_s10_ois.prog; do
+		[ -s "/usr/lib/firmware/$file" ] || return 1
+	done
+	return 0
+}
+
 status() {
-	local camera=0 cvp=0 firmware=0 eva_firmware=0 media video subdev last_error
+	local camera=0 cvp=0 firmware=0 eva_firmware=0 ois_firmware=0 media video subdev last_error
 	module_loaded camera.ko && camera=1
 	[ -e /dev/cvp ] && cvp=1
 	[ -s /usr/lib/firmware/CAMERA_ICP.mbn ] && firmware=1
 	[ -s /usr/lib/firmware/evass.mbn ] && eva_firmware=1
+	ois_firmware_ready && ois_firmware=1
 	media="$(count_nodes /dev/media)"
 	video="$(count_nodes /dev/video)"
 	subdev="$(count_nodes /dev/v4l-subdev)"
@@ -35,6 +44,7 @@ status() {
 	json_add_boolean cvp_ready "$cvp"
 	json_add_boolean firmware_ready "$firmware"
 	json_add_boolean eva_firmware_ready "$eva_firmware"
+	json_add_boolean ois_firmware_ready "$ois_firmware"
 	json_add_int media_nodes "$media"
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
@@ -70,6 +80,7 @@ case "${1:-status}" in
 		[ "$(uname -r)" = "$KERNEL" ] || fail '当前内核版本与摄像头模块不匹配'
 		grep -q 'androidboot.slot_suffix = "_b"' /proc/bootconfig 2>/dev/null ||
 			fail '当前不是 NWRT 的 B 槽'
+		ois_firmware_ready || fail '缺少相机光学防抖固件'
 		for file in ipclite.ko smmu_proxy_dlkm.ko synx-driver.ko msm-eva.ko cameralog.ko camera.ko; do
 			load_module "$file"
 		done
