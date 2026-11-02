@@ -24,7 +24,7 @@ define Device/xiaomi_14_pro
 	xm14pro-nfc-ir-sidecar xm14pro-peripherals-webui xm14pro-nicm xm14pro-cellular xm14pro-bonding \
 	xm14pro-openclash-compat \
 	qcom-rmtfs qcom-pd-mapper qcom-tqftpserv \
-	xm14pro-cellular-webui xm14pro-battery xm14pro-display xm14pro-display-webui \
+	xm14pro-cellular-webui xm14pro-battery xm14pro-power-profile xm14pro-display xm14pro-display-webui \
 	alsa-utils evtest input-support video-support libdrm libdrm-tests
   SUPPORTED_DEVICES := xiaomi,shennong
   FILESYSTEMS := erofs

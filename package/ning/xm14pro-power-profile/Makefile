@@ -12,7 +12,7 @@ define Package/xm14pro-power-profile
   SECTION:=base
   CATEGORY:=Base system
   TITLE:=Xiaomi 14 Pro NWRT CPU power profile
-  DEPENDS:=@TARGET_xm14pro_armv8
+  DEPENDS:=@TARGET_xm14pro_armv8 +jsonfilter +iw-full
 endef
 
 define Package/xm14pro-power-profile/description

@@ -21,6 +21,10 @@ read_value() {
 	[ -r "$1" ] && cat "$1" || printf '%s\n' -
 }
 
+suspend_success() {
+	awk '/^success:/ {print $2; found=1; exit} END {if (!found) print "-"}' /sys/kernel/debug/suspend_stats 2>/dev/null
+}
+
 discharging() {
 	[ "$(read_value "$BATTERY/status")" = Discharging ] &&
 		[ "$(read_value "$USB/online")" = 0 ]
@@ -42,7 +46,7 @@ done
 
 mkdir -p "$LOGDIR" || exit 1
 log="$LOGDIR/discharge-$(date '+%Y%m%d-%H%M%S').csv"
-printf '%s\n' 'time,capacity_pct,charge_counter_uAh,current_uA,voltage_uV,battery_temp_dC,ap_clients,ap_rx_bytes,ap_tx_bytes,cell_iface,cell_rx_bytes,cell_tx_bytes,cpu0_kHz,cpu2_kHz,cpu5_kHz,cpu7_kHz' > "$log" || exit 1
+printf '%s\n' 'time,capacity_pct,charge_counter_uAh,current_uA,voltage_uV,battery_temp_dC,suspend_success,radio_mode,nr_rsrp_dBm,ap_clients,ap_rx_bytes,ap_tx_bytes,cell_iface,cell_rx_bytes,cell_tx_bytes,cpu0_kHz,cpu2_kHz,cpu5_kHz,cpu7_kHz' > "$log" || exit 1
 echo "$log"
 
 end=$(( $(date +%s) + duration ))
@@ -50,13 +54,21 @@ while discharging && [ "$(date +%s)" -le "$end" ]; do
 	cell=$(cellular_interface)
 	[ -n "$cell" ] || cell=-
 	clients=$(iw dev nwrt-ap station dump 2>/dev/null | awk '/^Station / {n++} END {print n+0}')
-	printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+	radio=$(/usr/libexec/xm14pro-modem/control status 2>/dev/null)
+	radio_mode=$(jsonfilter -s "$radio" -e '@.access_technologies' 2>/dev/null)
+	[ -n "$radio_mode" ] || radio_mode=-
+	nr_rsrp=$(jsonfilter -s "$radio" -e '@.nr_rsrp' 2>/dev/null | awk 'match($0, /-?[0-9]+/) {print substr($0, RSTART, RLENGTH); exit}')
+	[ -n "$nr_rsrp" ] || nr_rsrp=-
+	printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
 		"$(date '+%Y-%m-%dT%H:%M:%S%z')" \
 		"$(read_value "$BATTERY/capacity")" \
 		"$(read_value "$BATTERY/charge_counter")" \
 		"$(read_value "$BATTERY/current_now")" \
 		"$(read_value "$BATTERY/voltage_now")" \
 		"$(read_value "$BATTERY/temp")" \
+		"$(suspend_success)" \
+		"$radio_mode" \
+		"$nr_rsrp" \
 		"$clients" \
 		"$(read_value "$AP/rx_bytes")" \
 		"$(read_value "$AP/tx_bytes")" \
