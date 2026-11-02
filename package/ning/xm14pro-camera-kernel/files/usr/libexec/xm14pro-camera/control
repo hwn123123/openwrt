@@ -15,6 +15,21 @@ capture_services_ready() {
 		ps w | grep -q '[v]endor.qti.camera.provider-service_64'
 }
 
+capture_service_signature() {
+	local camera_server provider
+	camera_server="$(ps w | awk '/[c]ameraserver/ && /bootstrap\/linker64/ {print $1; exit}')"
+	provider="$(ps w | awk '/[v]endor.qti.camera.provider-service_64/ && /bootstrap\/linker64/ {print $1; exit}')"
+	[ -n "$camera_server" ] && [ -n "$provider" ] || return 1
+	printf '%s:%s:%s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$camera_server" "$provider"
+}
+
+capture_verified() {
+	local signature
+	[ -s "$SNAPSHOT_DIR/.verified" ] || return 1
+	signature="$(capture_service_signature)" || return 1
+	[ "$(cat "$SNAPSHOT_DIR/.verified")" = "$signature" ]
+}
+
 add_cameras() {
 	json_add_array cameras
 	json_add_object ''
@@ -80,9 +95,16 @@ status() {
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
 	if capture_services_ready; then
-		json_add_boolean capture_ready 1
-		json_add_string capture_detail '四颗独立镜头可逐帧拍照；逻辑多摄与录像仍在适配'
+		json_add_boolean capture_possible 1
+		if capture_verified; then
+			json_add_boolean capture_ready 1
+			json_add_string capture_detail '当前服务已完成真实拍照验证；录像仍在适配'
+		else
+			json_add_boolean capture_ready 0
+			json_add_string capture_detail '相机服务已启动，但本次启动尚未通过真实拍照验证；可尝试拍摄'
+		fi
 	else
+		json_add_boolean capture_possible 0
 		json_add_boolean capture_ready 0
 		json_add_string capture_detail '相机取流服务未就绪；请检查私有 Android 相机服务'
 	fi
@@ -112,6 +134,7 @@ snapshot() {
 	temp="/data/local/tmp/xm14pro-frame-$id.jpg"
 	output="$SNAPSHOT_DIR/frame-$id.jpg"
 	capture_log="$SNAPSHOT_DIR/capture-$id.log"
+	rm -f "$SNAPSHOT_DIR/.verified"
 	rm -f "$CAMERA_ROOT$temp" "$output"
 	env ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_I18N_ROOT=/apex/com.android.i18n \
 		XM14_PROPERTY_SERVICE_ABSENT=1 XM14_BINDER_MANAGERS_READY=1 \
@@ -126,6 +149,11 @@ snapshot() {
 	cp "$CAMERA_ROOT$temp" "$output.tmp" || fail '无法保存照片'
 	mv -f "$output.tmp" "$output"
 	chmod 600 "$output"
+	if capture_service_signature >"$SNAPSHOT_DIR/.verified.tmp"; then
+		mv -f "$SNAPSHOT_DIR/.verified.tmp" "$SNAPSHOT_DIR/.verified"
+	else
+		rm -f "$SNAPSHOT_DIR/.verified.tmp"
+	fi
 	json_init
 	json_add_boolean ok 1
 	json_add_string mime image/jpeg

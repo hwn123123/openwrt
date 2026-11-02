@@ -32,8 +32,16 @@ The live prototype also needs four Binder compatibility services:
 Their current device-local test stubs accept broad transaction sets and are
 **not** included in this package. Each service needs a documented, minimal
 transaction implementation and error handling before automatic startup can
-be considered stable. In particular, `capture_ready=true` describes the live
-service state only and does not imply reboot persistence.
+be considered stable. `capture_ready=true` now requires a successful snapshot
+from the current camera service processes; it does not imply reboot persistence.
+
+After a cold reboot, the stock private `hwservicemanager` aborts because the
+isolated root has no Android property service. A temporary shim that accepts
+only the `hwservicemanager.disabled=false` write, together with the existing
+property-wait backoff, let that manager remain idle without a CPU spin.
+Starting the provider and camera server then still returned zero camera IDs;
+the remaining helper services and Binder bridges need proper implementations.
+The temporary shim and permissive test stubs are not part of this package.
 
 To rebuild the client, set `ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` to the
 Android NDK and a matching extracted stock system library directory, then run

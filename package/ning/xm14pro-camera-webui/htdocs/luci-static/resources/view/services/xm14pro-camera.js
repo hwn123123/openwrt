@@ -64,7 +64,7 @@ function hardwareContent(data, update) {
 		]),
 		E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, '拍摄服务'),
-			row('取流与拍照', capture ? '可用' : '待适配'),
+			row('取流与拍照', capture ? '已验证可用' : data.capture_possible ? '待验证' : '待适配'),
 			E('p', { 'class': 'cbi-section-descr' }, data.capture_detail || '')
 		]),
 		data.last_kernel_error ? E('div', { 'class': 'cbi-section' }, [
@@ -105,8 +105,8 @@ return view.extend({
 			ui.addNotification(null, E('p', {}, value), 'error');
 		}
 		function buttons() {
-			refreshImage.disabled = state.busy || !state.data.capture_ready;
-			saveImage.disabled = state.busy || !state.data.capture_ready;
+			refreshImage.disabled = state.busy || !state.data.capture_possible;
+			saveImage.disabled = state.busy || !state.data.capture_possible;
 			picker.querySelectorAll('button').forEach(function(button) { button.disabled = state.busy; });
 		}
 		function drawPicker() {
@@ -128,7 +128,7 @@ return view.extend({
 			buttons();
 		}
 		function capture(save) {
-			if (state.busy || !state.data.capture_ready) return;
+			if (state.busy || !state.data.capture_possible) return;
 			state.busy = true;
 			buttons();
 			message.textContent = '正在取景，单帧约需 10 秒…';
@@ -139,6 +139,7 @@ return view.extend({
 				preview.replaceChildren(E('img', { 'src': url, 'alt': '最近拍摄的画面' }));
 				releaseImage(old);
 				message.textContent = '画面已更新。此预览为逐帧拍摄。';
+				query('status').then(update, function() {});
 				if (save) {
 					var link = E('a', {
 						'href': url,
