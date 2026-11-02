@@ -1,0 +1,71 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Record a short battery/AP/CPU trace only while the phone is unplugged.
+
+BATTERY=/sys/class/power_supply/battery
+USB=/sys/class/power_supply/usb
+CPU=/sys/devices/system/cpu/cpufreq
+AP=/sys/class/net/nwrt-ap/statistics
+LOGDIR=/mnt/nwrt-data/power-samples
+INTERVAL=30
+WAIT_FOR_UNPLUG=600
+
+duration=${1:-1800}
+case "$duration" in
+	''|*[!0-9]*) echo 'usage: xm14pro-power-sample [duration_seconds]' >&2; exit 2 ;;
+esac
+[ "$duration" -gt 0 ] || exit 2
+grep -Eq '^androidboot\.slot_suffix[[:space:]]*=[[:space:]]*"_b"[[:space:]]*$' /proc/bootconfig 2>/dev/null || exit 1
+
+read_value() {
+	[ -r "$1" ] && cat "$1" || printf '%s\n' -
+}
+
+discharging() {
+	[ "$(read_value "$BATTERY/status")" = Discharging ] &&
+		[ "$(read_value "$USB/online")" = 0 ]
+}
+
+cellular_interface() {
+	ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1; i<NF; i++) if ($i=="dev") {print $(i+1); exit}}'
+}
+
+waited=0
+while ! discharging; do
+	[ "$waited" -lt "$WAIT_FOR_UNPLUG" ] || {
+		echo 'USB remained connected; no discharge trace was recorded.' >&2
+		exit 1
+	}
+	sleep 5
+	waited=$((waited + 5))
+done
+
+mkdir -p "$LOGDIR" || exit 1
+log="$LOGDIR/discharge-$(date '+%Y%m%d-%H%M%S').csv"
+printf '%s\n' 'time,capacity_pct,charge_counter_uAh,current_uA,voltage_uV,battery_temp_dC,ap_clients,ap_rx_bytes,ap_tx_bytes,cell_iface,cell_rx_bytes,cell_tx_bytes,cpu0_kHz,cpu2_kHz,cpu5_kHz,cpu7_kHz' > "$log" || exit 1
+echo "$log"
+
+end=$(( $(date +%s) + duration ))
+while discharging && [ "$(date +%s)" -le "$end" ]; do
+	cell=$(cellular_interface)
+	[ -n "$cell" ] || cell=-
+	clients=$(iw dev nwrt-ap station dump 2>/dev/null | awk '/^Station / {n++} END {print n+0}')
+	printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+		"$(date '+%Y-%m-%dT%H:%M:%S%z')" \
+		"$(read_value "$BATTERY/capacity")" \
+		"$(read_value "$BATTERY/charge_counter")" \
+		"$(read_value "$BATTERY/current_now")" \
+		"$(read_value "$BATTERY/voltage_now")" \
+		"$(read_value "$BATTERY/temp")" \
+		"$clients" \
+		"$(read_value "$AP/rx_bytes")" \
+		"$(read_value "$AP/tx_bytes")" \
+		"$cell" \
+		"$(read_value "/sys/class/net/$cell/statistics/rx_bytes")" \
+		"$(read_value "/sys/class/net/$cell/statistics/tx_bytes")" \
+		"$(read_value "$CPU/policy0/scaling_cur_freq")" \
+		"$(read_value "$CPU/policy2/scaling_cur_freq")" \
+		"$(read_value "$CPU/policy5/scaling_cur_freq")" \
+		"$(read_value "$CPU/policy7/scaling_cur_freq")" >> "$log"
+	sleep "$INTERVAL"
+done

@@ -1,0 +1,55 @@
+#!/bin/sh /etc/rc.common
+# SPDX-License-Identifier: GPL-2.0-only
+
+START=20
+
+POLICIES=/sys/devices/system/cpu/cpufreq
+
+nwrt_slot() {
+	grep -Eq '^androidboot\.slot_suffix[[:space:]]*=[[:space:]]*"_b"[[:space:]]*$' /proc/bootconfig 2>/dev/null
+}
+
+policies_ready() {
+	local policy
+	for policy in "$POLICIES"/policy[0-9]*; do
+		[ -f "$policy/scaling_governor" ] && return 0
+	done
+	return 1
+}
+
+start() {
+	local attempt=0 policy current changed=0 failures=0
+
+	# The image should run only in B; keep the A-slot Android policy untouched.
+	nwrt_slot || return 0
+
+	# Stock CPU policies may appear after the early OpenWrt init scripts.
+	until policies_ready; do
+		[ "$attempt" -lt 10 ] || {
+			logger -t xm14pro-power-profile 'CPU frequency policies did not appear'
+			return 1
+		}
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+
+	for policy in "$POLICIES"/policy[0-9]*; do
+		[ -f "$policy/scaling_governor" ] || continue
+		read -r current < "$policy/scaling_governor" || continue
+		# Respect any explicit governor selected before this service starts.
+		[ "$current" = performance ] || continue
+		if ! grep -qw schedutil "$policy/scaling_available_governors"; then
+			logger -t xm14pro-power-profile "schedutil unavailable for ${policy##*/}"
+			failures=$((failures + 1))
+			continue
+		fi
+		if printf '%s\n' schedutil > "$policy/scaling_governor"; then
+			changed=$((changed + 1))
+		else
+			logger -t xm14pro-power-profile "failed to set ${policy##*/} to schedutil"
+			failures=$((failures + 1))
+		fi
+	done
+	[ "$changed" -eq 0 ] || logger -t xm14pro-power-profile "schedutil enabled on $changed CPU policies"
+	[ "$failures" -eq 0 ]
+}
