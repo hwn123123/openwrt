@@ -20,9 +20,11 @@ count_nodes() {
 }
 
 status() {
-	local camera=0 firmware=0 media video subdev last_error
+	local camera=0 cvp=0 firmware=0 eva_firmware=0 media video subdev last_error
 	module_loaded camera.ko && camera=1
+	[ -e /dev/cvp ] && cvp=1
 	[ -s /usr/lib/firmware/CAMERA_ICP.mbn ] && firmware=1
+	[ -s /usr/lib/firmware/evass.mbn ] && eva_firmware=1
 	media="$(count_nodes /dev/media)"
 	video="$(count_nodes /dev/video)"
 	subdev="$(count_nodes /dev/v4l-subdev)"
@@ -30,7 +32,9 @@ status() {
 	json_init
 	json_add_boolean ok 1
 	json_add_boolean driver_loaded "$camera"
+	json_add_boolean cvp_ready "$cvp"
 	json_add_boolean firmware_ready "$firmware"
+	json_add_boolean eva_firmware_ready "$eva_firmware"
 	json_add_int media_nodes "$media"
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
@@ -66,11 +70,12 @@ case "${1:-status}" in
 		[ "$(uname -r)" = "$KERNEL" ] || fail '当前内核版本与摄像头模块不匹配'
 		grep -q 'androidboot.slot_suffix = "_b"' /proc/bootconfig 2>/dev/null ||
 			fail '当前不是 NWRT 的 B 槽'
-		for file in ipclite.ko smmu_proxy_dlkm.ko synx-driver.ko cameralog.ko camera.ko; do
+		for file in ipclite.ko smmu_proxy_dlkm.ko synx-driver.ko msm-eva.ko cameralog.ko camera.ko; do
 			load_module "$file"
 		done
 		[ -e /dev/video0 ] || fail '摄像头模块已加载，但设备节点未出现'
 		[ -s /usr/lib/firmware/CAMERA_ICP.mbn ] || fail '缺少相机 ICP 固件'
+		[ -s /usr/lib/firmware/evass.mbn ] || fail '缺少相机 EVA 固件'
 		status
 		;;
 	*)

@@ -23,7 +23,9 @@ function row(label, value) {
 }
 
 function content(data, update) {
-	var loaded = !!data.driver_loaded;
+	var driverLoaded = !!data.driver_loaded;
+	var cvpReady = !!data.cvp_ready;
+	var loaded = driverLoaded && cvpReady;
 	var capture = !!data.capture_ready;
 	var loadButton = E('button', {
 		'class': 'btn cbi-button cbi-button-action',
@@ -36,7 +38,7 @@ function content(data, update) {
 				ui.addNotification(null, E('p', {}, error.message || String(error)), 'error');
 			});
 		}
-	}, loaded ? '驱动已加载' : '加载摄像头驱动');
+	}, loaded ? '驱动已加载' : '加载缺失的摄像头驱动');
 	var refreshButton = E('button', {
 		'class': 'btn cbi-button',
 		'type': 'button',
@@ -50,8 +52,10 @@ function content(data, update) {
 	return [
 		E('div', { 'class': 'cbi-section' }, [
 			E('h3', {}, '硬件状态'),
-			row('内核驱动', loaded ? '已加载' : '未加载'),
+			row('内核驱动', driverLoaded ? '已加载' : '未加载'),
+			row('CVP 处理器', cvpReady ? '已就绪' : '未就绪'),
 			row('ICP 固件', data.firmware_ready ? '已安装' : '缺失'),
+			row('EVA 固件', data.eva_firmware_ready ? '已安装' : '缺失'),
 			row('媒体设备', String(data.media_nodes || 0)),
 			row('视频设备', String(data.video_nodes || 0)),
 			row('摄像头子设备', String(data.subdevices || 0)),

@@ -2,7 +2,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-camera-kernel
-PKG_VERSION:=1.1
+PKG_VERSION:=1.2
 PKG_RELEASE:=1
 PKG_LICENSE:=LicenseRef-Xiaomi-Qualcomm-Proprietary
 PKG_FLAGS:=nonshared
@@ -24,9 +24,9 @@ define Package/xm14pro-camera-kernel
 endef
 
 define Package/xm14pro-camera-kernel/description
- Stages the unmodified OS3.0.309.0 camera modules and the stock CAMERA_ICP
- firmware required by the kernel camera pipeline. Camera capture also requires
- a working userspace provider.
+ Stages the unmodified OS3.0.309.0 camera and EVA/CVP modules and their stock
+ CAMERA_ICP and evass firmware required by the kernel camera pipeline. Capture
+ also requires a working userspace provider.
 endef
 
 define Build/Compile
@@ -38,6 +38,8 @@ define Package/xm14pro-camera-kernel/install
 		$(1)/usr/lib/xm14pro/camera-modules/
 	$(INSTALL_DIR) $(1)/usr/lib/firmware
 	$(CP) ./files/usr/lib/firmware/CAMERA_ICP.* \
+		$(1)/usr/lib/firmware/
+	$(CP) ./files/usr/lib/firmware/evass.* \
 		$(1)/usr/lib/firmware/
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-camera
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/control \
