@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-camera-kernel
 PKG_VERSION:=1.3
-PKG_RELEASE:=2
+PKG_RELEASE:=3
 PKG_LICENSE:=LicenseRef-Xiaomi-Qualcomm-Proprietary
 PKG_FLAGS:=nonshared
 RSTRIP:=:
