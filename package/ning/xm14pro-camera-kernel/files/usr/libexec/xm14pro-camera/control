@@ -103,7 +103,7 @@ status() {
 			json_add_string capture_detail '当前服务已完成真实拍照验证；录像仍在适配'
 		else
 			json_add_boolean capture_ready 0
-			json_add_string capture_detail '相机服务已启动，但本次启动尚未通过真实拍照验证；可尝试拍摄'
+			json_add_string capture_detail '相机进程已启动，但尚未拍到画面；当前不能正常拍照'
 		fi
 	else
 		json_add_boolean capture_possible 0

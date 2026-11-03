@@ -108,7 +108,7 @@ return view.extend({
 			E('option', { 'value': '3' }, '3 秒'),
 			E('option', { 'value': '10' }, '10 秒')
 		]);
-		var refreshImage, saveImage, downloadImage, loadDriver, captureActions, previewActions, captureHelp;
+		var refreshImage, saveImage, downloadImage, loadDriver, verifyButton, captureActions, previewActions, captureHelp;
 
 		function sizeText(bytes) {
 			return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.ceil(bytes / 1024) + ' KB';
@@ -140,16 +140,21 @@ return view.extend({
 			ui.addNotification(null, E('p', {}, value), 'error');
 		}
 		function buttons() {
-			refreshImage.disabled = state.busy || !state.data.capture_possible;
-			saveImage.disabled = state.busy || !state.data.capture_possible;
+			refreshImage.disabled = state.busy || !state.data.capture_ready;
+			saveImage.disabled = state.busy || !state.data.capture_ready;
 			downloadImage.disabled = state.busy || !state.url;
 			downloadImage.style.display = state.url ? '' : 'none';
 			loadDriver.disabled = state.busy || (!!state.data.driver_loaded && !!state.data.cvp_ready);
 			loadDriver.textContent = state.data.driver_loaded && state.data.cvp_ready ? '驱动已加载' : '加载摄像头驱动';
 			timer.disabled = state.busy;
-			picker.querySelectorAll('button').forEach(function(button) { button.disabled = state.busy || !state.data.capture_possible; });
-			picker.style.display = state.data.capture_possible ? '' : 'none';
-			if (captureActions) captureActions.style.display = state.data.capture_possible ? '' : 'none';
+			picker.querySelectorAll('button').forEach(function(button) { button.disabled = state.busy || !state.data.capture_ready; });
+			picker.style.display = state.data.capture_ready ? '' : 'none';
+			loadDriver.style.display = state.data.driver_loaded && state.data.cvp_ready ? 'none' : '';
+			if (verifyButton) {
+				verifyButton.disabled = state.busy;
+				verifyButton.style.display = state.data.capture_possible && !state.data.capture_ready ? '' : 'none';
+			}
+			if (captureActions) captureActions.style.display = state.data.capture_ready ? '' : 'none';
 			if (previewActions) previewActions.style.display = state.url ? '' : 'none';
 		}
 		function drawPicker() {
@@ -164,7 +169,7 @@ return view.extend({
 					'click': function() {
 						state.camera = id;
 						drawPicker();
-						if (state.data.capture_possible) message.textContent = '已选择' + camera.name + '。';
+						if (state.data.capture_ready) message.textContent = '已选择' + camera.name + '。';
 					}
 				}, camera.name || ('镜头 ' + id));
 			}));
@@ -217,7 +222,7 @@ return view.extend({
 			}, errorText);
 		}
 		function capture(save) {
-			if (state.busy || !state.data.capture_possible) return;
+			if (state.busy || !state.data.capture_possible || (save && !state.data.capture_ready)) return;
 			state.busy = true;
 			buttons();
 			var seconds = Number(timer.value) || 0;
@@ -244,9 +249,9 @@ return view.extend({
 			buttons();
 			if (!keepMessage) message.textContent = data.capture_detail || '摄像头取流尚不可用';
 			if (!state.url) preview.replaceChildren(E('div', { 'class': 'xm-camera-placeholder' },
-				data.capture_possible ? '点击“拍一帧预览”查看画面' : '摄像头服务未就绪，暂时无法预览和拍照'));
-			captureHelp.textContent = data.capture_possible ? '选择镜头后拍摄一帧；连续实时预览尚未适配。' :
-				'相机服务尚未就绪。预览和拍照功能会在服务恢复后开放。';
+				data.capture_ready ? '点击“更新画面”查看镜头画面' : '相机暂时没有画面，拍照不可用'));
+			captureHelp.textContent = data.capture_ready ? '当前是单帧取景。拍照前请先更新画面。' :
+				data.capture_possible ? '相机进程已启动，但尚未拍到画面。可试拍一次验证。' : '相机服务尚未就绪。';
 			hardware.replaceChildren.apply(hardware, hardwareContent(data, update));
 		}
 
@@ -264,11 +269,15 @@ return view.extend({
 		refreshImage = E('button', {
 			'type': 'button', 'class': 'btn cbi-button',
 			'click': function() { capture(false); }
-		}, '拍一帧预览');
+		}, '更新画面');
+		verifyButton = E('button', {
+			'type': 'button', 'class': 'btn cbi-button-action',
+			'click': function() { capture(false); }
+		}, '试拍验证');
 		saveImage = E('button', {
 			'type': 'button', 'class': 'btn cbi-button cbi-button-action',
 			'click': function() { capture(true); }
-		}, '拍照保存到设备');
+		}, '拍照');
 		downloadImage = E('button', {
 			'type': 'button', 'class': 'btn',
 			'click': function() {
@@ -276,7 +285,7 @@ return view.extend({
 			}
 		}, '下载当前照片');
 		captureHelp = E('p', { 'class': 'cbi-section-descr' });
-		captureActions = E('div', { 'class': 'xm-camera-actions' }, [ '倒计时 ', timer, refreshImage, saveImage ]);
+		captureActions = E('div', { 'class': 'xm-camera-actions' }, [ refreshImage, saveImage, '倒计时 ', timer ]);
 		previewActions = E('div', { 'class': 'xm-camera-actions' }, [
 			downloadImage,
 			E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.rotation = (state.rotation + 90) % 360; applyTransform(); } }, '预览旋转 90°'),
@@ -288,31 +297,24 @@ return view.extend({
 			E('style', {}, '.xm-camera-picker,.xm-camera-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;margin:1rem 0}.xm-camera-lens.selected{background:#5da9a0;color:#fff}.xm-camera-preview{display:flex;align-items:center;justify-content:center;min-height:240px;max-height:62vh;background:#121719;border-radius:12px;overflow:hidden}.xm-camera-preview img{display:block;max-width:100%;max-height:62vh;object-fit:contain}.xm-camera-placeholder{color:#b5c3c6;text-align:center;padding:2rem}.xm-camera-message{min-height:1.5em}.xm-camera-photo{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;border-top:1px solid #555;padding:.55rem 0}.xm-camera-photo-name{flex:1 1 240px;overflow-wrap:anywhere}.xm-camera-photo-name small{display:block;opacity:.7}'),
 			E('h2', {}, '摄像头'),
 			E('div', { 'class': 'cbi-section' }, [
-				E('h3', {}, '相机状态'),
-				message,
-				E('div', { 'class': 'xm-camera-actions' }, [
-					loadDriver,
-					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { query('status').then(update, errorText); } }, '检查状态')
-				])
-			]),
-			E('div', { 'class': 'cbi-section' }, [
-				E('h3', {}, '拍照'),
-				captureHelp,
+				E('h3', {}, '取景与拍照'),
 				picker,
 				preview,
+				message,
+				captureHelp,
+				E('div', { 'class': 'xm-camera-actions' }, [
+					loadDriver, verifyButton,
+					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { query('status').then(update, errorText); } }, '检查相机')
+				]),
 				captureActions,
 				previewActions,
-				E('p', { 'class': 'cbi-section-descr' }, '旋转和镜像只改变网页预览，不修改设备上保存的原图。')
+				E('p', { 'class': 'cbi-section-descr' }, '暂不支持连续实时预览和录像。照片保存在设备 B 槽；旋转、镜像只影响网页显示。')
 			]),
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, [ '设备相册 · ', count ]),
 				E('p', { 'class': 'cbi-section-descr' }, '照片默认保存在 B 槽 /mnt/nwrt-data/camera/photos。点击“下载”可保存到当前浏览器的下载目录；“删除”会永久移除设备上的原图。'),
 				E('button', { 'type': 'button', 'class': 'btn', 'click': refreshGallery }, '刷新相册'),
 				gallery
-			]),
-			E('div', { 'class': 'cbi-section' }, [
-				E('h3', {}, '录像'),
-				E('p', { 'class': 'cbi-section-descr' }, '当前相机后端只支持单帧 JPEG；连续取流和视频编码尚未适配，因此还不能录像或保存视频文件。')
 			]),
 			E('details', {}, [ E('summary', {}, '硬件与诊断'), hardware ])
 		]);
