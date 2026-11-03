@@ -14,7 +14,9 @@ configured download directory. Preview rotation and mirroring do not change
 the saved file. Video recording is not implemented: this client captures one
 JPEG frame and has no continuous stream or video encoder.
 
-The package installs only the snapshot client. The isolated camera provider,
+The package installs the snapshot client and `setup-isolated-root`, which
+mounts the device-local Android images read-only into a private root and
+creates separate Binder, HWBinder, and vendor Binder nodes. The isolated camera provider,
 camera server, Android Binder managers and compatibility services are still
 device-local runtime dependencies. `/usr/libexec/xm14pro-camera/control`
 reports `capture_ready=false` unless that runtime is present. The Android
@@ -85,6 +87,22 @@ camera API still enumerated zero devices. Restarting `cameraserver` did not
 restore `media.camera` registration. The test processes and private mounts
 were stopped afterward. The provider registration is progress in diagnosing
 the cold-start chain, not a working camera preview or a production service.
+
+A subsequent source audit found that the device-local setup script linked
+`/dev/vndbinder` to the ordinary Binder node. The source copy now links it to
+`/dev/binderfs/vndbinder`; with that fix the private `vndservicemanager`
+starts. A clean provider launch still probes the physical sensors but does
+not register an AIDL camera provider, and the camera API returns zero camera
+IDs. Starting the DSP helper and QTI media C2 service did not change that
+result. This mount correction is required but does not establish usable
+preview or reboot persistence. The broad test Binder bridges remain outside
+the package until their interfaces and cold-start behavior are validated.
+
+The Binder device helper is built from `src/binderfs-add.c` with
+`src/build-binderfs-add.sh` and the Android NDK. `setup-isolated-root` requires
+device-local PixelOS partition images and the VNDK image on the B data
+partition; it does not start camera processes. A working service lifecycle
+and continuous viewfinder remain to be implemented.
 
 To rebuild the client, set `ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` to the
 Android NDK and a matching extracted stock system library directory, then run

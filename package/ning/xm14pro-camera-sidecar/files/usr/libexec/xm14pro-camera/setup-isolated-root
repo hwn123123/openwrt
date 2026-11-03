@@ -1,0 +1,75 @@
+#!/bin/sh
+set -eu
+R=/mnt/nwrt-data/camera-android-root
+P=/mnt/nwrt-data/pixelos-original
+D=/mnt/nwrt-data
+LOWER=/usr/libexec/xm14pro-qwes/android-root
+
+grep -q 'androidboot.slot_suffix = "_b"' /proc/bootconfig
+mounted() { grep -q " $1 " /proc/mounts; }
+ensure_mount() {
+    target=$1
+    shift
+    mounted "$target" || mount "$@" "$target"
+}
+for part in system vendor odm system_ext; do
+    mkdir -p "$P/mount-$part"
+    ensure_mount "$P/mount-$part" -t erofs -o loop,ro "$P/$part.img"
+done
+mkdir -p "$R"
+ensure_mount "$R" -t overlay overlay -o "lowerdir=$LOWER,upperdir=$D/camera-root-upper,workdir=$D/camera-root-work"
+for part in system vendor odm system_ext; do
+    source_dir="$P/mount-$part"
+    [ "$part" = system ] && source_dir="$source_dir/system"
+    ensure_mount "$R/$part" --bind "$source_dir"
+done
+ensure_mount "$R/vendor/lib64" -t overlay overlay -o "lowerdir=$P/mount-vendor/lib64,upperdir=$D/camera-a-vendor-lib-upper,workdir=$D/camera-a-vendor-lib-work"
+ensure_mount "$R/vendor/etc" -t overlay overlay -o "lowerdir=$P/mount-vendor/etc,upperdir=$D/camera-a-vendor-etc-upper,workdir=$D/camera-a-vendor-etc-work"
+ensure_mount "$R/system/lib64" -t overlay overlay -o "lowerdir=$P/mount-system/system/lib64,upperdir=$D/camera-a-system-lib-upper,workdir=$D/camera-a-system-lib-work"
+ensure_mount "$R/odm/etc/camera" -t overlay overlay -o "lowerdir=$P/mount-odm/etc/camera,upperdir=$D/camera-a-odm-camera-upper,workdir=$D/camera-a-odm-camera-work"
+ensure_mount "$R/proc" -t proc proc
+ensure_mount "$R/sys" -t sysfs sysfs
+mkdir -p "$R/sys/fs/selinux"
+ensure_mount "$R/sys/fs/selinux" -t selinuxfs selinuxfs
+mkdir -p "$R/apex/com.android.i18n" "$R/apex/com.android.os.statsd" "$R/apex/com.android.vndk.v34"
+ensure_mount "$R/apex/com.android.i18n" -t ext4 -o loop,ro "$P/i18n.img"
+ensure_mount "$R/apex/com.android.os.statsd" -t ext4 -o loop,ro "$P/statsd.img"
+ensure_mount "$R/apex/com.android.vndk.v34" -t ext4 -o loop,ro "$D/camera-vndk34.img"
+mkdir -p "$R/mnt/vendor/persist"
+ensure_mount "$R/mnt/vendor/persist" -t overlay overlay -o "lowerdir=$LOWER/mnt/vendor/persist,upperdir=$D/camera-persist-upper,workdir=$D/camera-persist-work"
+ensure_mount "$R/dev" -t tmpfs -o size=16384k,mode=755 tmpfs
+mkdir -p "$R/dev/host" "$R/dev/binderfs"
+ensure_mount "$R/dev/host" --bind /dev
+for node in /dev/*; do
+    name=${node##*/}
+    case "$name" in binder|hwbinder|vndbinder|binderfs|host) continue;; esac
+    [ -e "$R/dev/$name" ] || [ -L "$R/dev/$name" ] ||
+        ln -s "/dev/host/$name" "$R/dev/$name"
+done
+# The camera module creates these nodes after the private /dev is first set up.
+# Refresh them on every launch so the camera provider sees the live kernel nodes.
+for node in /dev/media* /dev/video* /dev/v4l-subdev*; do
+    [ -e "$node" ] || continue
+    name=${node##*/}
+    [ -e "$R/dev/$name" ] || [ -L "$R/dev/$name" ] ||
+        ln -s "/dev/host/$name" "$R/dev/$name"
+done
+# Android libcutils probes the boot-specific alias before opening /dev/ashmem.
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+[ -e "$R/dev/ashmem$boot_id" ] || [ -L "$R/dev/ashmem$boot_id" ] ||
+    ln -s /dev/host/ashmem "$R/dev/ashmem$boot_id"
+ensure_mount "$R/dev/binderfs" -t binder binder
+helper=/usr/libexec/xm14pro-camera/binderfs-add
+[ -x "$helper" ] || { echo 'Missing camera binderfs helper' >&2; exit 1; }
+cp "$helper" "$R/data/local/tmp/nwrt-camera-binderfs-add"
+chmod 755 "$R/data/local/tmp/nwrt-camera-binderfs-add"
+for name in binder hwbinder vndbinder; do
+    if [ ! -e "$R/dev/binderfs/$name" ]; then
+        chroot "$R" /system/bin/bootstrap/linker64 /data/local/tmp/nwrt-camera-binderfs-add /dev/binderfs/binder-control "$name"
+    fi
+done
+chmod 666 "$R/dev/binderfs/binder" "$R/dev/binderfs/hwbinder" "$R/dev/binderfs/vndbinder"
+ln -sf /dev/binderfs/binder "$R/dev/binder"
+ln -sf /dev/binderfs/hwbinder "$R/dev/hwbinder"
+ln -sf /dev/binderfs/vndbinder "$R/dev/vndbinder"
+readlink "$R/dev/binder"
