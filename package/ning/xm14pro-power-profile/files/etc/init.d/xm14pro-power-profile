@@ -1,55 +1,121 @@
 #!/bin/sh /etc/rc.common
 # SPDX-License-Identifier: GPL-2.0-only
 
-START=20
+# Bring up the Wi-Fi firmware and AP before allowing cluster idle.
+START=95
 
-POLICIES=/sys/devices/system/cpu/cpufreq
+CPU=/sys/devices/system/cpu
+POLICIES=$CPU/cpufreq
+CORE_CTL=$CPU/cpu5/core_ctl
+LPM=$CPU/qcom_lpm/parameters/sleep_disabled
 
 nwrt_slot() {
 	grep -Eq '^androidboot\.slot_suffix[[:space:]]*=[[:space:]]*"_b"[[:space:]]*$' /proc/bootconfig 2>/dev/null
 }
 
-policies_ready() {
-	local policy
+power_nodes_ready() {
+	[ -e "$POLICIES/policy0/scaling_governor" ] &&
+	[ -e "$CORE_CTL/nrrun_cpu_mask" ] &&
+	[ -e "$LPM" ] &&
+	[ -e /proc/sys/walt/sched_boost ]
+}
+
+set_node() {
+	local path=$1 value=$2
+	if [ ! -w "$path" ] || ! printf '%s\n' "$value" > "$path"; then
+		logger -t xm14pro-power-profile "failed to set $path"
+		return 1
+	fi
+}
+
+set_governors() {
+	local policy current target failures=0
 	for policy in "$POLICIES"/policy[0-9]*; do
-		[ -f "$policy/scaling_governor" ] && return 0
+		[ -f "$policy/scaling_governor" ] || continue
+		read -r current < "$policy/scaling_governor" || continue
+		# Preserve governors explicitly selected outside this device profile.
+		case "$current" in
+			performance|schedutil|walt) ;;
+			*) continue ;;
+		esac
+		if grep -qw walt "$policy/scaling_available_governors"; then
+			target=walt
+		else
+			target=schedutil
+		fi
+		[ "$current" = "$target" ] || set_node "$policy/scaling_governor" "$target" || failures=$((failures + 1))
 	done
-	return 1
+	[ "$failures" -eq 0 ]
+}
+
+set_core_ctl() {
+	local cpu field value failures=0
+
+	# The stock kernel leaves all four masks at 0xffffffff. Since this phone
+	# has eight CPUs, WALT then rejects the masks and never evaluates core
+	# parking. These are the running Android A-slot values for shennong.
+	while read -r cpu field value; do
+		[ -n "$cpu" ] || continue
+		set_node "$CPU/$cpu/core_ctl/$field" "$value" || failures=$((failures + 1))
+	done <<'VALUES'
+cpu0 nrrun_cpu_mask 0xff
+cpu0 nrrun_cpu_misfit_mask 0x0
+cpu0 assist_cpu_mask 0x0
+cpu0 assist_cpu_misfit_mask 0x0
+cpu2 nrrun_cpu_mask 0xfc
+cpu2 nrrun_cpu_misfit_mask 0x63
+cpu2 assist_cpu_mask 0x0
+cpu2 assist_cpu_misfit_mask 0x0
+cpu5 nrrun_cpu_mask 0xe0
+cpu5 nrrun_cpu_misfit_mask 0x0
+cpu5 assist_cpu_mask 0x1c
+cpu5 assist_cpu_misfit_mask 0x3
+cpu7 nrrun_cpu_mask 0x80
+cpu7 nrrun_cpu_misfit_mask 0x7c
+cpu7 assist_cpu_mask 0x7c
+cpu7 assist_cpu_misfit_mask 0x3
+cpu2 min_cpus 3
+cpu2 busy_up_thres 60 60 60
+cpu2 busy_down_thres 30 30 30
+cpu2 task_thres 3
+cpu5 min_cpus 0
+cpu5 min_partial_cpus 2
+cpu5 busy_up_thres 60 60
+cpu5 busy_down_thres 30 30
+cpu5 task_thres 2
+cpu5 not_preferred 1 1
+cpu7 min_cpus 0
+cpu7 busy_up_thres 60
+cpu7 busy_down_thres 30
+cpu7 task_thres 1
+cpu7 not_preferred 1
+VALUES
+	set_node "$CPU/cpu5/core_ctl/enable" 1 || failures=$((failures + 1))
+	set_node "$CPU/cpu7/core_ctl/enable" 1 || failures=$((failures + 1))
+	[ "$failures" -eq 0 ]
 }
 
 start() {
-	local attempt=0 policy current changed=0 failures=0
+	local attempt=0 failures=0
 
-	# The image should run only in B; keep the A-slot Android policy untouched.
+	# This profile belongs to NWRT in B; Android A retains its own power HAL.
 	nwrt_slot || return 0
 
-	# Stock CPU policies may appear after the early OpenWrt init scripts.
-	until policies_ready; do
-		[ "$attempt" -lt 10 ] || {
-			logger -t xm14pro-power-profile 'CPU frequency policies did not appear'
+	until power_nodes_ready; do
+		[ "$attempt" -lt 20 ] || {
+			logger -t xm14pro-power-profile 'CPU power nodes did not appear'
 			return 1
 		}
 		attempt=$((attempt + 1))
 		sleep 1
 	done
 
-	for policy in "$POLICIES"/policy[0-9]*; do
-		[ -f "$policy/scaling_governor" ] || continue
-		read -r current < "$policy/scaling_governor" || continue
-		# Respect any explicit governor selected before this service starts.
-		[ "$current" = performance ] || continue
-		if ! grep -qw schedutil "$policy/scaling_available_governors"; then
-			logger -t xm14pro-power-profile "schedutil unavailable for ${policy##*/}"
-			failures=$((failures + 1))
-			continue
-		fi
-		if printf '%s\n' schedutil > "$policy/scaling_governor"; then
-			changed=$((changed + 1))
-		else
-			logger -t xm14pro-power-profile "failed to set ${policy##*/} to schedutil"
-			failures=$((failures + 1))
-		fi
-	done
-	[ "$changed" -eq 0 ] || logger -t xm14pro-power-profile "schedutil enabled on $changed CPU policies"
-	[ "$failures" -eq 0 ]
+	set_node /proc/sys/walt/sched_boost 0 || failures=$((failures + 1))
+	set_governors || failures=$((failures + 1))
+	set_core_ctl || failures=$((failures + 1))
+	# Vendor Android init writes "n" here. The kernel default disables all
+	# cluster idle states and keeps the router burning power at screen off.
+	set_node "$LPM" 0 || failures=$((failures + 1))
+	[ "$failures" -eq 0 ] || return 1
+	logger -t xm14pro-power-profile 'WALT governor, core parking and cluster idle enabled'
 }

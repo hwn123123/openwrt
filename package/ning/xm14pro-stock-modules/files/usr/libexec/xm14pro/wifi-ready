@@ -4,13 +4,43 @@
 TAG=xm14-stock-modules
 count=0
 
+ap_ready() {
+	iw dev nwrt-ap info 2>/dev/null | grep -Eq '^[[:space:]]*type AP$' &&
+		ubus list hostapd.nwrt-ap 2>/dev/null | grep -Fxq hostapd.nwrt-ap
+}
+
 finish_profile() {
+	local attempt=0
 	/usr/sbin/xm14pro-wifi-profile initial || {
 		logger -t "$TAG" 'could not generate the nwrt AP profile'
 		return 1
 	}
 	wifi reload >/dev/null 2>&1 || true
-	logger -t "$TAG" 'Wi-Fi profile enabled after P2P/NAN enumeration'
+	while [ "$attempt" -lt 6 ]; do
+		ap_ready && {
+			logger -t "$TAG" 'Wi-Fi AP ready after profile reload'
+			return 0
+		}
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	# netifd can report the radio as up while the vendor-created interface
+	# remains a P2P device. A full radio cycle converts it to an actual AP.
+	logger -t "$TAG" 'AP did not start after reload; cycling Wi-Fi radio once'
+	wifi down >/dev/null 2>&1 || true
+	sleep 1
+	wifi up >/dev/null 2>&1 || true
+	attempt=0
+	while [ "$attempt" -lt 12 ]; do
+		ap_ready && {
+			logger -t "$TAG" 'Wi-Fi AP ready after radio cycle'
+			return 0
+		}
+		attempt=$((attempt + 1))
+		sleep 1
+	done
+	logger -t "$TAG" 'Wi-Fi AP failed to start after radio cycle'
+	return 1
 }
 
 while [ "$count" -lt 55 ]; do

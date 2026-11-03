@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-stock-modules
 PKG_VERSION:=3.0.308.0
-PKG_RELEASE:=25
+PKG_RELEASE:=26
 PKG_LICENSE:=Proprietary
 PKGARCH:=aarch64_generic
 

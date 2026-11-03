@@ -2,7 +2,7 @@
 include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-power-profile
-PKG_VERSION:=1.0.0
+PKG_VERSION:=1.1.0
 PKG_RELEASE:=1
 PKG_LICENSE:=GPL-2.0-only
 
@@ -16,8 +16,8 @@ define Package/xm14pro-power-profile
 endef
 
 define Package/xm14pro-power-profile/description
- Set the NWRT CPU frequency governor to schedutil after the stock kernel
- creates its CPU policies. The stock boot command line forces performance.
+ Apply the Xiaomi 14 Pro WALT governor, core parking and cluster idle settings.
+ The stock kernel leaves core masks unset and cluster idle disabled.
 endef
 
 define Build/Compile
