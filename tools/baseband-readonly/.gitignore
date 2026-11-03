@@ -1,0 +1,5 @@
+# Raw modem state is sensitive device data and must never enter Git.
+*.img
+manifest.json
+backup-*/
+__pycache__/
