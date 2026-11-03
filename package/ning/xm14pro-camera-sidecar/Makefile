@@ -2,7 +2,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-camera-sidecar
 PKG_VERSION:=1.0
-PKG_RELEASE:=5
+PKG_RELEASE:=7
 PKG_LICENSE:=GPL-2.0-only
 PKG_FLAGS:=nonshared
 
@@ -18,6 +18,8 @@ include $(INCLUDE_DIR)/package.mk
 define CheckDependencies
 	@$(TARGET_CROSS)readelf -h ./files/usr/libexec/xm14pro-camera/camera-snapshot | grep -q 'Machine:.*AArch64'
 	@$(TARGET_CROSS)readelf -l ./files/usr/libexec/xm14pro-camera/camera-snapshot | grep -q '/system/bin/linker64'
+	@$(TARGET_CROSS)readelf -h ./files/usr/libexec/xm14pro-camera/camera-stream | grep -q 'Machine:.*AArch64'
+	@$(TARGET_CROSS)readelf -l ./files/usr/libexec/xm14pro-camera/camera-stream | grep -q '/system/bin/linker64'
 	@$(TARGET_CROSS)readelf -h ./files/usr/libexec/xm14pro-camera/binderfs-add | grep -q 'Machine:.*AArch64'
 endef
 
@@ -38,7 +40,9 @@ define Build/Compile
 	# The Android/Bionic client is built by src/build-snapshot.sh against the
 	# stock system libraries. Do not relink it against musl here.
 	test -s ./files/usr/libexec/xm14pro-camera/camera-snapshot
+	test -s ./files/usr/libexec/xm14pro-camera/camera-stream
 	echo '4e110478f6c3aa4c9a61040f277fa3bc854e6dd313c41590fd4a929fd056ab37  ./files/usr/libexec/xm14pro-camera/camera-snapshot' | sha256sum -c -
+	echo '33aec060de8448f17084fb3468f1dee8b50d33819bbb4ca53933f8f5f272235e  ./files/usr/libexec/xm14pro-camera/camera-stream' | sha256sum -c -
 	echo '69504382f3a793c0b789cf7833d1b16443819d26c537debb0fad542ccba06366  ./files/usr/libexec/xm14pro-camera/binderfs-add' | sha256sum -c -
 	cd ./files/usr/libexec/xm14pro-camera && sha256sum -c COMPAT_SHA256SUMS
 	$(TARGET_CC) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/camera-launch ./src/camera-launch.c
@@ -48,6 +52,8 @@ define Package/xm14pro-camera-sidecar/install
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-camera
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/camera-snapshot \
 		$(1)/usr/libexec/xm14pro-camera/camera-snapshot
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/camera-stream \
+		$(1)/usr/libexec/xm14pro-camera/camera-stream
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/setup-isolated-root \
 		$(1)/usr/libexec/xm14pro-camera/setup-isolated-root
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/binderfs-add \

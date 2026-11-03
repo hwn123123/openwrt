@@ -23,3 +23,8 @@ mkdir -p "$(dirname -- "$out")"
 	-I "$here/jpeg" -L "$ANDROID_SYSTEM_LIB64" \
 	-o "$out" "$here/camera-snapshot.c" \
 	-lcamera2ndk -lmediandk -lnativewindow -ljpeg -lbinder_ndk
+stream_out="$(dirname -- "$out")/camera-stream"
+"$clang" -O2 -Wall -Wextra -Wl,--allow-shlib-undefined \
+	-I "$here/jpeg" -L "$ANDROID_SYSTEM_LIB64" \
+	-o "$stream_out" "$here/camera-stream.c" \
+	-lcamera2ndk -lmediandk -lnativewindow -ljpeg -lbinder_ndk

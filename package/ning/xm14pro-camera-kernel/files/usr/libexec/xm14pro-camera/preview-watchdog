@@ -1,0 +1,20 @@
+#!/bin/sh
+# Close the private camera stack when the LuCI page stops renewing its lease.
+set -eu
+session=/run/xm14pro-camera
+control=/usr/libexec/xm14pro-camera/control
+
+while [ -s "$session/preview.pid" ]; do
+    pid=$(cat "$session/preview.pid")
+    [ -d "/proc/$pid" ] || break
+    then=$(cat "$session/preview.lease" 2>/dev/null || echo 0)
+    now=$(date +%s)
+    if [ $((now - then)) -gt 20 ]; then
+        "$control" preview-stop >/dev/null 2>&1 || true
+        exit 0
+    fi
+    sleep 3
+done
+
+# A crashed stream must not leave the Android camera services draining power.
+[ -s "$session/preview.pid" ] && "$control" preview-stop >/dev/null 2>&1 || true

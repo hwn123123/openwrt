@@ -37,6 +37,7 @@ prepare_files() {
         copy_if_changed "$S/camera-$name-compat" "$R/data/local/tmp/camera-$name-compat"
     done
     copy_if_changed "$S/camera-list" "$R/data/local/tmp/camera-list"
+    copy_if_changed "$S/camera-stream" "$R/data/local/tmp/nwrt-camera-stream"
     copy_if_changed "$S/camera-abi-compat.so" "$R/vendor/lib64/camera-abi-compat.so"
     copy_if_changed "$S/camera-hwsm-property-compat.so" "$R/vendor/lib64/camera-hwsm-property-compat.so"
     copy_if_changed "$S/camera-activity-compat.so" "$R/system/lib64/camera-activity-compat.so"
@@ -46,7 +47,7 @@ prepare_files() {
     done
 }
 
-start() {
+start_once() {
     grep -q 'androidboot.slot_suffix = "_b"' /proc/bootconfig || {
         echo 'Camera sidecar may only start in slot B' >&2; exit 1;
     }
@@ -94,9 +95,17 @@ start() {
         "$BASE_LIB" /system/bin/runcon u:r:cameraserver:s0 \
         /system/bin/bootstrap/linker64 /system/bin/cameraserver
     for attempt in $(seq 1 120); do
-        alive provider && alive cameraserver || {
-            echo 'Camera provider or cameraserver exited' >&2; return 1;
-        }
+        if ! alive provider || ! alive cameraserver; then
+            # A freshly launched process may still be entering the private
+            # chroot when /proc/PID/root is first inspected. Give both
+            # services a short bootstrap window before treating this as exit.
+            if [ "$attempt" -le 8 ]; then
+                sleep 1
+                continue
+            fi
+            echo 'Camera provider or cameraserver exited during bootstrap' >&2
+            return 1
+        fi
         if LD_LIBRARY_PATH="$BASE_LIB" LD_PRELOAD="/system/lib64/camera-activity-compat.so:/system/lib64/camera-permission-compat.so:$BASE_PRELOAD" \
             timeout 5 chroot "$R" /system/bin/bootstrap/linker64 \
             /data/local/tmp/camera-list 2>&1 | grep -q 'count=[1-9]'; then
@@ -122,7 +131,20 @@ stop() {
 }
 
 case "${1:-}" in
-    start) start ;;
+    start)
+        if "$0" start-once; then exit 0; fi
+        echo 'Camera startup failed; saving first attempt logs and retrying once' >&2
+        mkdir -p "$PIDDIR/first-attempt"
+        for log in "$PIDDIR"/*.log; do
+            [ -f "$log" ] && cp "$log" "$PIDDIR/first-attempt/" || true
+        done
+        sleep 2
+        "$0" start-once || {
+            echo 'Camera startup failed after retry; see /run/xm14pro-camera logs' >&2
+            exit 1
+        }
+        ;;
+    start-once) start_once ;;
     stop) stop ;;
     status) alive provider && alive cameraserver && [ -f "$PIDDIR/.ready" ] ;;
     *) echo 'Usage: stack start|stop|status' >&2; exit 2 ;;

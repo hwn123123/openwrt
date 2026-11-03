@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-camera-kernel
 PKG_VERSION:=1.3
-PKG_RELEASE:=5
+PKG_RELEASE:=8
 PKG_LICENSE:=LicenseRef-Xiaomi-Qualcomm-Proprietary
 PKG_FLAGS:=nonshared
 RSTRIP:=:
@@ -20,7 +20,7 @@ define Package/xm14pro-camera-kernel
   SECTION:=utils
   CATEGORY:=Utilities
   TITLE:=Xiaomi 14 Pro camera kernel adapter
-  DEPENDS:=+xm14pro-stock-modules +libubox
+  DEPENDS:=+xm14pro-stock-modules +libubox +ffmpeg
 endef
 
 define Package/xm14pro-camera-kernel/description
@@ -30,6 +30,7 @@ define Package/xm14pro-camera-kernel/description
 endef
 
 define Build/Compile
+	$(TARGET_CC) $(TARGET_CFLAGS) -o $(PKG_BUILD_DIR)/camera-delay ./src/camera-delay.c
 endef
 
 define Package/xm14pro-camera-kernel/install
@@ -48,6 +49,12 @@ define Package/xm14pro-camera-kernel/install
 		$(1)/usr/libexec/xm14pro-camera/control
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/read-control \
 		$(1)/usr/libexec/xm14pro-camera/read-control
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/preview-watchdog \
+		$(1)/usr/libexec/xm14pro-camera/preview-watchdog
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/record-run \
+		$(1)/usr/libexec/xm14pro-camera/record-run
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/camera-delay \
+		$(1)/usr/libexec/xm14pro-camera/camera-delay
 endef
 
 $(eval $(call BuildPackage,xm14pro-camera-kernel))

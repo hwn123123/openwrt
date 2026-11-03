@@ -1,0 +1,39 @@
+#!/bin/sh
+# Feed complete JPEG frames from the private camera root into an MP4 encoder.
+set -eu
+frame=/mnt/nwrt-data/camera-android-root/data/local/tmp/nwrt-live.jpg
+out=${1:?missing output path}
+session=/run/xm14pro-camera
+fifo="$session/record.fifo"
+encoder_pid=''
+
+finish() {
+    trap - INT TERM EXIT
+    exec 3>&- 2>/dev/null || true
+    if [ -n "$encoder_pid" ]; then
+        kill -INT "$encoder_pid" 2>/dev/null || true
+        wait "$encoder_pid" 2>/dev/null || true
+    fi
+    rm -f "$fifo"
+}
+trap finish INT TERM EXIT
+
+rm -f "$fifo"
+mkfifo -m 600 "$fifo"
+ffmpeg -hide_banner -loglevel warning -nostdin -y \
+    -f image2pipe -framerate 5 -vcodec mjpeg -i "$fifo" \
+    -an -c:v mpeg4 -q:v 5 -pix_fmt yuv420p -movflags +faststart \
+    "$out" >"$session/record-ffmpeg.log" 2>&1 &
+encoder_pid=$!
+echo "$encoder_pid" > "$session/record-ffmpeg.pid"
+exec 3>"$fifo"
+
+while [ -d "/proc/$encoder_pid" ]; do
+    if [ -s "$frame" ]; then
+        modified=$(date -r "$frame" +%s 2>/dev/null || echo 0)
+        now=$(date +%s)
+        [ $((now - modified)) -le 4 ] || break
+        cat "$frame" >&3 || break
+    fi
+    /usr/libexec/xm14pro-camera/camera-delay
+done

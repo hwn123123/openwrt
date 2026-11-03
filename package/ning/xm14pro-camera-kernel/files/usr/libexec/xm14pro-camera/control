@@ -7,7 +7,18 @@ CAMERA_ROOT=/mnt/nwrt-data/camera-android-root
 SNAPSHOT_BIN=/usr/libexec/xm14pro-camera/camera-snapshot
 SNAPSHOT_DIR=/tmp/xm14pro-camera
 PHOTO_DIR=/mnt/nwrt-data/camera/photos
+VIDEO_DIR=/mnt/nwrt-data/camera/videos
 CAMERA_STACK=/usr/libexec/xm14pro-camera/stack
+STREAM_BIN=/usr/libexec/xm14pro-camera/camera-stream
+LIVE_FRAME="$CAMERA_ROOT/data/local/tmp/nwrt-live.jpg"
+LIVE_PATH=/mnt/nwrt-data/camera-android-root/data/local/tmp/nwrt-live.jpg
+SESSION_DIR=/run/xm14pro-camera
+STREAM_PID="$SESSION_DIR/preview.pid"
+STREAM_ID="$SESSION_DIR/preview.id"
+STREAM_LEASE="$SESSION_DIR/preview.lease"
+RECORD_PID="$SESSION_DIR/record.pid"
+RECORD_PATH="$SESSION_DIR/record.path"
+RECORD_NAME="$SESSION_DIR/record.name"
 . /usr/share/libubox/jshn.sh
 
 capture_services_ready() {
@@ -98,13 +109,14 @@ status() {
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
 	json_add_string photo_directory "$PHOTO_DIR"
+	json_add_string video_directory "$VIDEO_DIR"
 	if capture_services_ready; then
 		json_add_boolean service_ready 1
 		json_add_boolean service_starting 0
 		json_add_boolean capture_possible 1
 		if capture_verified; then
 			json_add_boolean capture_ready 1
-			json_add_string capture_detail '当前服务已完成真实拍照验证；录像仍在适配'
+			json_add_string capture_detail '当前服务已完成真实拍照和无声录像验证'
 		else
 			json_add_boolean capture_ready 0
 			json_add_string capture_detail '相机进程已启动，但尚未拍到画面；当前不能正常拍照'
@@ -128,7 +140,7 @@ status() {
 		elif [ -d /run/xm14pro-camera/.start-lock ]; then
 			json_add_string capture_detail '隔离相机服务正在启动，首次启动约需一分钟'
 		elif [ -x "$CAMERA_STACK" ]; then
-			json_add_string capture_detail '相机服务未运行；点击“启动并试拍”会启动隔离相机环境'
+			json_add_string capture_detail '相机服务未运行；进入摄像头页面可自动启动'
 		else
 			json_add_string capture_detail '驱动已加载，但相机运行环境尚未安装；当前不能取景或录像'
 		fi
@@ -259,10 +271,221 @@ start_stack() {
 		ready=0
 		setsid "$CAMERA_STACK" start </dev/null \
 			>/run/xm14pro-camera/startup.log 2>&1 &
+		echo $! > /run/xm14pro-camera/startup.pid
 	fi
 	json_init
 	json_add_boolean ok 1
 	json_add_boolean service_ready "$ready"
+	json_dump
+}
+
+preview_alive() {
+	[ -s "$STREAM_PID" ] && [ -d "/proc/$(cat "$STREAM_PID")" ]
+}
+
+fresh_frame() {
+	local modified now
+	[ -s "$LIVE_FRAME" ] || return 1
+	modified="$(date -r "$LIVE_FRAME" +%s 2>/dev/null)" || return 1
+	now="$(date +%s)"
+	[ $((now - modified)) -le 4 ]
+}
+
+preview_stop_process() {
+	local pid attempt
+	if preview_alive; then
+		pid="$(cat "$STREAM_PID")"
+		kill "$pid" 2>/dev/null || true
+		for attempt in 1 2 3 4 5 6 7 8 9 10; do
+			[ -d "/proc/$pid" ] || break
+		/usr/libexec/xm14pro-camera/camera-delay
+		done
+		[ -d "/proc/$pid" ] && kill -9 "$pid" 2>/dev/null || true
+	fi
+	rm -f "$STREAM_PID" "$STREAM_ID" "$STREAM_LEASE" "$LIVE_FRAME"
+}
+
+preview_status() {
+	local active=0 ready=0 id='' age=-1 modified now
+	if preview_alive; then
+		active=1
+		id="$(cat "$STREAM_ID" 2>/dev/null)"
+		if fresh_frame; then
+			modified="$(date -r "$LIVE_FRAME" +%s 2>/dev/null)"
+			now="$(date +%s)"
+			if [ -n "$modified" ]; then
+				age=$((now - modified))
+				[ "$age" -le 4 ] && ready=1
+			fi
+		fi
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean preview_active "$active"
+	json_add_boolean preview_ready "$ready"
+	json_add_string preview_camera "$id"
+	json_add_string preview_path "$LIVE_PATH"
+	json_add_int frame_age "$age"
+	json_dump
+}
+
+preview_start() {
+	local id="$1" old
+	case "$id" in 1|2|3|4) ;; *) fail '无效摄像头' ;; esac
+	[ -x "$STREAM_BIN" ] || fail '实时取景程序未安装'
+	capture_services_ready || fail '相机服务尚未就绪'
+	mkdir -p "$SESSION_DIR"
+	if preview_alive; then
+		old="$(cat "$STREAM_ID" 2>/dev/null)"
+		if [ "$old" = "$id" ]; then
+			date +%s > "$STREAM_LEASE"
+			preview_status
+			return
+		fi
+	fi
+	record_stop >/dev/null
+	preview_stop_process
+	env ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_I18N_ROOT=/apex/com.android.i18n \
+		XM14_PROPERTY_SERVICE_ABSENT=1 XM14_BINDER_MANAGERS_READY=1 \
+		LD_LIBRARY_PATH=/apex/com.android.os.statsd/lib64:/apex/com.android.i18n/lib64:/system/lib64:/vendor/lib64:/odm/lib64:/system_ext/lib64 \
+		LD_PRELOAD=/system/lib64/camera-activity-compat.so:/system/lib64/camera-permission-compat.so:/vendor/lib64/libxm14pro_telephony_compat.so:/vendor/lib64/libxm14pro_audio_properties.so \
+		setsid chroot "$CAMERA_ROOT" /system/bin/bootstrap/linker64 \
+		/data/local/tmp/nwrt-camera-stream "$id" /data/local/tmp/nwrt-live.jpg \
+		</dev/null >"$SESSION_DIR/preview.log" 2>&1 &
+	echo $! > "$STREAM_PID"
+	echo "$id" > "$STREAM_ID"
+	date +%s > "$STREAM_LEASE"
+	setsid /usr/libexec/xm14pro-camera/preview-watchdog </dev/null \
+		>"$SESSION_DIR/preview-watchdog.log" 2>&1 &
+	preview_status
+}
+
+preview_heartbeat() {
+	preview_alive || fail '实时取景已停止'
+	date +%s > "$STREAM_LEASE"
+	preview_status
+}
+
+preview_stop() {
+	local startup_pid
+	record_stop >/dev/null
+	preview_stop_process
+	if [ -s "$SESSION_DIR/startup.pid" ]; then
+		startup_pid="$(cat "$SESSION_DIR/startup.pid")"
+		kill "$startup_pid" 2>/dev/null || true
+		rm -f "$SESSION_DIR/startup.pid"
+	fi
+	[ -x "$CAMERA_STACK" ] && "$CAMERA_STACK" stop
+	preview_status
+}
+
+record_alive() {
+	[ -s "$RECORD_PID" ] && [ -d "/proc/$(cat "$RECORD_PID")" ]
+}
+
+record_start() {
+	local id="$1" name path
+	case "$id" in 1|2|3|4) ;; *) fail '无效摄像头' ;; esac
+	preview_alive && [ "$(cat "$STREAM_ID")" = "$id" ] && fresh_frame ||
+		fail '实时画面尚未就绪'
+	command -v ffmpeg >/dev/null 2>&1 || fail '录像编码器未安装'
+	record_alive && fail '已有录像正在进行'
+	mkdir -p "$VIDEO_DIR" "$SESSION_DIR" || fail '无法创建录像目录'
+	chmod 700 "$VIDEO_DIR"
+	name="video-$(date +%Y%m%d-%H%M%S)-c$id-$$.mp4"
+	path="$VIDEO_DIR/$name"
+	echo "$name" > "$RECORD_NAME"
+	echo "$path" > "$RECORD_PATH"
+	setsid /usr/libexec/xm14pro-camera/record-run "$path" </dev/null \
+		>"$SESSION_DIR/record.log" 2>&1 &
+	echo $! > "$RECORD_PID"
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean recording 1
+	json_add_string path "$path"
+	json_add_string name "$name"
+	json_dump
+}
+
+record_stop() {
+	local pid attempt path name size
+	path="$(cat "$RECORD_PATH" 2>/dev/null)"
+	name="$(cat "$RECORD_NAME" 2>/dev/null)"
+	if record_alive; then
+		pid="$(cat "$RECORD_PID")"
+		kill -TERM "$pid" 2>/dev/null || true
+		for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+			[ -d "/proc/$pid" ] || break
+			/usr/libexec/xm14pro-camera/camera-delay
+		done
+	fi
+	rm -f "$RECORD_PID" "$SESSION_DIR/record-ffmpeg.pid"
+	if [ -n "$path" ] && [ -f "$path" ]; then
+		size="$(wc -c < "$path" 2>/dev/null)"
+	else
+		size=0
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean recording 0
+	json_add_string path "$path"
+	json_add_string name "$name"
+	json_add_int size "${size:-0}"
+	json_dump
+}
+
+video_list() {
+	local file name size modified
+	json_init
+	json_add_boolean ok 1
+	json_add_string directory "$VIDEO_DIR"
+	json_add_array videos
+	for file in "$VIDEO_DIR"/video-*.mp4; do
+		[ -f "$file" ] || continue
+		name="${file##*/}"
+		size="$(wc -c < "$file" 2>/dev/null)"
+		modified="$(date -r "$file" +%s 2>/dev/null)"
+		json_add_object ''
+		json_add_string name "$name"
+		json_add_string path "$file"
+		json_add_int size "${size:-0}"
+		json_add_int modified "${modified:-0}"
+		json_close_object
+	done
+	json_close_array
+	json_dump
+}
+
+delete_video() {
+	local name="$1"
+	case "$name" in video-*.mp4) ;; *) fail '无效录像名称' ;; esac
+	case "$name" in *[!A-Za-z0-9_.-]*) fail '无效录像名称' ;; esac
+	[ -f "$VIDEO_DIR/$name" ] || fail '录像不存在'
+	[ "$(cat "$RECORD_NAME" 2>/dev/null)" = "$name" ] && record_alive &&
+		fail '正在录像，请先停止'
+	rm -f "$VIDEO_DIR/$name" || fail '无法删除录像'
+	json_init
+	json_add_boolean ok 1
+	json_dump
+}
+
+preview_photo() {
+	local id="$1" name target
+	case "$id" in 1|2|3|4) ;; *) fail '无效摄像头' ;; esac
+	preview_alive && [ "$(cat "$STREAM_ID")" = "$id" ] && fresh_frame ||
+		fail '实时画面尚未就绪'
+	mkdir -p "$PHOTO_DIR" || fail '无法创建照片目录'
+	chmod 700 "$PHOTO_DIR"
+	name="photo-$(date +%Y%m%d-%H%M%S)-c$id-$$.jpg"
+	target="$PHOTO_DIR/$name"
+	cp "$LIVE_FRAME" "$target.tmp" || fail '无法保存照片'
+	mv -f "$target.tmp" "$target"
+	chmod 600 "$target"
+	json_init
+	json_add_boolean ok 1
+	json_add_string mime image/jpeg
+	json_add_string path "$target"
+	json_add_string name "$name"
 	json_dump
 }
 
@@ -282,6 +505,33 @@ case "${1:-status}" in
 		;;
 	start)
 		start_stack
+		;;
+	preview-start)
+		preview_start "${2:-}"
+		;;
+	preview-status)
+		preview_status
+		;;
+	preview-heartbeat)
+		preview_heartbeat
+		;;
+	preview-stop)
+		preview_stop
+		;;
+	preview-photo)
+		preview_photo "${2:-}"
+		;;
+	record-start)
+		record_start "${2:-}"
+		;;
+	record-stop)
+		record_stop
+		;;
+	video-list)
+		video_list
+		;;
+	video-delete)
+		delete_video "${2:-}"
 		;;
 	load)
 		[ "$(uname -r)" = "$KERNEL" ] || fail '当前内核版本与摄像头模块不匹配'

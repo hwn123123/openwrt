@@ -10,8 +10,8 @@ The LuCI page uses `/usr/libexec/xm14pro-camera/control` to take a single
 640×480 JPEG frame. Camera IDs 1, 2, 3, and 4 correspond to the front, main,
 ultrawide, and telephoto cameras. Photos saved from LuCI live in
 `/mnt/nwrt-data/camera/photos`; previews live in `/tmp/xm14pro-camera`.
-The UI does not claim continuous preview or video recording; those functions
-are still unimplemented.
+The live preview and video controls use the separate `camera-stream` process;
+the original single-frame snapshot command remains available.
 
 ## Runtime
 
@@ -38,6 +38,19 @@ startup. LuCI starts the stack in the background and polls `service_ready`
 before sending the photo request, so its RPC call does not wait for provider
 enumeration. `control status` marks `capture_ready=true` only after a successful
 JPEG capture from the current provider and cameraserver process IDs.
+
+The `camera-stream <camera-id> /data/local/tmp/nwrt-live.jpg` client keeps one
+camera capture session open and atomically replaces the JPEG frame file. It
+uses the newest available frame and limits JPEG encoding to at most 5 fps.
+On-device testing captured 80 frames in 30 seconds (about 2.7 fps actual) at
+640×480; SIGTERM closed the session and removed the live file. The control
+layer can feed these JPEG frames to ffmpeg for an MP4 recording, currently
+without audio. An eight-second B-slot recording produced a decodable 7.6-second
+MP4 containing 38 frames; a decoded frame showed the real camera scene.
+The LuCI page renews a lease while visible, and `preview-watchdog` shuts down
+the camera stack after 20 seconds without renewal. A failed private camera
+startup gets one clean retry; the first attempt's logs are preserved under
+`/run/xm14pro-camera/first-attempt`.
 
 ## Build and verification
 

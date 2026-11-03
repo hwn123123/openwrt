@@ -5,7 +5,9 @@
 			"file": {
 				"/usr/libexec/xm14pro-camera/read-control": [ "list", "exec" ],
 				"/tmp/xm14pro-camera/*": [ "read" ],
-				"/mnt/nwrt-data/camera/photos/*": [ "read" ]
+				"/mnt/nwrt-data/camera/photos/*": [ "read" ],
+				"/mnt/nwrt-data/camera/videos/*": [ "read" ],
+				"/mnt/nwrt-data/camera-android-root/data/local/tmp/nwrt-live.jpg": [ "read" ]
 			}
 		},
 		"write": {
