@@ -1,0 +1,129 @@
+#!/bin/sh
+# Camera services live in a private root and private Binder devices. Never touch slot A.
+set -eu
+
+R=/mnt/nwrt-data/camera-android-root
+S=/usr/libexec/xm14pro-camera
+PIDDIR=/run/xm14pro-camera
+BASE_LIB=/apex/com.android.os.statsd/lib64:/apex/com.android.i18n/lib64:/system/lib64:/vendor/lib64:/odm/lib64:/system_ext/lib64
+BASE_PRELOAD=/vendor/lib64/libxm14pro_telephony_compat.so:/vendor/lib64/libxm14pro_audio_properties.so
+
+alive() {
+    [ -s "$PIDDIR/$1.pid" ] || return 1
+    pid=$(cat "$PIDDIR/$1.pid")
+    [ -d "/proc/$pid" ] && [ "$(readlink "/proc/$pid/root" 2>/dev/null)" = "$R" ]
+}
+
+launch() {
+    name=$1 uid=$2 gid=$3 preload=$4 libraries=$5
+    shift 5
+    if alive "$name"; then return 0; fi
+    LD_LIBRARY_PATH="$libraries" LD_PRELOAD="$preload" \
+        setsid "$S/camera-launch" "$R" "$uid" "$gid" \
+        /system/bin/bootstrap/linker64 "$@" </dev/null >"$PIDDIR/$name.log" 2>&1 &
+    echo $! >"$PIDDIR/$name.pid"
+}
+
+copy_if_changed() {
+    from=$1 to=$2
+    if ! cmp -s "$from" "$to"; then
+        cp "$from" "$to"
+        chmod 755 "$to"
+    fi
+}
+
+prepare_files() {
+    for name in proxy sensor-privacy processinfo flinger; do
+        copy_if_changed "$S/camera-$name-compat" "$R/data/local/tmp/camera-$name-compat"
+    done
+    copy_if_changed "$S/camera-list" "$R/data/local/tmp/camera-list"
+    copy_if_changed "$S/camera-abi-compat.so" "$R/vendor/lib64/camera-abi-compat.so"
+    copy_if_changed "$S/camera-hwsm-property-compat.so" "$R/vendor/lib64/camera-hwsm-property-compat.so"
+    copy_if_changed "$S/camera-activity-compat.so" "$R/system/lib64/camera-activity-compat.so"
+    copy_if_changed "$S/camera-permission-compat.so" "$R/system/lib64/camera-permission-compat.so"
+    for name in libxm14pro_telephony_compat.so libxm14pro_audio_properties.so; do
+        copy_if_changed "/usr/libexec/xm14pro-qwes/android-root/vendor/lib64/$name" "$R/vendor/lib64/$name"
+    done
+}
+
+start() {
+    grep -q 'androidboot.slot_suffix = "_b"' /proc/bootconfig || {
+        echo 'Camera sidecar may only start in slot B' >&2; exit 1;
+    }
+    mkdir -p "$PIDDIR"
+    if alive provider && alive cameraserver && [ -f "$PIDDIR/.ready" ]; then return 0; fi
+    if ! mkdir "$PIDDIR/.start-lock" 2>/dev/null; then
+        for attempt in $(seq 1 120); do
+            if alive provider && alive cameraserver && [ -f "$PIDDIR/.ready" ]; then return 0; fi
+            sleep 1
+        done
+        echo 'Another camera startup did not finish' >&2
+        return 1
+    fi
+    trap 'rc=$?; if [ "$rc" -ne 0 ]; then stop; fi; rmdir "$PIDDIR/.start-lock" 2>/dev/null || true' EXIT INT TERM
+    rm -f "$PIDDIR/.ready"
+    "$S/setup-isolated-root"
+    prepare_files
+    export ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_I18N_ROOT=/apex/com.android.i18n
+    export XM14_PROPERTY_SERVICE_ABSENT=1 XM14_BINDER_MANAGERS_READY=1
+    launch servicemanager 1000 1000 '' "$BASE_LIB" /system/bin/servicemanager
+    sleep 1
+    launch hwservicemanager 1000 1000 \
+        /vendor/lib64/camera-hwsm-property-compat.so:/vendor/lib64/libxm14pro_telephony_compat.so \
+        "$BASE_LIB" /system_ext/bin/hwservicemanager
+    sleep 1
+    launch proxy 1000 1000 "$BASE_PRELOAD" "$BASE_LIB" /data/local/tmp/camera-proxy-compat
+    launch privacy 1000 1000 "$BASE_PRELOAD" "$BASE_LIB" /data/local/tmp/camera-sensor-privacy-compat
+    launch processinfo 1000 1000 "$BASE_PRELOAD" "$BASE_LIB" /data/local/tmp/camera-processinfo-compat
+    launch flinger 1000 1000 "$BASE_PRELOAD" "$BASE_LIB" /data/local/tmp/camera-flinger-compat
+    launch sensors 1000 1000 "$BASE_PRELOAD" "$BASE_LIB" /vendor/bin/hw/android.hardware.sensors-service.xiaomi-multihal
+    # qcom,system DMA-BUF heap is 0600 root on this kernel. This service is
+    # confined to the private Binder network and cannot serve normal Android.
+    launch allocator 0 0 "$BASE_PRELOAD" "$BASE_LIB" /vendor/bin/hw/vendor.qti.hardware.display.allocator-service
+    launch mediaswcodec 0 0 "$BASE_PRELOAD" \
+        "/system/lib64:/apex/com.android.media.swcodec/lib64:/apex/com.android.media/lib64:$BASE_LIB" \
+        /apex/com.android.media.swcodec/bin/mediaswcodec
+    sleep 2
+    launch provider 0 0 \
+        "/vendor/lib64/camera-abi-compat.so:$BASE_PRELOAD" "$BASE_LIB" \
+        /system/bin/runcon u:r:hal_camera_default:s0 /system/bin/bootstrap/linker64 \
+        /odm/bin/hw/vendor.qti.camera.provider-service_64
+    sleep 2
+    launch cameraserver 0 0 \
+        "/system/lib64/camera-activity-compat.so:/system/lib64/camera-permission-compat.so:$BASE_PRELOAD" \
+        "$BASE_LIB" /system/bin/runcon u:r:cameraserver:s0 \
+        /system/bin/bootstrap/linker64 /system/bin/cameraserver
+    for attempt in $(seq 1 120); do
+        alive provider && alive cameraserver || {
+            echo 'Camera provider or cameraserver exited' >&2; return 1;
+        }
+        if LD_LIBRARY_PATH="$BASE_LIB" LD_PRELOAD="/system/lib64/camera-activity-compat.so:/system/lib64/camera-permission-compat.so:$BASE_PRELOAD" \
+            timeout 5 chroot "$R" /system/bin/bootstrap/linker64 \
+            /data/local/tmp/camera-list 2>&1 | grep -q 'count=[1-9]'; then
+            touch "$PIDDIR/.ready"
+            return 0
+        fi
+        sleep 1
+    done
+    echo 'Camera IDs did not become available' >&2
+    return 1
+}
+
+stop() {
+    for name in cameraserver provider mediaswcodec allocator sensors flinger processinfo privacy proxy hwservicemanager servicemanager; do
+        if alive "$name"; then kill "$(cat "$PIDDIR/$name.pid")" 2>/dev/null || true; fi
+    done
+    sleep 1
+    for name in cameraserver provider mediaswcodec allocator sensors flinger processinfo privacy proxy hwservicemanager servicemanager; do
+        if alive "$name"; then kill -9 "$(cat "$PIDDIR/$name.pid")" 2>/dev/null || true; fi
+    done
+    rm -f "$PIDDIR"/*.pid "$PIDDIR/.ready"
+    rmdir "$PIDDIR/.start-lock" 2>/dev/null || true
+}
+
+case "${1:-}" in
+    start) start ;;
+    stop) stop ;;
+    status) alive provider && alive cameraserver && [ -f "$PIDDIR/.ready" ] ;;
+    *) echo 'Usage: stack start|stop|status' >&2; exit 2 ;;
+esac

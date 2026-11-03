@@ -35,6 +35,18 @@ mkdir -p "$R/apex/com.android.i18n" "$R/apex/com.android.os.statsd" "$R/apex/com
 ensure_mount "$R/apex/com.android.i18n" -t ext4 -o loop,ro "$P/i18n.img"
 ensure_mount "$R/apex/com.android.os.statsd" -t ext4 -o loop,ro "$P/statsd.img"
 ensure_mount "$R/apex/com.android.vndk.v34" -t ext4 -o loop,ro "$D/camera-vndk34.img"
+for apex in com.android.media com.android.media.swcodec; do
+    image="$P/$apex.img"
+    if [ ! -s "$image" ]; then
+        archive="$P/$apex.apex"
+        unzip -p "$R/system/apex/$apex.capex" original_apex >"$archive.tmp"
+        mv "$archive.tmp" "$archive"
+        unzip -p "$archive" apex_payload.img >"$image.tmp"
+        mv "$image.tmp" "$image"
+    fi
+    mkdir -p "$R/apex/$apex"
+    ensure_mount "$R/apex/$apex" -t ext4 -o loop,ro "$image"
+done
 mkdir -p "$R/mnt/vendor/persist"
 ensure_mount "$R/mnt/vendor/persist" -t overlay overlay -o "lowerdir=$LOWER/mnt/vendor/persist,upperdir=$D/camera-persist-upper,workdir=$D/camera-persist-work"
 ensure_mount "$R/dev" -t tmpfs -o size=16384k,mode=755 tmpfs
@@ -71,5 +83,8 @@ done
 chmod 666 "$R/dev/binderfs/binder" "$R/dev/binderfs/hwbinder" "$R/dev/binderfs/vndbinder"
 ln -sf /dev/binderfs/binder "$R/dev/binder"
 ln -sf /dev/binderfs/hwbinder "$R/dev/hwbinder"
-ln -sf /dev/binderfs/vndbinder "$R/dev/vndbinder"
+# The QTI AIDL provider uses /dev/vndbinder as its Binder driver. Point its
+# private alias at the same Binder context as the private system service
+# manager, or cameraserver cannot discover the provider.
+ln -sf /dev/binderfs/binder "$R/dev/vndbinder"
 readlink "$R/dev/binder"

@@ -243,15 +243,40 @@ return view.extend({
 				buttons();
 			});
 		}
+		function verifyCapture() {
+			if (state.busy || !state.data.capture_possible) return;
+			state.busy = true;
+			buttons();
+			message.textContent = '正在启动相机服务，首次启动约需一分钟…';
+			function waitReady(attempt) {
+				if (attempt >= 70) throw new Error('相机服务未能在规定时间内启动');
+				return query('status').then(function(data) {
+					update(data, true);
+					if (data.service_ready) return;
+					if (attempt > 2 && !data.service_starting)
+						throw new Error(data.capture_detail || '相机服务启动失败');
+					return new Promise(function(resolve) { setTimeout(resolve, 2000); })
+						.then(function() { return waitReady(attempt + 1); });
+				});
+			}
+			return query('start').then(function() { return waitReady(0); }).then(function() {
+				state.busy = false;
+				return capture(false);
+			}, errorText).finally(function() {
+				state.busy = false;
+				buttons();
+			});
+		}
 		function update(data, keepMessage) {
 			state.data = data;
 			drawPicker();
 			buttons();
 			if (!keepMessage) message.textContent = data.capture_detail || '摄像头取流尚不可用';
 			if (!state.url) preview.replaceChildren(E('div', { 'class': 'xm-camera-placeholder' },
-				data.capture_ready ? '点击“更新画面”查看镜头画面' : '相机暂时没有画面，拍照不可用'));
+				data.capture_ready ? '点击“更新画面”查看镜头画面' :
+				data.capture_possible ? '点击“启动并试拍”验证镜头' : '相机尚不可用'));
 			captureHelp.textContent = data.capture_ready ? '当前是单帧取景。拍照前请先更新画面。' :
-				data.capture_possible ? '相机进程已启动，但尚未拍到画面。可试拍一次验证。' : '相机服务尚未就绪。';
+				data.capture_possible ? '按需启动隔离相机服务后试拍一帧。' : '相机服务尚未就绪。';
 			hardware.replaceChildren.apply(hardware, hardwareContent(data, update));
 		}
 
@@ -272,8 +297,8 @@ return view.extend({
 		}, '更新画面');
 		verifyButton = E('button', {
 			'type': 'button', 'class': 'btn cbi-button-action',
-			'click': function() { capture(false); }
-		}, '试拍验证');
+			'click': verifyCapture
+		}, '启动并试拍');
 		saveImage = E('button', {
 			'type': 'button', 'class': 'btn cbi-button cbi-button-action',
 			'click': function() { capture(true); }

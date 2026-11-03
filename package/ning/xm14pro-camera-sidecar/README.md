@@ -1,110 +1,60 @@
-# Xiaomi 14 Pro camera client
+# Xiaomi 14 Pro camera sidecar
 
-`src/camera-snapshot.c` captures a YUV frame with Android's NDK camera API
-and converts it to JPEG in software. Camera IDs 1, 2, 3 and 4 were verified
-on a live Xiaomi 14 Pro: front, main, ultrawide and telephoto respectively.
-Logical rear camera ID 0 does not currently return frames in the isolated
-runtime, so the UI does not offer it.
+This package starts the stock Android camera HAL inside an isolated root on
+NWRT slot B. The stock `system`, `vendor`, `odm`, and `system_ext` images remain
+on the device at `/mnt/nwrt-data/pixelos-original` and are mounted read-only.
+They are never copied into this package or Git. The A-slot partitions and
+Android userdata are not mounted or changed.
 
-The LuCI page saves photos taken with **拍照保存到设备** to
-`/mnt/nwrt-data/camera/photos` on the B-slot data partition. **拍一帧预览**
-uses `/tmp/xm14pro-camera` and is not kept after a reboot. The gallery lists,
-downloads and deletes saved JPEGs; a browser download goes to the browser's
-configured download directory. Preview rotation and mirroring do not change
-the saved file. Video recording is not implemented: this client captures one
-JPEG frame and has no continuous stream or video encoder.
+The LuCI page uses `/usr/libexec/xm14pro-camera/control` to take a single
+640×480 JPEG frame. Camera IDs 1, 2, 3, and 4 correspond to the front, main,
+ultrawide, and telephoto cameras. Photos saved from LuCI live in
+`/mnt/nwrt-data/camera/photos`; previews live in `/tmp/xm14pro-camera`.
+The UI does not claim continuous preview or video recording; those functions
+are still unimplemented.
 
-The package installs the snapshot client and `setup-isolated-root`, which
-mounts the device-local Android images read-only into a private root and
-creates separate Binder, HWBinder, and vendor Binder nodes. The isolated camera provider,
-camera server, Android Binder managers and compatibility services are still
-device-local runtime dependencies. `/usr/libexec/xm14pro-camera/control`
-reports `capture_ready=false` unless that runtime is present. The Android
-images under `/mnt/nwrt-data/pixelos-original` stay on the device and are
-mounted read-only; they are not copied into this package or Git.
+## Runtime
 
-## Cold-start work still required
+`stack start` creates private Binder and HWBinder devices and starts the stock
+service managers, sensors, display allocator, media software codec, camera
+provider, and cameraserver. The provider uses the same private ordinary Binder
+context as cameraserver for its AIDL registration. The software codec APEX is
+extracted from the device-local stock CAPEX and mounted read-only. The display
+allocator runs as root in this private root because this kernel exposes
+`/dev/dma_heap/qcom,system` as mode 0600 root; UID 1000 was verified to fail
+buffer allocation with `Permission denied`. No host DMA-BUF permissions are
+changed.
 
-The current live sidecar was assembled interactively; reboot recovery is not
-yet implemented by this package. Before shipping an automatic service, its
-startup must: (1) verify the B slot and checksums of the device-local stock
-images; (2) mount `system`, `vendor`, `odm`, and `system_ext` read-only beneath
-an isolated overlay root; (3) refresh camera `/dev/video*`, `/dev/media*`,
-`/dev/v4l-subdev*`, ashmem, and private Binder nodes; (4) start the private
-Binder managers, sensor and display allocator helpers, provider, and camera
-server in that order; and (5) wait for a successful camera enumeration probe.
-It must stop those processes when camera use ends so ordinary router operation
-does not keep the camera stack awake.
+Four small compatibility services and two preloads provide the Android calls
+observed from the private cameraserver. Their sources are in `src/`; the Binder
+services reject unrecognized transaction codes. They are only launched on the
+isolated Binder network. The stock telephony and audio property bridges come
+from the installed NWRT telephony sidecar. `stack stop` stops only processes
+started by this camera sidecar.
 
-The live prototype also needs four Binder compatibility services:
-`media.camera.proxy`, `sensor_privacy`, `processinfo`, and
-`SurfaceFlingerAIDL`, plus narrow ActivityManager and permission bridges.
-Their current device-local test stubs accept broad transaction sets and are
-**not** included in this package. Each service needs a documented, minimal
-transaction implementation and error handling before automatic startup can
-be considered stable. `capture_ready=true` now requires a successful snapshot
-from the current camera service processes; it does not imply reboot persistence.
+The stack starts on demand when the user selects “启动并试拍” or requests a frame.
+The camera provider can take around a minute to register and enumerate after
+startup. LuCI starts the stack in the background and polls `service_ready`
+before sending the photo request, so its RPC call does not wait for provider
+enumeration. `control status` marks `capture_ready=true` only after a successful
+JPEG capture from the current provider and cameraserver process IDs.
 
-After a cold reboot, the stock private `hwservicemanager` aborts because the
-isolated root has no Android property service. A temporary shim that accepts
-only the `hwservicemanager.disabled=false` write, together with the existing
-property-wait backoff, let that manager remain idle without a CPU spin.
-Starting the provider and camera server then still returned zero camera IDs;
-the remaining helper services and Binder bridges need proper implementations.
-The temporary shim and permissive test stubs are not part of this package.
+## Build and verification
 
-The private Binder service manager must also run as Android UID 1000 after
-`chroot`: binderfs retains the first context manager UID, and launching a
-replacement as root returns `EPERM`. The camera server needs its stock
-`u:r:cameraserver:s0` domain; without it, `media.camera` is not registered.
-With those identities, the provider, sensor and allocator helpers, and the
-temporary Binder bridges registered in the private manager, but camera
-enumeration still returned zero devices and a snapshot timed out. These are
-startup findings, not a working cold-boot path. All probe processes were
-stopped after the check.
+`src/build-compat.sh` rebuilds the Bionic compatibility binaries using
+`ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` (a matching stock system lib64
+containing `libbinder_ndk.so`). `src/build-snapshot.sh` rebuilds the snapshot
+client. The OpenWrt package build compiles the small musl chroot launcher from
+`src/camera-launch.c` and packages all scripts and binaries.
 
-A clean B-slot reboot reproduced the zero-camera result after all private
-services registered. The kernel also logged `cam_mem_mgr_init: Error in
-getting force cache alloc flag` during module load, followed by a successful
-ICP firmware download. The log does not yet establish which of these events
-causes enumeration to fail. The AP and 5G SA connection remained available
-after the reboot; the private camera services were stopped again.
+On 2026-11-04, the packaged sidecar was installed on a running B-slot NWRT.
+After stopping all manually launched private camera processes and unmounting
+the private root, `stack start` enumerated 11 camera IDs. A fresh call through
+`control snapshot 2 preview` returned success and wrote a real JPEG. Before
+that teardown, IDs 1–4 each produced real 640×480 JPEG images.
 
-On a later B-slot boot, an ICP open logged `mem_mgr not initialized` after
-`cam_req_mgr_close`. The camera kernel source initializes the memory manager
-when the request-manager device is opened and deinitializes it when that
-device closes. This isolated probe does not establish the cause of the
-zero-camera result; do not change DMA heaps based on that line alone.
-
-In a later isolated test, a temporary preload accepted only
-`__system_property_set("hwservicemanager.disabled", "false")`; the existing
-property-readiness bridge was also preloaded. The **stock** private
-`hwservicemanager` then responded to `lshal`, avoiding the CPU spin seen with
-the earlier patched test binary. Restarting the camera provider registered
-`android.hardware.camera.provider.ICameraProvider/vendor_qti/0`, and its log
-showed successful probes for the front, ultrawide and tele sensors. Yet the
-camera API still enumerated zero devices. Restarting `cameraserver` did not
-restore `media.camera` registration. The test processes and private mounts
-were stopped afterward. The provider registration is progress in diagnosing
-the cold-start chain, not a working camera preview or a production service.
-
-A subsequent source audit found that the device-local setup script linked
-`/dev/vndbinder` to the ordinary Binder node. The source copy now links it to
-`/dev/binderfs/vndbinder`; with that fix the private `vndservicemanager`
-starts. A clean provider launch still probes the physical sensors but does
-not register an AIDL camera provider, and the camera API returns zero camera
-IDs. Starting the DSP helper and QTI media C2 service did not change that
-result. This mount correction is required but does not establish usable
-preview or reboot persistence. The broad test Binder bridges remain outside
-the package until their interfaces and cold-start behavior are validated.
-
-The Binder device helper is built from `src/binderfs-add.c` with
-`src/build-binderfs-add.sh` and the Android NDK. `setup-isolated-root` requires
-device-local PixelOS partition images and the VNDK image on the B data
-partition; it does not start camera processes. A working service lifecycle
-and continuous viewfinder remain to be implemented.
-
-To rebuild the client, set `ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` to the
-Android NDK and a matching extracted stock system library directory, then run
-`src/build-snapshot.sh`. The checked-in arm64 binary's SHA-256 is
-`4e110478f6c3aa4c9a61040f277fa3bc854e6dd313c41590fd4a929fd056ab37`.
+After a full NWRT reboot, `control load` restored the camera and CVP drivers;
+LuCI exposes this as “加载摄像头驱动”. The asynchronous `control start` path became
+ready in 48 seconds, and `control snapshot 2 preview` returned a 640×480 JPEG
+with visible scene content in 11 seconds. Cellular remained up. The camera
+services start on demand; the driver does not automatically load at boot.

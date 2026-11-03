@@ -7,11 +7,13 @@ CAMERA_ROOT=/mnt/nwrt-data/camera-android-root
 SNAPSHOT_BIN=/usr/libexec/xm14pro-camera/camera-snapshot
 SNAPSHOT_DIR=/tmp/xm14pro-camera
 PHOTO_DIR=/mnt/nwrt-data/camera/photos
+CAMERA_STACK=/usr/libexec/xm14pro-camera/stack
 . /usr/share/libubox/jshn.sh
 
 capture_services_ready() {
 	[ -x "$SNAPSHOT_BIN" ] && [ -x "$CAMERA_ROOT/system/bin/bootstrap/linker64" ] &&
 		[ -e "$CAMERA_ROOT/dev/binder" ] &&
+		[ -x "$CAMERA_STACK" ] && "$CAMERA_STACK" status &&
 		ps w | grep -q '[c]ameraserver' &&
 		ps w | grep -q '[v]endor.qti.camera.provider-service_64'
 }
@@ -97,6 +99,8 @@ status() {
 	json_add_int subdevices "$subdev"
 	json_add_string photo_directory "$PHOTO_DIR"
 	if capture_services_ready; then
+		json_add_boolean service_ready 1
+		json_add_boolean service_starting 0
 		json_add_boolean capture_possible 1
 		if capture_verified; then
 			json_add_boolean capture_ready 1
@@ -106,14 +110,27 @@ status() {
 			json_add_string capture_detail '相机进程已启动，但尚未拍到画面；当前不能正常拍照'
 		fi
 	else
-		json_add_boolean capture_possible 0
+		json_add_boolean service_ready 0
+		if [ -d /run/xm14pro-camera/.start-lock ]; then
+			json_add_boolean service_starting 1
+		else
+			json_add_boolean service_starting 0
+		fi
+		if [ "$camera" -eq 1 ] && [ -x "$CAMERA_STACK" ] &&
+			[ -s /mnt/nwrt-data/pixelos-original/system.img ]; then
+			json_add_boolean capture_possible 1
+		else
+			json_add_boolean capture_possible 0
+		fi
 		json_add_boolean capture_ready 0
 		if [ "$camera" -eq 0 ]; then
 			json_add_string capture_detail '摄像头驱动未加载；可先点击“加载摄像头驱动”'
-		elif [ ! -x "$CAMERA_ROOT/system/bin/bootstrap/linker64" ]; then
-			json_add_string capture_detail '驱动已加载，但隔离的 Android 相机运行环境尚未启动；当前不能取景或录像'
+		elif [ -d /run/xm14pro-camera/.start-lock ]; then
+			json_add_string capture_detail '隔离相机服务正在启动，首次启动约需一分钟'
+		elif [ -x "$CAMERA_STACK" ]; then
+			json_add_string capture_detail '相机服务未运行；点击“启动并试拍”会启动隔离相机环境'
 		else
-			json_add_string capture_detail '驱动已加载，但相机提供服务或 cameraserver 未运行；当前不能取景或录像'
+			json_add_string capture_detail '驱动已加载，但相机运行环境尚未安装；当前不能取景或录像'
 		fi
 	fi
 	add_cameras
@@ -169,6 +186,10 @@ snapshot() {
 		preview|save) ;;
 		*) fail '无效拍摄模式' ;;
 	esac
+	if ! capture_services_ready; then
+		[ -x "$CAMERA_STACK" ] || fail '相机运行环境未安装'
+		"$CAMERA_STACK" start || fail '相机服务启动失败'
+	fi
 	capture_services_ready || fail '相机取流服务未就绪'
 	mkdir -p "$SNAPSHOT_DIR" || fail '无法创建拍照目录'
 	chmod 700 "$SNAPSHOT_DIR"
@@ -196,7 +217,7 @@ snapshot() {
 	env ANDROID_ROOT=/system ANDROID_DATA=/data ANDROID_I18N_ROOT=/apex/com.android.i18n \
 		XM14_PROPERTY_SERVICE_ABSENT=1 XM14_BINDER_MANAGERS_READY=1 \
 		LD_LIBRARY_PATH=/apex/com.android.os.statsd/lib64:/apex/com.android.i18n/lib64:/system/lib64:/vendor/lib64:/odm/lib64:/system_ext/lib64 \
-		LD_PRELOAD=/system/lib64/libcamera-am-test.so:/system/lib64/libcamera-permission-test.so:/vendor/lib64/libxm14pro_telephony_compat.so:/vendor/lib64/libxm14pro_audio_properties.so \
+		LD_PRELOAD=/system/lib64/camera-activity-compat.so:/system/lib64/camera-permission-compat.so:/vendor/lib64/libxm14pro_telephony_compat.so:/vendor/lib64/libxm14pro_audio_properties.so \
 		timeout 30 chroot "$CAMERA_ROOT" /system/bin/bootstrap/linker64 \
 		/data/local/tmp/xm14pro-camera-snapshot "$id" "$temp" >"$capture_log" 2>&1
 	rc=$?
@@ -228,6 +249,23 @@ fail() {
 	exit 1
 }
 
+start_stack() {
+	[ -x "$CAMERA_STACK" ] || fail '相机运行环境未安装'
+	module_loaded camera.ko || fail '摄像头驱动未加载'
+	mkdir -p /run/xm14pro-camera
+	if "$CAMERA_STACK" status; then
+		ready=1
+	else
+		ready=0
+		setsid "$CAMERA_STACK" start </dev/null \
+			>/run/xm14pro-camera/startup.log 2>&1 &
+	fi
+	json_init
+	json_add_boolean ok 1
+	json_add_boolean service_ready "$ready"
+	json_dump
+}
+
 load_module() {
 	local file="$1" output
 	module_loaded "$file" && return 0
@@ -241,6 +279,9 @@ load_module() {
 case "${1:-status}" in
 	status)
 		status
+		;;
+	start)
+		start_stack
 		;;
 	load)
 		[ "$(uname -r)" = "$KERNEL" ] || fail '当前内核版本与摄像头模块不匹配'
