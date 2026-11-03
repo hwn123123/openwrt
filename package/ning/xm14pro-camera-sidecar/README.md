@@ -68,6 +68,12 @@ ICP firmware download. The log does not yet establish which of these events
 causes enumeration to fail. The AP and 5G SA connection remained available
 after the reboot; the private camera services were stopped again.
 
+On a later B-slot boot, an ICP open logged `mem_mgr not initialized` after
+`cam_req_mgr_close`. The camera kernel source initializes the memory manager
+when the request-manager device is opened and deinitializes it when that
+device closes. This isolated probe does not establish the cause of the
+zero-camera result; do not change DMA heaps based on that line alone.
+
 To rebuild the client, set `ANDROID_NDK` and `ANDROID_SYSTEM_LIB64` to the
 Android NDK and a matching extracted stock system library directory, then run
 `src/build-snapshot.sh`. The checked-in arm64 binary's SHA-256 is

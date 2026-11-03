@@ -108,7 +108,7 @@ return view.extend({
 			E('option', { 'value': '3' }, '3 秒'),
 			E('option', { 'value': '10' }, '10 秒')
 		]);
-		var refreshImage, saveImage, downloadImage, loadDriver;
+		var refreshImage, saveImage, downloadImage, loadDriver, captureActions, previewActions, captureHelp;
 
 		function sizeText(bytes) {
 			return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.ceil(bytes / 1024) + ' KB';
@@ -143,9 +143,14 @@ return view.extend({
 			refreshImage.disabled = state.busy || !state.data.capture_possible;
 			saveImage.disabled = state.busy || !state.data.capture_possible;
 			downloadImage.disabled = state.busy || !state.url;
+			downloadImage.style.display = state.url ? '' : 'none';
 			loadDriver.disabled = state.busy || (!!state.data.driver_loaded && !!state.data.cvp_ready);
+			loadDriver.textContent = state.data.driver_loaded && state.data.cvp_ready ? '驱动已加载' : '加载摄像头驱动';
 			timer.disabled = state.busy;
-			picker.querySelectorAll('button').forEach(function(button) { button.disabled = state.busy; });
+			picker.querySelectorAll('button').forEach(function(button) { button.disabled = state.busy || !state.data.capture_possible; });
+			picker.style.display = state.data.capture_possible ? '' : 'none';
+			if (captureActions) captureActions.style.display = state.data.capture_possible ? '' : 'none';
+			if (previewActions) previewActions.style.display = state.url ? '' : 'none';
 		}
 		function drawPicker() {
 			var cameras = Array.isArray(state.data.cameras) ? state.data.cameras : [];
@@ -159,7 +164,7 @@ return view.extend({
 					'click': function() {
 						state.camera = id;
 						drawPicker();
-						message.textContent = '已选择' + camera.name + '；每次预览会拍摄一帧。';
+						if (state.data.capture_possible) message.textContent = '已选择' + camera.name + '。';
 					}
 				}, camera.name || ('镜头 ' + id));
 			}));
@@ -238,6 +243,10 @@ return view.extend({
 			drawPicker();
 			buttons();
 			if (!keepMessage) message.textContent = data.capture_detail || '摄像头取流尚不可用';
+			if (!state.url) preview.replaceChildren(E('div', { 'class': 'xm-camera-placeholder' },
+				data.capture_possible ? '点击“拍一帧预览”查看画面' : '摄像头服务未就绪，暂时无法预览和拍照'));
+			captureHelp.textContent = data.capture_possible ? '选择镜头后拍摄一帧；连续实时预览尚未适配。' :
+				'相机服务尚未就绪。预览和拍照功能会在服务恢复后开放。';
 			hardware.replaceChildren.apply(hardware, hardwareContent(data, update));
 		}
 
@@ -266,6 +275,13 @@ return view.extend({
 				if (state.url) download(state.url, state.photo || 'nwrt-camera-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg');
 			}
 		}, '下载当前照片');
+		captureHelp = E('p', { 'class': 'cbi-section-descr' });
+		captureActions = E('div', { 'class': 'xm-camera-actions' }, [ '倒计时 ', timer, refreshImage, saveImage ]);
+		previewActions = E('div', { 'class': 'xm-camera-actions' }, [
+			downloadImage,
+			E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.rotation = (state.rotation + 90) % 360; applyTransform(); } }, '预览旋转 90°'),
+			E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.mirrored = !state.mirrored; applyTransform(); } }, '预览镜像')
+		]);
 		update(initial);
 		refreshGallery();
 		return E('div', {}, [
@@ -281,14 +297,11 @@ return view.extend({
 			]),
 			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, '拍照'),
-				E('p', { 'class': 'cbi-section-descr' }, '选择镜头后逐帧拍摄；当前没有连续实时预览。'),
+				captureHelp,
 				picker,
 				preview,
-				E('div', { 'class': 'xm-camera-actions' }, [ '倒计时 ', timer, refreshImage, saveImage, downloadImage ]),
-				E('div', { 'class': 'xm-camera-actions' }, [
-					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.rotation = (state.rotation + 90) % 360; applyTransform(); } }, '预览旋转 90°'),
-					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.mirrored = !state.mirrored; applyTransform(); } }, '预览镜像')
-				]),
+				captureActions,
+				previewActions,
 				E('p', { 'class': 'cbi-section-descr' }, '旋转和镜像只改变网页预览，不修改设备上保存的原图。')
 			]),
 			E('div', { 'class': 'cbi-section' }, [
