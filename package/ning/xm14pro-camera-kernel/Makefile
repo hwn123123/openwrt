@@ -46,6 +46,8 @@ define Package/xm14pro-camera-kernel/install
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-camera
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/control \
 		$(1)/usr/libexec/xm14pro-camera/control
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-camera/read-control \
+		$(1)/usr/libexec/xm14pro-camera/read-control
 endef
 
 $(eval $(call BuildPackage,xm14pro-camera-kernel))

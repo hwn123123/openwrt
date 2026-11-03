@@ -4,9 +4,13 @@
 'require ui';
 
 var CONTROL = '/usr/libexec/xm14pro-camera/control';
+var READ_CONTROL = '/usr/libexec/xm14pro-camera/read-control';
 
-function query(action, camera) {
-	return fs.exec(CONTROL, camera == null ? [ action ] : [ action, String(camera) ]).then(function(result) {
+function query(action, first, second) {
+	var args = [ action ];
+	if (first != null) args.push(String(first));
+	if (second != null) args.push(String(second));
+	return fs.exec(action === 'status' || action === 'list' ? READ_CONTROL : CONTROL, args).then(function(result) {
 		var data;
 		try { data = JSON.parse((result && result.stdout) || '{}'); }
 		catch (e) { throw new Error('摄像头后端返回了无效数据'); }
@@ -75,7 +79,8 @@ function hardwareContent(data, update) {
 }
 
 function imageUrl(data) {
-	if (data.path && /^\/tmp\/xm14pro-camera\/[A-Za-z0-9_.-]+\.jpg$/.test(data.path))
+	if (data.path && (/^\/tmp\/xm14pro-camera\/[A-Za-z0-9_.-]+\.jpg$/.test(data.path) ||
+		/^\/mnt\/nwrt-data\/camera\/photos\/photo-[A-Za-z0-9_.-]+\.jpg$/.test(data.path)))
 		return fs.read_direct(data.path, 'blob').then(function(blob) { return URL.createObjectURL(blob); });
 	if (data.image && (!data.mime || data.mime === 'image/jpeg'))
 		return Promise.resolve('data:image/jpeg;base64,' + data.image);
@@ -89,15 +94,45 @@ function releaseImage(url) {
 return view.extend({
 	load: function() { return query('status'); },
 	render: function(initial) {
-		var state = { data: initial, camera: '2', busy: false, url: null };
+		var state = { data: initial, camera: '2', busy: false, url: null, photo: null, rotation: 0, mirrored: false };
 		var hardware = E('div');
 		var picker = E('div', { 'class': 'xm-camera-picker' });
 		var preview = E('div', { 'class': 'xm-camera-preview' }, [
-			E('div', { 'class': 'xm-camera-placeholder' }, '选择镜头后点击“刷新画面”')
+			E('div', { 'class': 'xm-camera-placeholder' }, '选择镜头后拍摄一帧查看画面')
 		]);
 		var message = E('p', { 'class': 'xm-camera-message', 'role': 'status' });
-		var refreshImage;
-		var saveImage;
+		var gallery = E('div', {}, '正在读取设备相册…');
+		var count = E('span');
+		var timer = E('select', { 'class': 'cbi-input-select' }, [
+			E('option', { 'value': '0' }, '立即'),
+			E('option', { 'value': '3' }, '3 秒'),
+			E('option', { 'value': '10' }, '10 秒')
+		]);
+		var refreshImage, saveImage, downloadImage, loadDriver;
+
+		function sizeText(bytes) {
+			return bytes >= 1048576 ? (bytes / 1048576).toFixed(1) + ' MB' : Math.ceil(bytes / 1024) + ' KB';
+		}
+		function applyTransform() {
+			var img = preview.querySelector('img');
+			if (img) img.style.transform = 'rotate(' + state.rotation + 'deg) scaleX(' + (state.mirrored ? -1 : 1) + ')';
+		}
+		function showImage(url, name) {
+			var old = state.url;
+			state.url = url;
+			state.photo = name || null;
+			state.rotation = 0;
+			state.mirrored = false;
+			preview.replaceChildren(E('img', { 'src': url, 'alt': '摄像头照片' }));
+			releaseImage(old);
+			buttons();
+		}
+		function download(url, name) {
+			var link = E('a', { 'href': url, 'download': name });
+			document.body.appendChild(link);
+			link.click();
+			link.remove();
+		}
 
 		function errorText(error) {
 			var value = error && error.message ? error.message : String(error);
@@ -107,6 +142,9 @@ return view.extend({
 		function buttons() {
 			refreshImage.disabled = state.busy || !state.data.capture_possible;
 			saveImage.disabled = state.busy || !state.data.capture_possible;
+			downloadImage.disabled = state.busy || !state.url;
+			loadDriver.disabled = state.busy || (!!state.data.driver_loaded && !!state.data.cvp_ready);
+			timer.disabled = state.busy;
 			picker.querySelectorAll('button').forEach(function(button) { button.disabled = state.busy; });
 		}
 		function drawPicker() {
@@ -121,68 +159,147 @@ return view.extend({
 					'click': function() {
 						state.camera = id;
 						drawPicker();
-						message.textContent = '已选择' + camera.name + '；点击“刷新画面”拍摄当前画面。';
+						message.textContent = '已选择' + camera.name + '；每次预览会拍摄一帧。';
 					}
 				}, camera.name || ('镜头 ' + id));
 			}));
 			buttons();
 		}
+		function refreshGallery() {
+			return query('list').then(function(data) {
+				var photos = Array.isArray(data.photos) ? data.photos : [];
+				photos.sort(function(a, b) { return (b.modified || 0) - (a.modified || 0); });
+				count.textContent = photos.length + ' 张照片';
+				if (!photos.length) {
+					gallery.replaceChildren(E('p', { 'class': 'cbi-section-descr' }, '设备上还没有保存的照片。'));
+					return;
+				}
+				gallery.replaceChildren.apply(gallery, photos.map(function(photo) {
+					var name = String(photo.name || '');
+					var when = photo.modified ? new Date(photo.modified * 1000).toLocaleString() : '';
+					return E('div', { 'class': 'xm-camera-photo' }, [
+						E('span', { 'class': 'xm-camera-photo-name' }, [
+							E('strong', {}, name),
+							E('small', {}, when + ' · ' + sizeText(Number(photo.size) || 0))
+						]),
+						E('button', { 'type': 'button', 'class': 'btn', 'click': function() {
+							imageUrl(photo).then(function(url) {
+								showImage(url, name);
+								message.textContent = '正在查看设备上保存的照片。';
+							}, errorText);
+						} }, '查看'),
+						E('button', { 'type': 'button', 'class': 'btn', 'click': function() {
+							imageUrl(photo).then(function(url) {
+								download(url, name);
+								setTimeout(function() { releaseImage(url); }, 60000);
+							}, errorText);
+						} }, '下载'),
+						E('button', { 'type': 'button', 'class': 'btn cbi-button-negative', 'click': function() {
+							if (!window.confirm('永久删除设备上的照片“' + name + '”？')) return;
+							query('delete', name).then(function() {
+								if (state.photo === name) {
+									releaseImage(state.url);
+									state.url = null;
+									state.photo = null;
+									preview.replaceChildren(E('div', { 'class': 'xm-camera-placeholder' }, '照片已删除'));
+									buttons();
+								}
+								refreshGallery();
+							}, errorText);
+						} }, '删除')
+					]);
+				}));
+			}, errorText);
+		}
 		function capture(save) {
 			if (state.busy || !state.data.capture_possible) return;
 			state.busy = true;
 			buttons();
-			message.textContent = '正在取景，单帧约需 10 秒…';
+			var seconds = Number(timer.value) || 0;
+			message.textContent = seconds ? '等待 ' + seconds + ' 秒后拍摄…' : '正在取景，单帧约需 10 秒…';
 			var camera = state.camera;
-			return query('snapshot', camera).then(imageUrl).then(function(url) {
-				var old = state.url;
-				state.url = url;
-				preview.replaceChildren(E('img', { 'src': url, 'alt': '最近拍摄的画面' }));
-				releaseImage(old);
-				message.textContent = '画面已更新。此预览为逐帧拍摄。';
-				query('status').then(update, function() {});
-				if (save) {
-					var link = E('a', {
-						'href': url,
-						'download': 'nwrt-camera-' + camera + '-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg'
-					});
-					document.body.appendChild(link);
-					link.click();
-					link.remove();
-				}
+			return new Promise(function(resolve) { setTimeout(resolve, seconds * 1000); }).then(function() {
+				message.textContent = '正在取景，单帧约需 10 秒…';
+				return query('snapshot', camera, save ? 'save' : 'preview');
+			}).then(function(data) {
+				return imageUrl(data).then(function(url) { return { data: data, url: url }; });
+			}).then(function(result) {
+				showImage(result.url, result.data.name);
+				message.textContent = save ? '照片已保存到设备相册。' : '画面已更新；这是单帧预览。';
+				if (save) refreshGallery();
+				query('status').then(function(data) { update(data, true); }, function() {});
 			}, errorText).finally(function() {
 				state.busy = false;
 				buttons();
 			});
 		}
-		function update(data) {
+		function update(data, keepMessage) {
 			state.data = data;
 			drawPicker();
 			buttons();
-			if (!data.capture_ready) message.textContent = data.capture_detail || '摄像头取流尚不可用';
-			else if (!state.url) message.textContent = '摄像头已就绪。逐帧拍摄约需 10 秒。';
+			if (!keepMessage) message.textContent = data.capture_detail || '摄像头取流尚不可用';
 			hardware.replaceChildren.apply(hardware, hardwareContent(data, update));
 		}
 
+		loadDriver = E('button', {
+			'type': 'button', 'class': 'btn cbi-button-action',
+			'click': function() {
+				state.busy = true;
+				buttons();
+				query('load').then(function(data) { update(data); }, errorText).finally(function() {
+					state.busy = false;
+					buttons();
+				});
+			}
+		}, '加载摄像头驱动');
 		refreshImage = E('button', {
 			'type': 'button', 'class': 'btn cbi-button',
 			'click': function() { capture(false); }
-		}, '刷新画面');
+		}, '拍一帧预览');
 		saveImage = E('button', {
 			'type': 'button', 'class': 'btn cbi-button cbi-button-action',
 			'click': function() { capture(true); }
-		}, '拍照并保存');
+		}, '拍照保存到设备');
+		downloadImage = E('button', {
+			'type': 'button', 'class': 'btn',
+			'click': function() {
+				if (state.url) download(state.url, state.photo || 'nwrt-camera-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jpg');
+			}
+		}, '下载当前照片');
 		update(initial);
+		refreshGallery();
 		return E('div', {}, [
-			E('style', {}, '.xm-camera-picker{display:flex;flex-wrap:wrap;gap:.5rem;margin:1rem 0}.xm-camera-lens.selected{background:#5da9a0;color:#fff}.xm-camera-preview{display:flex;align-items:center;justify-content:center;min-height:240px;max-height:62vh;background:#121719;border-radius:12px;overflow:hidden}.xm-camera-preview img{display:block;max-width:100%;max-height:62vh;object-fit:contain}.xm-camera-placeholder{color:#b5c3c6;text-align:center;padding:2rem}.xm-camera-actions{display:flex;flex-wrap:wrap;gap:.6rem;margin:1rem 0}.xm-camera-message{min-height:1.5em}'),
+			E('style', {}, '.xm-camera-picker,.xm-camera-actions{display:flex;flex-wrap:wrap;align-items:center;gap:.6rem;margin:1rem 0}.xm-camera-lens.selected{background:#5da9a0;color:#fff}.xm-camera-preview{display:flex;align-items:center;justify-content:center;min-height:240px;max-height:62vh;background:#121719;border-radius:12px;overflow:hidden}.xm-camera-preview img{display:block;max-width:100%;max-height:62vh;object-fit:contain}.xm-camera-placeholder{color:#b5c3c6;text-align:center;padding:2rem}.xm-camera-message{min-height:1.5em}.xm-camera-photo{display:flex;flex-wrap:wrap;align-items:center;gap:.5rem;border-top:1px solid #555;padding:.55rem 0}.xm-camera-photo-name{flex:1 1 240px;overflow-wrap:anywhere}.xm-camera-photo-name small{display:block;opacity:.7}'),
 			E('h2', {}, '摄像头'),
 			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, '相机状态'),
+				message,
+				E('div', { 'class': 'xm-camera-actions' }, [
+					loadDriver,
+					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { query('status').then(update, errorText); } }, '检查状态')
+				])
+			]),
+			E('div', { 'class': 'cbi-section' }, [
 				E('h3', {}, '拍照'),
-				E('p', { 'class': 'cbi-section-descr' }, '选择镜头，刷新逐帧画面，或拍照并保存到当前设备。'),
+				E('p', { 'class': 'cbi-section-descr' }, '选择镜头后逐帧拍摄；当前没有连续实时预览。'),
 				picker,
 				preview,
-				E('div', { 'class': 'xm-camera-actions' }, [ refreshImage, saveImage ]),
-				message,
-				E('p', { 'class': 'cbi-section-descr' }, '连续视频预览和录像仍在适配中。')
+				E('div', { 'class': 'xm-camera-actions' }, [ '倒计时 ', timer, refreshImage, saveImage, downloadImage ]),
+				E('div', { 'class': 'xm-camera-actions' }, [
+					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.rotation = (state.rotation + 90) % 360; applyTransform(); } }, '预览旋转 90°'),
+					E('button', { 'type': 'button', 'class': 'btn', 'click': function() { state.mirrored = !state.mirrored; applyTransform(); } }, '预览镜像')
+				]),
+				E('p', { 'class': 'cbi-section-descr' }, '旋转和镜像只改变网页预览，不修改设备上保存的原图。')
+			]),
+			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, [ '设备相册 · ', count ]),
+				E('p', { 'class': 'cbi-section-descr' }, '照片默认保存在 B 槽 /mnt/nwrt-data/camera/photos。点击“下载”可保存到当前浏览器的下载目录；“删除”会永久移除设备上的原图。'),
+				E('button', { 'type': 'button', 'class': 'btn', 'click': refreshGallery }, '刷新相册'),
+				gallery
+			]),
+			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, '录像'),
+				E('p', { 'class': 'cbi-section-descr' }, '当前相机后端只支持单帧 JPEG；连续取流和视频编码尚未适配，因此还不能录像或保存视频文件。')
 			]),
 			E('details', {}, [ E('summary', {}, '硬件与诊断'), hardware ])
 		]);

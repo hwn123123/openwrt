@@ -6,6 +6,14 @@ on a live Xiaomi 14 Pro: front, main, ultrawide and telephoto respectively.
 Logical rear camera ID 0 does not currently return frames in the isolated
 runtime, so the UI does not offer it.
 
+The LuCI page saves photos taken with **拍照保存到设备** to
+`/mnt/nwrt-data/camera/photos` on the B-slot data partition. **拍一帧预览**
+uses `/tmp/xm14pro-camera` and is not kept after a reboot. The gallery lists,
+downloads and deletes saved JPEGs; a browser download goes to the browser's
+configured download directory. Preview rotation and mirroring do not change
+the saved file. Video recording is not implemented: this client captures one
+JPEG frame and has no continuous stream or video encoder.
+
 The package installs only the snapshot client. The isolated camera provider,
 camera server, Android Binder managers and compatibility services are still
 device-local runtime dependencies. `/usr/libexec/xm14pro-camera/control`

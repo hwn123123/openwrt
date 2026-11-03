@@ -1,0 +1,7 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+
+case "${1:-status}" in
+	status|list) exec /usr/libexec/xm14pro-camera/control "${1:-status}" ;;
+	*) exit 1 ;;
+esac

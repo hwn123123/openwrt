@@ -3,8 +3,9 @@
 		"description": "查看并启动摄像头内核驱动",
 		"read": {
 			"file": {
-				"/usr/libexec/xm14pro-camera/control": [ "list", "exec" ],
-				"/tmp/xm14pro-camera/*": [ "read" ]
+				"/usr/libexec/xm14pro-camera/read-control": [ "list", "exec" ],
+				"/tmp/xm14pro-camera/*": [ "read" ],
+				"/mnt/nwrt-data/camera/photos/*": [ "read" ]
 			}
 		},
 		"write": {

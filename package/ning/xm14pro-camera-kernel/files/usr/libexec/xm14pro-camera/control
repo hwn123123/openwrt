@@ -6,6 +6,7 @@ KERNEL=6.1.138-android14-11-g0c3d559bcd85-ab14529422
 CAMERA_ROOT=/mnt/nwrt-data/camera-android-root
 SNAPSHOT_BIN=/usr/libexec/xm14pro-camera/camera-snapshot
 SNAPSHOT_DIR=/tmp/xm14pro-camera
+PHOTO_DIR=/mnt/nwrt-data/camera/photos
 . /usr/share/libubox/jshn.sh
 
 capture_services_ready() {
@@ -94,6 +95,7 @@ status() {
 	json_add_int media_nodes "$media"
 	json_add_int video_nodes "$video"
 	json_add_int subdevices "$subdev"
+	json_add_string photo_directory "$PHOTO_DIR"
 	if capture_services_ready; then
 		json_add_boolean capture_possible 1
 		if capture_verified; then
@@ -106,22 +108,78 @@ status() {
 	else
 		json_add_boolean capture_possible 0
 		json_add_boolean capture_ready 0
-		json_add_string capture_detail '相机取流服务未就绪；请检查私有 Android 相机服务'
+		if [ "$camera" -eq 0 ]; then
+			json_add_string capture_detail '摄像头驱动未加载；可先点击“加载摄像头驱动”'
+		elif [ ! -x "$CAMERA_ROOT/system/bin/bootstrap/linker64" ]; then
+			json_add_string capture_detail '驱动已加载，但隔离的 Android 相机运行环境尚未启动；当前不能取景或录像'
+		else
+			json_add_string capture_detail '驱动已加载，但相机提供服务或 cameraserver 未运行；当前不能取景或录像'
+		fi
 	fi
 	add_cameras
 	json_add_string last_kernel_error "$last_error"
 	json_dump
 }
 
+photo_list() {
+	local file name size modified
+	json_init
+	json_add_boolean ok 1
+	json_add_string directory "$PHOTO_DIR"
+	json_add_array photos
+	for file in "$PHOTO_DIR"/photo-*.jpg; do
+		[ -f "$file" ] || continue
+		name="${file##*/}"
+		size="$(wc -c < "$file" 2>/dev/null)"
+		modified="$(date -r "$file" +%s 2>/dev/null)"
+		json_add_object ''
+		json_add_string name "$name"
+		json_add_string path "$file"
+		json_add_int size "${size:-0}"
+		json_add_int modified "${modified:-0}"
+		json_close_object
+	done
+	json_close_array
+	json_dump
+}
+
+delete_photo() {
+	local name="$1"
+	case "$name" in
+		photo-*.jpg) ;;
+		*) fail '无效照片名称' ;;
+	esac
+	case "$name" in
+		*[!A-Za-z0-9_.-]*) fail '无效照片名称' ;;
+	esac
+	[ -f "$PHOTO_DIR/$name" ] || fail '照片不存在'
+	rm -f "$PHOTO_DIR/$name" || fail '无法删除照片'
+	json_init
+	json_add_boolean ok 1
+	json_dump
+}
+
 snapshot() {
-	local id="$1" temp output capture_log rc
+	local id="$1" mode="${2:-preview}" temp output capture_log rc saved_name
 	case "$id" in
 		1|2|3|4) ;;
 		*) fail '无效摄像头：可选 1、2、3、4' ;;
 	esac
+	case "$mode" in
+		preview|save) ;;
+		*) fail '无效拍摄模式' ;;
+	esac
 	capture_services_ready || fail '相机取流服务未就绪'
 	mkdir -p "$SNAPSHOT_DIR" || fail '无法创建拍照目录'
 	chmod 700 "$SNAPSHOT_DIR"
+	if [ "$mode" = save ]; then
+		mkdir -p "$PHOTO_DIR" || fail '无法创建照片目录'
+		chmod 700 "$PHOTO_DIR"
+		saved_name="photo-$(date +%Y%m%d-%H%M%S)-c$id-$$.jpg"
+		output="$PHOTO_DIR/$saved_name"
+	else
+		output="$SNAPSHOT_DIR/frame-$id.jpg"
+	fi
 	if ! mkdir "$SNAPSHOT_DIR/.capture-lock" 2>/dev/null; then
 		fail '另一张照片正在拍摄，请稍后再试'
 	fi
@@ -132,7 +190,6 @@ snapshot() {
 		chmod 755 "$CAMERA_ROOT/data/local/tmp/xm14pro-camera-snapshot"
 	fi
 	temp="/data/local/tmp/xm14pro-frame-$id.jpg"
-	output="$SNAPSHOT_DIR/frame-$id.jpg"
 	capture_log="$SNAPSHOT_DIR/capture-$id.log"
 	rm -f "$SNAPSHOT_DIR/.verified"
 	rm -f "$CAMERA_ROOT$temp" "$output"
@@ -159,6 +216,7 @@ snapshot() {
 	json_add_string mime image/jpeg
 	json_add_string path "$output"
 	json_add_string camera "$id"
+	[ -n "$saved_name" ] && json_add_string name "$saved_name"
 	json_dump
 }
 
@@ -198,7 +256,13 @@ case "${1:-status}" in
 		status
 		;;
 	snapshot)
-		snapshot "${2:-}"
+		snapshot "${2:-}" "${3:-preview}"
+		;;
+	list)
+		photo_list
+		;;
+	delete)
+		delete_photo "${2:-}"
 		;;
 	*)
 		fail '不支持的摄像头操作'
