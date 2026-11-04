@@ -65,4 +65,12 @@ git clone --depth 1 https://github.com/bkerler/edl.git /tmp/nwrt-edl-readonly
 
 同日切回 B 槽 NWRT 后，`qrtr-lookup 4097` 只输出表头（没有 DIAG 服务），且 `/dev/diag` 不存在；因此 NWRT 当前也没有这条直接访问基带 EFS 的路径。NWRT 热点处于 AP 模式，蜂窝链路上行可访问网页。
 
+## 原厂 OS3 诊断组件的只读核对
+
+2026-11-04 使用本地 OS3.0.309.0 全量只读备份中的 `super.img` 和对应 `lpdump.txt` 定位 `vendor_a`；提取后由 `dump.erofs` 识别并列出文件。原厂 vendor 确实包含 `diag-router`、`ATFWD-daemon`、`diag_mdlog`、`libdiag.so`、诊断 HAL、工厂服务和相关 init/VINTF 文件。`vendor.qti.diag_userdebug.rc` 在 `early-boot` 启动 `/vendor/bin/diag-router -d 7`。原厂 `diag-router` 与 A 槽 PixelOS source dump 中的文件 SHA-256 完全相同，排除了该程序被 PixelOS 替换这一原因。
+
+对原厂工厂服务、AT 转发服务、诊断路由及相关库做了只读静态检查，没有找到可证明 IMEI/NV/EFS 写入能力的专用接口。工厂服务提供的通用文件和进程方法不能等同于基带写权限。原厂用户态组件存在，与当前 A 槽只读 DIAG 查询无响应、B 槽缺少可用 DIAG/EFS 通道的实机结果并不矛盾；仍需区分服务运行状态、基带是否发布服务、路由和权限。
+
+B 槽 `/sys/module/diag` 对应的是 Linux TIPC socket 诊断模块，已通过 `/proc/kallsyms` 中的 `tipc_sock_diag_handler` 等符号核对；它不是 Qualcomm 基带 DIAG。B 槽没有 `/dev/diag` 或 `/dev/diag_mdm`，也没有运行中的 `diag-router`。原厂镜像和本机备份均保持只读，未刷机、未修改设备标识。
+
 [iamromulan/qfenix](https://github.com/iamromulan/qfenix) 支持常见 USB DIAG 串口，但 macOS 版需要其 `qcseriald` 串口桥；目前未在本机取得 NV 读取结果，不能把它列为已验证方案。第三方 [AndroidWinTool 的机型页](https://androidwintool.com/supported-models/xiaomi/xiaomi-14-pro-shennong) 宣称支持 `shennong` 的双卡 IMEI 维修，[版本记录](https://androidwintool.com/download)又列出 Magisk 30+ root 的条件；这是厂商声明，未在这台 PixelOS/NWRT 设备上验证，也没有公开实现细节。不要把其他设备的 QCN 或 modemst 镜像刷到本机。
