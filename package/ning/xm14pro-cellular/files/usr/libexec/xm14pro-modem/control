@@ -1336,24 +1336,30 @@ valid_display_imei() {
 read_modem_identities() {
 	local mode="$1" output imei1 imei2 iccid1 iccid2 primary_slot card_status raw_iccid attempt temp
 	if [ "$mode" != refresh ] && [ -s "$IDENTITY_CACHE" ]; then
-		cat "$IDENTITY_CACHE"
-		return 0
+		output="$(cat "$IDENTITY_CACHE")"
+		imei1="$(json_value "$output" '@.imei1')"
+		imei2="$(json_value "$output" '@.imei2')"
+		if ! valid_display_imei "$imei1" || ! valid_display_imei "$imei2"; then
+			imei1=; imei2=
+		fi
 	fi
-	[ -x /usr/sbin/xm14pro-nv550-reader ] || fail "基带只读读取器不可用"
-	[ -x "$ANDROID_COMPAT_ROOT/vendor/bin/diag-router" ] || fail "原厂诊断服务不可用"
-	if ! qrtr-lookup 4097 2>/dev/null | grep -q 'MODEM:CMD'; then
-		setsid timeout -k 1 8 chroot "$ANDROID_COMPAT_ROOT" \
-			/system/bin/bootstrap/linker64 /vendor/bin/diag-router -d 7 \
-			</dev/null >/dev/null 2>&1 &
-		for attempt in 1 2 3; do
-			qrtr-lookup 4097 2>/dev/null | grep -q 'MODEM:CMD' && break
-			sleep 1
-		done
+	if [ -z "$imei1" ] || [ -z "$imei2" ]; then
+		[ -x /usr/sbin/xm14pro-nv550-reader ] || fail "基带只读读取器不可用"
+		[ -x "$ANDROID_COMPAT_ROOT/vendor/bin/diag-router" ] || fail "原厂诊断服务不可用"
+		if ! qrtr-lookup 4097 2>/dev/null | grep -q 'MODEM:CMD'; then
+			setsid timeout -k 1 8 chroot "$ANDROID_COMPAT_ROOT" \
+				/system/bin/bootstrap/linker64 /vendor/bin/diag-router -d 7 \
+				</dev/null >/dev/null 2>&1 &
+			for attempt in 1 2 3; do
+				qrtr-lookup 4097 2>/dev/null | grep -q 'MODEM:CMD' && break
+				sleep 1
+			done
+		fi
+		output="$(timeout -k 1 6 /usr/sbin/xm14pro-nv550-reader 2>/dev/null)" || fail "基带只读查询失败"
+		imei1="$(json_value "$output" '@.imei1')"
+		imei2="$(json_value "$output" '@.imei2')"
+		valid_display_imei "$imei1" && valid_display_imei "$imei2" || fail "基带返回的标识无效"
 	fi
-	output="$(timeout -k 1 6 /usr/sbin/xm14pro-nv550-reader 2>/dev/null)" || fail "基带只读查询失败"
-	imei1="$(json_value "$output" '@.imei1')"
-	imei2="$(json_value "$output" '@.imei2')"
-	valid_display_imei "$imei1" && valid_display_imei "$imei2" || fail "基带返回的标识无效"
 	card_status="$(timeout -k 1 5 qmicli -d qrtr://0 --uim-get-card-status 2>/dev/null)" || card_status=
 	primary_slot="$(printf '%s\n' "$card_status" | awk -F "'" '/Primary GW:/ { print $2; exit }')"
 	case "$primary_slot" in
