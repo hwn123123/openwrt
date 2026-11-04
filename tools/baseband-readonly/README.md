@@ -84,3 +84,5 @@ B 槽 `/sys/module/diag` 对应的是 Linux TIPC socket 诊断模块，已通过
 两份索引记录均可解码为 15 位 IMEI 格式；切回 B 槽后，`qmicli -d qrtr://0 --dms-get-ids` 报告的 IMEI 与索引 0 完全一致。索引 1 尚未从第二张卡的独立调制解调器接口交叉验证，因此只称为不同的双卡 NV 记录。基带的 `FS_IMAGE_OPEN` 全 EFS 镜像命令返回 `bad command (0x13)`，未获得完整 EFS TAR；之前的 `modemst1`、`modemst2`、`fsg` 只读分区备份仍在。
 
 本次只发送 DIAG/EFS 读取命令，未切换 helper 的只读状态、未发送 SPC、NV 写入或 EFS 写入，也没有修改设备标识。测试完成后关闭 helper、ADB 转发和诊断路由，删除设备端临时工具，并切回 B 槽。**读通道成功不代表写通道已获授权**；实际写入前还需取得明确的目标值及卡槽，并确认可用的安全恢复方法。
+
+后续核对用户提出的测试号码：15 位长度和 Luhn 校验通过，但它与当前 NV 550 索引 0、1 均不相同，TAC 也不同。2026-10-09 的原厂 OS3 分区备份不包含独立的 `modemst1`、`modemst2`、`fsg` 或 EFS 数据；只读扫描其保存的分区镜像也没有找到该号码对应的 NV 550 编码。因此现有备份**不能证明**该号码是本机出厂原号，也不能据此作为双卡恢复目标。2026-11-04 的三个基带分区镜像只是当天的设备状态。按 [GSMA 多 SIM 要求](https://www.gsma.com/get-involved/working-groups/gsma_resources/ts-37-requirements-for-multi-sim-devices/)，需分别核对每个卡槽的唯一设备标识，不能将同一个号码复制到两个卡槽。
