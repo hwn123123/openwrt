@@ -20,3 +20,9 @@ IMS、短信和电话流程。当前手机固件会拒绝通用 QMI WMS 存储�
 
 运行时严禁伪造：不为缺失的信号、SIM、APN、短信、电话、小区或连接状态
 提供样例值。没有真实 nwrt 执行通道的控件必须保持禁用。
+
+概览页允许设置一个明确标注的“LuCI IMEI 自定义显示值”，仅用于核对页面
+显示逻辑。后端 `status.imei` 始终返回真实基带值，额外返回
+`imei_display_override` 和 `imei_display`；前端同时列出真实基带值。
+设置保存于反重力前端已有的 `xm14display.main.cell_custom_imei`，清空即可恢复真实显示。
+它不写入 NV/EFS，不改变物理屏幕、ModemManager、SIM 或运营商读取的身份。

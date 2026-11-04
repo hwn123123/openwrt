@@ -194,9 +194,78 @@ function displaySetting(label, detail, option, settings, save) {
 	]);
 }
 
+function imeiInputField(settings) {
+	var currentReal = settings._realImei || '';
+	var inputEl = E('input', {
+		'id': 'xm14-custom-imei-input',
+		'type': 'text',
+		'placeholder': _('Enter custom IMEI (15 digits), or leave blank'),
+		'maxlength': '15',
+		'pattern': '[0-9]{0,15}',
+		'value': settings.cell_custom_imei || '',
+		'style': 'flex:1;min-width:0;font-family:monospace;font-size:1em;letter-spacing:.05em'
+	});
+	var applyBtn = E('button', {
+		'class': 'btn cbi-button cbi-button-apply',
+		'type': 'button',
+		'click': function() {
+			var val = inputEl.value.trim();
+			if (val && !/^[0-9]{15}$/.test(val)) {
+				mobile.notice('请输入 15 位数字；此设置仅用于 LuCI 显示', 'error');
+				return;
+			}
+			applyBtn.disabled = true;
+			clearBtn.disabled = true;
+			mobile.action('set-imei-display', [ val ]).then(function() {
+				settings.cell_custom_imei = val;
+				applyBtn.disabled = false;
+				clearBtn.disabled = false;
+				hintEl.textContent = val
+					? _('Showing: ') + val
+					: _('Showing real IMEI');
+				mobile.notice(val ? _('Custom IMEI saved') : _('Restored to real IMEI'), 'success');
+			}).catch(function(err) {
+				applyBtn.disabled = false;
+				clearBtn.disabled = false;
+				mobile.notifyError(err);
+			});
+		}
+	}, _('Apply'));
+	var clearBtn = E('button', {
+		'class': 'btn cbi-button cbi-button-reset',
+		'type': 'button',
+		'style': 'margin-left:.4em',
+		'click': function() {
+			inputEl.value = '';
+			applyBtn.click();
+		}
+	}, _('Clear'));
+	var hintEl = E('div', {
+		'style': 'font-size:.78em;color:var(--text-muted,#888);margin-top:.3em'
+	}, settings.cell_custom_imei
+		? _('Showing: ') + settings.cell_custom_imei
+		: _('Showing real IMEI'));
+	return E('div', {
+		'class': 'xm14-field xm14-cell-display-setting',
+		'style': 'display:block;padding:.6em 0'
+	}, [
+		E('div', { 'style': 'margin-bottom:.45em' }, [
+			E('strong', {}, _('Custom IMEI (display only)')),
+			E('small', { 'style': 'display:block;margin-top:.15em;color:var(--text-muted,#888)' },
+				_('Overrides the IMEI shown on this page. Does not affect the real modem IMEI.'))
+		]),
+		E('div', { 'style': 'display:flex;align-items:center;gap:.4em;width:100%' }, [
+			inputEl, applyBtn, clearBtn
+		]),
+		hintEl,
+		E('small', { 'style': 'display:block;margin-top:.3em;color:var(--text-muted,#888)' }, '真实基带 IMEI：' + mobile.text(currentReal, '—'))
+	]);
+}
+
 function cellularDisplayPanel(settings, save) {
 	return mobile.panel(_('Physical screen cellular details'), _('Choose the data shown on the device cellular page'), 'phone', [
 		displaySetting(_('Show IMEI'), _('Complete device identifier'), 'cell_show_imei', settings, save),
+		imeiInputField(settings),
 		displaySetting(_('Show serving cell'), _('Cell ID / NCI, PCI, TAC and ARFCN'), 'cell_show_cell', settings, save),
 		displaySetting(_('Show carrier aggregation'), _('Observable radio entries and aggregation status'), 'cell_show_aggregation', settings, save),
 		displaySetting(_('Show signal details'), _('Live RSSI, RSRP, RSRQ and SINR'), 'cell_show_signal', settings, save)
@@ -275,7 +344,7 @@ function cellularDatum(label, value, detail, tone, copy) {
 	]);
 }
 
-function cellularDetailPanel(s) {
+function cellularDetailPanel(s, customImei) {
 	var channel = s.nr_arfcn || s.lte_arfcn || s.arfcn;
 	var network = [ s.operator_name, s.operator_code, s.access_technologies ].filter(function(v) { return !mobile.missing(v); }).join(' · ');
 	var band = [ s.active_bands, s.channel_bandwidths ].filter(function(v) { return !mobile.missing(v); }).join(' · ');
@@ -286,7 +355,8 @@ function cellularDetailPanel(s) {
 			cellularDatum(_('Current network'), network, band, s.connected ? 'is-good' : 'is-warn'),
 			cellularDatum(_('Serving cell'), s.cell_id, cell, 'is-good'),
 			cellularDatum(_('Signal measurements'), s.nr_rsrp || s.rsrp || s.rssi, signal, ''),
-			cellularDatum(_('IMEI'), s.imei, _('IMEI SV %s · MEID %s').format(mobile.text(s.imei_sv, '—'), mobile.text(s.meid, '—')), '', true)
+			cellularDatum(customImei ? 'IMEI · 自定义显示' : _('IMEI'), customImei || s.imei,
+				customImei ? '真实基带 IMEI：' + mobile.text(s.imei, '—') : _('IMEI SV %s · MEID %s').format(mobile.text(s.imei_sv, '—'), mobile.text(s.meid, '—')), '', true)
 		]),
 		E('div', { 'class': 'xm14-cell-selection-strip' }, [
 			cellularDatum(_('Current serving'), s.cell_id, cell),
@@ -383,7 +453,7 @@ function deviceOverview(s, connectedLabel, networkDetail, bonding) {
 	]);
 }
 
-function dashboard(s, bonding) {
+function dashboard(s, bonding, customImei) {
 	var q = signalPercent(s), rates = traffic(s);
 	remember('cpu', s.cpu_usage_percent); remember('memory', s.memory_usage_percent); remember('storage', s.storage_usage_percent);
 	remember('signal', q); remember('rx', rates.rx); remember('tx', rates.tx);
@@ -404,6 +474,7 @@ function dashboard(s, bonding) {
 		!mobile.missing(s.rx_dropped) ? _('RX drops %s').format(s.rx_dropped) : '', !mobile.missing(s.tx_dropped) ? _('TX drops %s').format(s.tx_dropped) : ''
 	].filter(Boolean).join(' · ');
 	var sim1 = simState(s.sim1_ready, s.sim1_present), sim2 = simState(s.sim2_ready, s.sim2_present);
+	var displayImei = (customImei && customImei.trim()) ? customImei.trim() : s.imei;
 
 	var columnsLeft = [
 		card(_('Network session'), [
@@ -415,7 +486,8 @@ function dashboard(s, bonding) {
 		card(_('SIM and operator'), [
 			row(_('Operator'), s.operator_name), row(_('PLMN'), s.operator_code), row(_('Registration'), mobile.stateText(s.registration_state)),
 			row(_('Active data SIM'), mobile.slot(s.active_data_slot)), sim1 ? mobile.row(_('SIM slot 1'), sim1) : null, sim2 ? mobile.row(_('SIM slot 2'), sim2) : null,
-			row(_('Own number'), s.own_numbers), row(_('IMEI'), s.imei), row(_('IMEI SV'), s.imei_sv), row(_('MEID'), s.meid)
+			row(_('Own number'), s.own_numbers), row(customImei ? 'IMEI · 自定义显示' : _('IMEI'), displayImei),
+			customImei ? row('真实基带 IMEI', s.imei) : null, row(_('IMEI SV'), s.imei_sv), row(_('MEID'), s.meid)
 		]),
 		card(_('Phone services'), [
 			row(_('IMS registration'), s.ims_registration), row(_('IMS access'), s.ims_technology), row(_('IMS voice'), imsVoice), row(_('IMS messages'), imsSms),
@@ -459,7 +531,7 @@ function dashboard(s, bonding) {
 			])
 		]),
 		E('div', { 'data-xm14-cellular-allocation': '1' }, [
-			cellularDetailPanel(s),
+			cellularDetailPanel(s, customImei),
 			carrierAggregationPanel(s, aggregationStatus)
 		]),
 		mobile.panel(_('Hardware telemetry'), _('Thermal, storage and voice-audio state'), 'thermometer', [
@@ -500,7 +572,9 @@ return view.extend({
 			cell_show_imei: uci.get('xm14display', 'main', 'cell_show_imei') || '1',
 			cell_show_cell: uci.get('xm14display', 'main', 'cell_show_cell') || '1',
 			cell_show_aggregation: uci.get('xm14display', 'main', 'cell_show_aggregation') || '1',
-			cell_show_signal: uci.get('xm14display', 'main', 'cell_show_signal') || '1'
+			cell_show_signal: uci.get('xm14display', 'main', 'cell_show_signal') || '1',
+			cell_custom_imei: s.imei_display_override || '',
+			_realImei: s.imei
 		};
 		var commitQueue = Promise.resolve();
 		function saveDisplayOption(name, value) {
@@ -522,7 +596,7 @@ return view.extend({
 			return task;
 		}
 		var displayPanel = cellularDisplayPanel(settings, saveDisplayOption);
-		var holder = E('div', { 'id': 'xm14-overview-live' }, dashboard(s, bonding));
+		var holder = E('div', { 'id': 'xm14-overview-live' }, dashboard(s, bonding, s.imei_display_override));
 		function placeDisplayPanel() {
 			var allocation = holder.querySelector('[data-xm14-cellular-allocation]');
 			if (allocation) allocation.after(displayPanel);
@@ -532,7 +606,7 @@ return view.extend({
 			return Promise.all([ mobile.status(), mobile.bondingStatus() ]).then(function(result) {
 				var next = result[0], nextBonding = result[1] || {};
 				var detailsOpen = !!holder.querySelector('.xm14-detail-drawer[open]');
-				holder.replaceChildren.apply(holder, dashboard(next, nextBonding));
+				holder.replaceChildren.apply(holder, dashboard(next, nextBonding, next.imei_display_override));
 				var details = holder.querySelector('.xm14-detail-drawer');
 				if (details && detailsOpen) details.open = true;
 				placeDisplayPanel();

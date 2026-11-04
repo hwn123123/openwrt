@@ -269,7 +269,7 @@ status_json() {
 	local usb_net usb_mode usb_udc usb_udc_path usb_up usb_ip cpe_enabled cpe_active ip_forward
 	local mm_state mm_registration access operator_name operator_code
 	local cpu_usage cpu_cores load1 load5 load15 mem_total mem_available mem_used mem_usage
-	local cpu_temp modem_temp battery_temp imei imei_sv meid own_numbers
+	local cpu_temp modem_temp battery_temp imei imei_sv meid own_numbers imei_display_override
 	local storage_total storage_used storage_available storage_usage storage_fs kernel_release architecture hostname slot_suffix audio_cards voice_bridge
 	local audio_state audio_active audio_route audio_muted audio_volume active_count active_state voice_slot sms_receive_slot selected_voice_slot
 	id="$(modem_id)"
@@ -409,6 +409,8 @@ status_json() {
 	imei="$(mm_value "$mm" 'modem.3gpp.imei')"
 	[ -n "$imei" ] || imei="$(file_value "$TELECOM_STATE" imei)"
 	[ -n "$imei" ] || imei="$(file_value "$RADIO_STATE" imei)"
+	imei_display_override="$(uci -q get xm14display.main.cell_custom_imei 2>/dev/null)"
+	[ -z "$imei_display_override" ] || valid_display_imei "$imei_display_override" || imei_display_override=
 	imei_sv="$(file_value "$TELECOM_STATE" imei_sv)"
 	[ -n "$imei_sv" ] || imei_sv="$(file_value "$RADIO_STATE" imei_sv)"
 	meid="$(file_value "$TELECOM_STATE" meid)"
@@ -475,6 +477,8 @@ status_json() {
 	json_add_string registration_state "$registration"
 	json_add_string nas_registration_state "$(file_value "$RADIO_STATE" nas_registration_state)"
 	json_add_string imei "$imei"
+	json_add_string imei_display_override "$imei_display_override"
+	json_add_string imei_display "${imei_display_override:-$imei}"
 	json_add_string imei_sv "$imei_sv"
 	json_add_string meid "$meid"
 	json_add_string esn "$(file_value "$TELECOM_STATE" esn)"
@@ -1307,6 +1311,34 @@ call_history_json() {
 	printf ']}\n'
 }
 
+valid_display_imei() {
+	[ "${#1}" -eq 15 ] || return 1
+	case "$1" in *[!0-9]*) return 1 ;; esac
+	printf '%s\n' "$1" | awk '
+		{ for (i = 1; i <= 15; i++) {
+			digit = substr($0, i, 1) + 0
+			if (i % 2 == 0) { digit *= 2; if (digit > 9) digit -= 9 }
+			sum += digit
+		} }
+		END { exit (sum % 10 == 0 ? 0 : 1) }
+	'
+}
+
+set_imei_display() {
+	local value="$1"
+	[ -z "$value" ] || valid_display_imei "$value" || fail "请输入校验正确的 15 位 IMEI；此设置仅用于 LuCI 显示"
+	if [ -n "$value" ]; then
+		uci -q set "xm14display.main.cell_custom_imei=$value" || fail "保存显示值失败"
+	else
+		uci -q delete xm14display.main.cell_custom_imei
+	fi
+	uci commit xm14display || fail "提交显示设置失败"
+	json_init
+	json_add_boolean ok 1
+	json_add_string imei_display_override "$value"
+	json_dump
+}
+
 screen_telephony() {
 	local enabled="$1" output
 	case "$enabled" in 0|1) ;; *) fail "屏幕短信电话开关参数无效" ;; esac
@@ -1320,6 +1352,7 @@ screen_telephony() {
 
 case "${1:-status}" in
 	status) status_json ;;
+	set-imei-display) set_imei_display "$2" ;;
 	set-data) set_data "$2" "$3" "$4" "$5" "$6" ;;
 	set-slot) set_slot "$2" "$3" ;;
 	set-airplane) set_airplane "$2" ;;
