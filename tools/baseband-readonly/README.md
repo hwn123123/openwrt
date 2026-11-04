@@ -57,11 +57,11 @@ git clone --depth 1 https://github.com/bkerler/edl.git /tmp/nwrt-edl-readonly
   --libusb /Library/PrivilegedHelperTools/libusb-1.0.0.dylib
 ```
 
-2026-11-04 实机结果：系统的 configfs 1 模式能够把 `05c6:901d` DIAG USB 组合暴露给 Mac；`diag-router` 进程已启动，USB 接口可以被工具占用，但版本查询及 NV 550 读取均未收到响应。故目前不能确认 NV 550 可读，更不能推断存在可用的写入权限。脚本执行后确认 ADB、configfs 2 和 A 槽均恢复。`bkerler/edl` 是独立 GPLv3 项目，此目录没有复制其代码。
+2026-11-04 实机结果：系统的 configfs 1 模式能够把 `05c6:901d` DIAG USB 组合暴露给 Mac；USB 接口可以被工具占用，但通过该 USB 路径发送的版本查询及 NV 550 读取均未收到响应。该结果只说明此 USB 探测路径未成功，不能排除设备内部的 QRTR DIAG。脚本执行后确认 ADB、configfs 2 和 A 槽均恢复。`bkerler/edl` 是独立 GPLv3 项目，此目录没有复制其代码。
 
 ## 其他公开路径的实机核查
 
-2026-11-04 从 [catxeon/qcom-efs-browser](https://github.com/catxeon/qcom-efs-browser) 源码构建 Android arm64 helper（检出版本 `b7fa178`），在 A 槽以默认只读模式请求 `open`。设备返回：`no DIAG service (4097) published on the QRTR bus; /dev/diag does not exist`。这说明该项目已验证的 QRTR DIAG 和 `diagchar` 两条通道在当前 PixelOS 内核/基带组合下均不可用。测试后 helper、ADB 端口转发及临时文件已清理；未尝试写入。
+2026-11-04 从 [catxeon/qcom-efs-browser](https://github.com/catxeon/qcom-efs-browser) 源码构建 Android arm64 helper（检出版本 `b7fa178`），在 A 槽以默认只读模式首次请求 `open`，返回：`no DIAG service (4097) published on the QRTR bus; /dev/diag does not exist`。后续查明原因是原厂 `diag-router` 在当前 PixelOS 中未运行；手动启动原厂二进制后，QRTR DIAG 可用，详见下节。首次失败不能再作为该通道永久不可用的结论。
 
 同日切回 B 槽 NWRT 后，`qrtr-lookup 4097` 只输出表头（没有 DIAG 服务），且 `/dev/diag` 不存在；因此 NWRT 当前也没有这条直接访问基带 EFS 的路径。NWRT 热点处于 AP 模式，蜂窝链路上行可访问网页。
 
@@ -69,8 +69,18 @@ git clone --depth 1 https://github.com/bkerler/edl.git /tmp/nwrt-edl-readonly
 
 2026-11-04 使用本地 OS3.0.309.0 全量只读备份中的 `super.img` 和对应 `lpdump.txt` 定位 `vendor_a`；提取后由 `dump.erofs` 识别并列出文件。原厂 vendor 确实包含 `diag-router`、`ATFWD-daemon`、`diag_mdlog`、`libdiag.so`、诊断 HAL、工厂服务和相关 init/VINTF 文件。`vendor.qti.diag_userdebug.rc` 在 `early-boot` 启动 `/vendor/bin/diag-router -d 7`。原厂 `diag-router` 与 A 槽 PixelOS source dump 中的文件 SHA-256 完全相同，排除了该程序被 PixelOS 替换这一原因。
 
-对原厂工厂服务、AT 转发服务、诊断路由及相关库做了只读静态检查，没有找到可证明 IMEI/NV/EFS 写入能力的专用接口。工厂服务提供的通用文件和进程方法不能等同于基带写权限。原厂用户态组件存在，与当前 A 槽只读 DIAG 查询无响应、B 槽缺少可用 DIAG/EFS 通道的实机结果并不矛盾；仍需区分服务运行状态、基带是否发布服务、路由和权限。
+对原厂工厂服务、AT 转发服务、诊断路由及相关库做了只读静态检查，没有找到可证明 IMEI/NV/EFS **写入**能力的专用接口。工厂服务提供的通用文件和进程方法不能等同于基带写权限。后续已经证实原厂 `diag-router` 手动启动后能在 A 槽提供只读 QRTR DIAG；仍需分别验证写入授权、目标值和安全恢复方案。
 
 B 槽 `/sys/module/diag` 对应的是 Linux TIPC socket 诊断模块，已通过 `/proc/kallsyms` 中的 `tipc_sock_diag_handler` 等符号核对；它不是 Qualcomm 基带 DIAG。B 槽没有 `/dev/diag` 或 `/dev/diag_mdm`，也没有运行中的 `diag-router`。原厂镜像和本机备份均保持只读，未刷机、未修改设备标识。
 
 [iamromulan/qfenix](https://github.com/iamromulan/qfenix) 支持常见 USB DIAG 串口，但 macOS 版需要其 `qcseriald` 串口桥；目前未在本机取得 NV 读取结果，不能把它列为已验证方案。第三方 [AndroidWinTool 的机型页](https://androidwintool.com/supported-models/xiaomi/xiaomi-14-pro-shennong) 宣称支持 `shennong` 的双卡 IMEI 维修，[版本记录](https://androidwintool.com/download)又列出 Magisk 30+ root 的条件；这是厂商声明，未在这台 PixelOS/NWRT 设备上验证，也没有公开实现细节。不要把其他设备的 QCN 或 modemst 镜像刷到本机。
+
+## 2026-11-04：原厂诊断路由实机验证
+
+在 A 槽 PixelOS（`user` 构建、SELinux Enforcing）中，`/vendor/etc/init/vendor.qti.diag_userdebug.rc` 会在 `early-boot` 请求启动 `/vendor/bin/diag-router -d 7`，但服务实际未运行。`/vendor/bin/diag-router` 标记为通用 `vendor_file`，先前通过 init 启动因 SELinux 域切换失败；当前 A 槽没有 `/dev/diag`。`ro.boot.enter_car_diag=0`，未发现 shennong 专用、已验证能写基带的工厂模式。原厂 `diag-router` 与 OS3 备份中的文件哈希一致。
+
+将**同一个原厂二进制**在有 Root 权限的 A 槽临时启动后，基带发布 QRTR DIAG 服务 4097。以默认只读模式运行 `qcom-efs-browser` helper，`open` 连接成功（QRTR node 0，端口为动态值；EFS 子系统 19），`stat /`、`ls /` 成功。NV 项 550 的普通读取及索引 0、1 读取均返回 `status=0`；每项重复读取两次一致，普通读取与索引 0 相同，索引 1 不同。原始 128 字节数据分别保存为上述受限备份目录中的 `nv550_plain.bin`、`nv550_index0.bin`、`nv550_index1.bin`，权限均为 `0600`，**不纳入源码或 Git**。
+
+两份索引记录均可解码为 15 位 IMEI 格式；切回 B 槽后，`qmicli -d qrtr://0 --dms-get-ids` 报告的 IMEI 与索引 0 完全一致。索引 1 尚未从第二张卡的独立调制解调器接口交叉验证，因此只称为不同的双卡 NV 记录。基带的 `FS_IMAGE_OPEN` 全 EFS 镜像命令返回 `bad command (0x13)`，未获得完整 EFS TAR；之前的 `modemst1`、`modemst2`、`fsg` 只读分区备份仍在。
+
+本次只发送 DIAG/EFS 读取命令，未切换 helper 的只读状态、未发送 SPC、NV 写入或 EFS 写入，也没有修改设备标识。测试完成后关闭 helper、ADB 转发和诊断路由，删除设备端临时工具，并切回 B 槽。**读通道成功不代表写通道已获授权**；实际写入前还需取得明确的目标值及卡槽，并确认可用的安全恢复方法。
