@@ -19,6 +19,7 @@ SMSC_STATE=$STATE_ROOT/smsc-state
 IMS_AIDL_STATE=$STATE_ROOT/ims-aidl-state
 AIRPLANE_STATE=$STATE_ROOT/airplane-mode
 DATA_SWITCH_FILE=$STATE_ROOT/data-slot-switching
+IDENTITY_CACHE=$STATE_ROOT/nv-identities.json
 ANDROID_COMPAT_ROOT=/usr/libexec/xm14pro-qwes/android-root
 DELIVERY_ROOT=$ANDROID_COMPAT_ROOT/data/vendor/radio/ims-client
 IMS_CALL_STATE=$DELIVERY_ROOT/call-state
@@ -269,7 +270,7 @@ status_json() {
 	local usb_net usb_mode usb_udc usb_udc_path usb_up usb_ip cpe_enabled cpe_active ip_forward
 	local mm_state mm_registration access operator_name operator_code
 	local cpu_usage cpu_cores load1 load5 load15 mem_total mem_available mem_used mem_usage
-	local cpu_temp modem_temp battery_temp imei imei_sv meid own_numbers imei_display_override
+	local cpu_temp modem_temp battery_temp imei imei1_nv imei2_nv iccid1 iccid2 imei_sv meid own_numbers imei_display_override
 	local storage_total storage_used storage_available storage_usage storage_fs kernel_release architecture hostname slot_suffix audio_cards voice_bridge
 	local audio_state audio_active audio_route audio_muted audio_volume active_count active_state voice_slot sms_receive_slot selected_voice_slot
 	id="$(modem_id)"
@@ -409,6 +410,10 @@ status_json() {
 	imei="$(mm_value "$mm" 'modem.3gpp.imei')"
 	[ -n "$imei" ] || imei="$(file_value "$TELECOM_STATE" imei)"
 	[ -n "$imei" ] || imei="$(file_value "$RADIO_STATE" imei)"
+	imei1_nv="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.imei1' 2>/dev/null)"
+	imei2_nv="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.imei2' 2>/dev/null)"
+	iccid1="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.iccid1' 2>/dev/null)"
+	iccid2="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.iccid2' 2>/dev/null)"
 	imei_display_override="$(uci -q get xm14display.main.cell_custom_imei 2>/dev/null)"
 	[ -z "$imei_display_override" ] || valid_display_imei "$imei_display_override" || imei_display_override=
 	imei_sv="$(file_value "$TELECOM_STATE" imei_sv)"
@@ -477,8 +482,12 @@ status_json() {
 	json_add_string registration_state "$registration"
 	json_add_string nas_registration_state "$(file_value "$RADIO_STATE" nas_registration_state)"
 	json_add_string imei "$imei"
+	json_add_string imei1_nv "$imei1_nv"
+	json_add_string imei2_nv "$imei2_nv"
+	json_add_string sim1_iccid "$iccid1"
+	json_add_string sim2_iccid "$iccid2"
 	json_add_string imei_display_override "$imei_display_override"
-	json_add_string imei_display "${imei_display_override:-$imei}"
+	json_add_string imei_display "$imei"
 	json_add_string imei_sv "$imei_sv"
 	json_add_string meid "$meid"
 	json_add_string esn "$(file_value "$TELECOM_STATE" esn)"
@@ -1324,6 +1333,57 @@ valid_display_imei() {
 	'
 }
 
+read_modem_identities() {
+	local mode="$1" output imei1 imei2 iccid1 iccid2 primary_slot card_status raw_iccid attempt temp
+	if [ "$mode" != refresh ] && [ -s "$IDENTITY_CACHE" ]; then
+		cat "$IDENTITY_CACHE"
+		return 0
+	fi
+	[ -x /usr/sbin/xm14pro-nv550-reader ] || fail "基带只读读取器不可用"
+	[ -x "$ANDROID_COMPAT_ROOT/vendor/bin/diag-router" ] || fail "原厂诊断服务不可用"
+	if ! qrtr-lookup 4097 2>/dev/null | grep -q 'MODEM:CMD'; then
+		setsid timeout -k 1 8 chroot "$ANDROID_COMPAT_ROOT" \
+			/system/bin/bootstrap/linker64 /vendor/bin/diag-router -d 7 \
+			</dev/null >/dev/null 2>&1 &
+		for attempt in 1 2 3; do
+			qrtr-lookup 4097 2>/dev/null | grep -q 'MODEM:CMD' && break
+			sleep 1
+		done
+	fi
+	output="$(timeout -k 1 6 /usr/sbin/xm14pro-nv550-reader 2>/dev/null)" || fail "基带只读查询失败"
+	imei1="$(json_value "$output" '@.imei1')"
+	imei2="$(json_value "$output" '@.imei2')"
+	valid_display_imei "$imei1" && valid_display_imei "$imei2" || fail "基带返回的标识无效"
+	card_status="$(timeout -k 1 5 qmicli -d qrtr://0 --uim-get-card-status 2>/dev/null)" || card_status=
+	primary_slot="$(printf '%s\n' "$card_status" | awk -F "'" '/Primary GW:/ { print $2; exit }')"
+	case "$primary_slot" in
+		1|2)
+			raw_iccid="$(timeout -k 1 5 qmicli -d qrtr://0 --uim-read-transparent=0x3F00,0x2FE2 2>/dev/null |
+				awk '/Read result:/ { getline; gsub(/[[:space:]]/, ""); print; exit }')"
+			iccid1="$(printf '%s\n' "$raw_iccid" | awk -F: 'NF == 10 {
+				for (i = 1; i <= NF; i++) {
+					if (length($i) != 2 || $i !~ /^[0-9A-Fa-f]+$/) exit 1
+					printf "%s%s", substr($i, 2, 1), substr($i, 1, 1)
+				}
+				print ""
+			}')"
+			[ "$primary_slot" = 1 ] || { iccid2="$iccid1"; iccid1=; }
+			;;
+	esac
+	json_init
+	json_add_boolean ok 1
+	json_add_string imei1 "$imei1"
+	json_add_string imei2 "$imei2"
+	json_add_string iccid1 "$iccid1"
+	json_add_string iccid2 "$iccid2"
+	output="$(json_dump)"
+	umask 077
+	mkdir -p "$STATE_ROOT" || fail "创建运行状态目录失败"
+	temp="$IDENTITY_CACHE.$$"
+	printf '%s\n' "$output" > "$temp" && mv "$temp" "$IDENTITY_CACHE" || fail "保存本次读取结果失败"
+	printf '%s\n' "$output"
+}
+
 set_imei_display() {
 	local value="$1"
 	[ -z "$value" ] || valid_display_imei "$value" || fail "请输入校验正确的 15 位 IMEI；此设置仅用于 LuCI 显示"
@@ -1352,6 +1412,7 @@ screen_telephony() {
 
 case "${1:-status}" in
 	status) status_json ;;
+	read-identities) read_modem_identities "$2" ;;
 	set-imei-display) set_imei_display "$2" ;;
 	set-data) set_data "$2" "$3" "$4" "$5" "$6" ;;
 	set-slot) set_slot "$2" "$3" ;;

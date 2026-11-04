@@ -21,8 +21,14 @@ IMS、短信和电话流程。当前手机固件会拒绝通用 QMI WMS 存储�
 运行时严禁伪造：不为缺失的信号、SIM、APN、短信、电话、小区或连接状态
 提供样例值。没有真实 nwrt 执行通道的控件必须保持禁用。
 
-概览页允许设置一个明确标注的“LuCI IMEI 自定义显示值”，仅用于核对页面
-显示逻辑。后端 `status.imei` 始终返回真实基带值，额外返回
-`imei_display_override` 和 `imei_display`；前端同时列出真实基带值。
-设置保存于反重力前端已有的 `xm14display.main.cell_custom_imei`，清空即可恢复真实显示。
-它不写入 NV/EFS，不改变物理屏幕、ModemManager、SIM 或运营商读取的身份。
+概览页通过原厂 DIAG 服务和只读 NV 550 查询分别获取 IMEI 1 与 IMEI 2，
+结果仅缓存到本次启动的 `/var/run/xm14pro/nv-identities.json`。当前 QMI
+标识单独显示，便于核对活动卡槽；若插入 SIM，还通过 UIM 读取对应
+ICCID，并明确标注为 SIM 卡标识。页面提供手动重新读取按钮；若诊断服务
+不可用，明确显示第二项“暂不可读取”，不使用备份或常量冒充实时数据。
+查询适配层使用 qcom-efs-browser 的 BSD-3-Clause DIAG/NV 读取代码，
+其许可证随软件包安装。
+
+`xm14display.main.cell_custom_imei` 是独立的“页面显示测试值”，只用于
+检查 LuCI 显示逻辑。它不会覆盖真实标识行，也不写入 NV/EFS，不改变
+ModemManager、SIM 或运营商读取的身份。

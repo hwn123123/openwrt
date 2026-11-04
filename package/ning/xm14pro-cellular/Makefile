@@ -3,8 +3,8 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-cellular
 PKG_VERSION:=1.0
-PKG_RELEASE:=98
-PKG_LICENSE:=GPL-2.0-only
+PKG_RELEASE:=99
+PKG_LICENSE:=GPL-2.0-only BSD-3-Clause
 
 include $(INCLUDE_DIR)/package.mk
 
@@ -41,6 +41,11 @@ define Build/Compile
 		-o $(PKG_BUILD_DIR)/xm14pro-telephony \
 		./src/xm14pro-telephony.c $(TARGET_LDFLAGS) \
 		-lqmi-glib -lqrtr-glib -lgio-2.0 -lgobject-2.0 -lglib-2.0
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_CPPFLAGS) \
+		-Wall -Wextra -pthread \
+		-o $(PKG_BUILD_DIR)/xm14pro-nv550-reader \
+		./src/nv550/diag.c ./src/nv550/efs2.c ./src/nv550/util.c \
+		./src/nv550/reader.c $(TARGET_LDFLAGS)
 endef
 
 define Package/xm14pro-cellular/conffiles
@@ -74,6 +79,15 @@ define Package/xm14pro-cellular/install
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xm14pro-call-monitor $(1)/usr/sbin/xm14pro-call-monitor
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xm14pro-rmnet-ctl $(1)/usr/sbin/xm14pro-rmnet-ctl
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xm14pro-telephony $(1)/usr/sbin/xm14pro-telephony
+	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xm14pro-nv550-reader $(1)/usr/sbin/xm14pro-nv550-reader
+	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin
+	$(INSTALL_BIN) ./files/android-root/vendor/bin/diag-router \
+		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin/diag-router
+	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-qwes/android-root/vendor/lib64
+	$(INSTALL_DATA) ./files/android-root/vendor/lib64/*.so \
+		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/lib64/
+	$(INSTALL_DIR) $(1)/usr/share/licenses/xm14pro-cellular
+	$(INSTALL_DATA) ./src/nv550/LICENSE $(1)/usr/share/licenses/xm14pro-cellular/qcom-efs-browser
 endef
 
 $(eval $(call BuildPackage,xm14pro-cellular))

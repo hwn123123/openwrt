@@ -195,7 +195,6 @@ function displaySetting(label, detail, option, settings, save) {
 }
 
 function imeiInputField(settings) {
-	var currentReal = settings._realImei || '';
 	var inputEl = E('input', {
 		'id': 'xm14-custom-imei-input',
 		'type': 'text',
@@ -221,9 +220,9 @@ function imeiInputField(settings) {
 				applyBtn.disabled = false;
 				clearBtn.disabled = false;
 				hintEl.textContent = val
-					? _('Showing: ') + val
-					: _('Showing real IMEI');
-				mobile.notice(val ? _('Custom IMEI saved') : _('Restored to real IMEI'), 'success');
+					? '已保存页面测试值：' + val + '；真实基带未改变'
+					: '未设置页面测试值';
+				mobile.notice(val ? '页面测试值已保存；真实基带未改变' : '页面测试值已清除', 'success');
 			}).catch(function(err) {
 				applyBtn.disabled = false;
 				clearBtn.disabled = false;
@@ -243,22 +242,21 @@ function imeiInputField(settings) {
 	var hintEl = E('div', {
 		'style': 'font-size:.78em;color:var(--text-muted,#888);margin-top:.3em'
 	}, settings.cell_custom_imei
-		? _('Showing: ') + settings.cell_custom_imei
-		: _('Showing real IMEI'));
+		? '已保存页面测试值：' + settings.cell_custom_imei + '；真实基带未改变'
+		: '未设置页面测试值');
 	return E('div', {
 		'class': 'xm14-field xm14-cell-display-setting',
 		'style': 'display:block;padding:.6em 0'
 	}, [
 		E('div', { 'style': 'margin-bottom:.45em' }, [
-			E('strong', {}, _('Custom IMEI (display only)')),
+			E('strong', {}, 'IMEI 页面显示测试值'),
 			E('small', { 'style': 'display:block;margin-top:.15em;color:var(--text-muted,#888)' },
-				_('Overrides the IMEI shown on this page. Does not affect the real modem IMEI.'))
+				'只保存在 LuCI 设置中，不写入基带；不会改变运营商读到的设备标识。')
 		]),
 		E('div', { 'style': 'display:flex;align-items:center;gap:.4em;width:100%' }, [
 			inputEl, applyBtn, clearBtn
 		]),
-		hintEl,
-		E('small', { 'style': 'display:block;margin-top:.3em;color:var(--text-muted,#888)' }, '真实基带 IMEI：' + mobile.text(currentReal, '—'))
+		hintEl
 	]);
 }
 
@@ -355,8 +353,12 @@ function cellularDetailPanel(s, customImei) {
 			cellularDatum(_('Current network'), network, band, s.connected ? 'is-good' : 'is-warn'),
 			cellularDatum(_('Serving cell'), s.cell_id, cell, 'is-good'),
 			cellularDatum(_('Signal measurements'), s.nr_rsrp || s.rsrp || s.rssi, signal, ''),
-			cellularDatum(customImei ? 'IMEI · 自定义显示' : _('IMEI'), customImei || s.imei,
-				customImei ? '真实基带 IMEI：' + mobile.text(s.imei, '—') : _('IMEI SV %s · MEID %s').format(mobile.text(s.imei_sv, '—'), mobile.text(s.meid, '—')), '', true)
+			cellularDatum('IMEI 1 · 基带只读', s.imei1_nv || s.imei,
+				'NV 550 卡槽 1；当前 QMI：' + mobile.text(s.imei, '—'), '', !!(s.imei1_nv || s.imei)),
+			cellularDatum('IMEI 2 · 基带只读', s.imei2_nv || '暂不可读取',
+				'NV 550 卡槽 2，与是否插 SIM 无关', '', !!s.imei2_nv),
+			customImei ? cellularDatum('页面显示测试值 · 未写入基带', customImei,
+				'仅用于页面测试，不是运营商读取的 IMEI', '', true) : ''
 		]),
 		E('div', { 'class': 'xm14-cell-selection-strip' }, [
 			cellularDatum(_('Current serving'), s.cell_id, cell),
@@ -367,6 +369,13 @@ function cellularDetailPanel(s, customImei) {
 				button.disabled = true;
 				mobile.action('refresh-radio').then(function() {
 					mobile.notice(_('Radio details refreshed'), 'success');
+				}).catch(mobile.notifyError).finally(function() { button.disabled = false; });
+			}, false, 'refresh')),
+			E('div', { 'class': 'xm14-cell-selection-action' }, mobile.button('重新读取双卡基带标识', '', function(event) {
+				var button = event.currentTarget;
+				button.disabled = true;
+				mobile.action('read-identities', [ 'refresh' ]).then(function() {
+					mobile.notice('已从基带只读读取 IMEI 1 和 IMEI 2', 'success');
 				}).catch(mobile.notifyError).finally(function() { button.disabled = false; });
 			}, false, 'refresh'))
 		])
@@ -474,7 +483,6 @@ function dashboard(s, bonding, customImei) {
 		!mobile.missing(s.rx_dropped) ? _('RX drops %s').format(s.rx_dropped) : '', !mobile.missing(s.tx_dropped) ? _('TX drops %s').format(s.tx_dropped) : ''
 	].filter(Boolean).join(' · ');
 	var sim1 = simState(s.sim1_ready, s.sim1_present), sim2 = simState(s.sim2_ready, s.sim2_present);
-	var displayImei = (customImei && customImei.trim()) ? customImei.trim() : s.imei;
 
 	var columnsLeft = [
 		card(_('Network session'), [
@@ -486,8 +494,10 @@ function dashboard(s, bonding, customImei) {
 		card(_('SIM and operator'), [
 			row(_('Operator'), s.operator_name), row(_('PLMN'), s.operator_code), row(_('Registration'), mobile.stateText(s.registration_state)),
 			row(_('Active data SIM'), mobile.slot(s.active_data_slot)), sim1 ? mobile.row(_('SIM slot 1'), sim1) : null, sim2 ? mobile.row(_('SIM slot 2'), sim2) : null,
-			row(_('Own number'), s.own_numbers), row(customImei ? 'IMEI · 自定义显示' : _('IMEI'), displayImei),
-			customImei ? row('真实基带 IMEI', s.imei) : null, row(_('IMEI SV'), s.imei_sv), row(_('MEID'), s.meid)
+			row(_('Own number'), s.own_numbers), row('IMEI 1 · 基带', s.imei1_nv || s.imei),
+			row('IMEI 2 · 基带', s.imei2_nv || '暂不可读取'),
+			row('当前 QMI IMEI', s.imei), customImei ? row('页面测试值 · 未写入基带', customImei) : null,
+			row(_('IMEI SV'), s.imei_sv), row(_('MEID'), s.meid)
 		]),
 		card(_('Phone services'), [
 			row(_('IMS registration'), s.ims_registration), row(_('IMS access'), s.ims_technology), row(_('IMS voice'), imsVoice), row(_('IMS messages'), imsSms),
@@ -564,7 +574,10 @@ function dashboard(s, bonding, customImei) {
 }
 
 return view.extend({
-	load: function() { return Promise.all([ mobile.status(), uci.load('xm14display'), mobile.bondingStatus() ]); },
+	load: function() { return Promise.all([
+		mobile.action('read-identities').catch(function() { return {}; }).then(function() { return mobile.status(); }),
+		uci.load('xm14display'), mobile.bondingStatus()
+	]); },
 	render: function(data) {
 		var s = data[0];
 		var bonding = data[2] || {};
@@ -573,8 +586,7 @@ return view.extend({
 			cell_show_cell: uci.get('xm14display', 'main', 'cell_show_cell') || '1',
 			cell_show_aggregation: uci.get('xm14display', 'main', 'cell_show_aggregation') || '1',
 			cell_show_signal: uci.get('xm14display', 'main', 'cell_show_signal') || '1',
-			cell_custom_imei: s.imei_display_override || '',
-			_realImei: s.imei
+			cell_custom_imei: s.imei_display_override || ''
 		};
 		var commitQueue = Promise.resolve();
 		function saveDisplayOption(name, value) {
