@@ -72,6 +72,8 @@ def main() -> int:
         parser.error("USB must initially be in adb mode")
     if adb("shell", "getprop", "sys.usb.configfs").stdout.strip() != "2":
         parser.error("USB configfs mode differs from the reviewed phone")
+    if root("pidof diag-router", check=False).returncode == 0:
+        parser.error("diag-router is already running; cannot safely manage it")
 
     import usb.backend.libusb1 as libusb1
     import usb.core
@@ -107,7 +109,9 @@ def main() -> int:
         "setsid sh -c 'timeout 40 /vendor/bin/diag-router -d 7'"
     )
     time.sleep(2)
-    router_started = root("pidof diag-router", check=False).returncode == 0
+    router_result = root("pidof diag-router", check=False)
+    router_pids = [int(pid) for pid in router_result.stdout.split() if pid.isdecimal()]
+    router_started = bool(router_pids)
     print("ROUTER_STARTED=" + ("yes" if router_started else "no"))
 
     connected = False
@@ -172,7 +176,9 @@ def main() -> int:
             )
             print("ADB_RESTORED=" + ("yes" if restored else "no"))
             if restored:
-                root(f"kill {router_pid} {restore_pid} 2>/dev/null || true", check=False)
+                managed_pids = [router_pid, restore_pid, *router_pids]
+                root("kill " + " ".join(map(str, managed_pids)) +
+                     " 2>/dev/null || true", check=False)
 
 
 if __name__ == "__main__":
