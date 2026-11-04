@@ -41,3 +41,20 @@ python3 protocol_check.py '/Users/ning/xiangmu3/小米14pro/PixelOS-17-shennong/
 ```
 
 Antigravity 留下的 `/tmp/qmi_imei_write.c` 使用了错误的 QRTR 控制包类型及字段顺序，还把 QMUX/CTL 客户端分配帧用于 QRTR DMS 套接字。它没有通过协议核查，且包含实际写请求，**不能运行或纳入固件**。Antigravity 会话仅包含用户要求自定义显示和构造原始报文，未提供明确的新目标值；也没有成功写入后回读的证据。当前仅完成只读备份及协议核对，设备标识未修改。任何未来写入方案都需要先找到本机实际可用的协议、授权条件和明确目标值。
+
+## A 槽 Android 的 DIAG 只读探测
+
+`diag_probe.py` 在 Mac 上临时把 A 槽 USB 切到 `diag,adb`，仅发送 Qualcomm DIAG 版本查询 `0x00` 和 NV 项 550 读取 `0x26`。它会恢复原来的 `adb` / configfs 2 配置，并在设备端安排自动恢复定时任务，以防切换时 ADB 断开。脚本不会输出读到的标识值，也没有写入命令。
+
+本机依赖可以装进独立虚拟环境，不需要 Homebrew：
+
+```sh
+python3 -m venv /tmp/nwrt-diag-venv
+/tmp/nwrt-diag-venv/bin/python -m pip install pyusb pyserial colorama
+git clone --depth 1 https://github.com/bkerler/edl.git /tmp/nwrt-edl-readonly
+/tmp/nwrt-diag-venv/bin/python -u diag_probe.py \
+  --edl /tmp/nwrt-edl-readonly \
+  --libusb /Library/PrivilegedHelperTools/libusb-1.0.0.dylib
+```
+
+2026-11-04 实机结果：系统的 configfs 1 模式能够把 `05c6:901d` DIAG USB 组合暴露给 Mac；`diag-router` 进程已启动，USB 接口可以被工具占用，但版本查询及 NV 550 读取均未收到响应。故目前不能确认 NV 550 可读，更不能推断存在可用的写入权限。脚本执行后确认 ADB、configfs 2 和 A 槽均恢复。`bkerler/edl` 是独立 GPLv3 项目，此目录没有复制其代码。
