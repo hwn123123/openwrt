@@ -58,3 +58,9 @@ git clone --depth 1 https://github.com/bkerler/edl.git /tmp/nwrt-edl-readonly
 ```
 
 2026-11-04 实机结果：系统的 configfs 1 模式能够把 `05c6:901d` DIAG USB 组合暴露给 Mac；`diag-router` 进程已启动，USB 接口可以被工具占用，但版本查询及 NV 550 读取均未收到响应。故目前不能确认 NV 550 可读，更不能推断存在可用的写入权限。脚本执行后确认 ADB、configfs 2 和 A 槽均恢复。`bkerler/edl` 是独立 GPLv3 项目，此目录没有复制其代码。
+
+## 其他公开路径的实机核查
+
+2026-11-04 从 [catxeon/qcom-efs-browser](https://github.com/catxeon/qcom-efs-browser) 源码构建 Android arm64 helper（检出版本 `b7fa178`），在 A 槽以默认只读模式请求 `open`。设备返回：`no DIAG service (4097) published on the QRTR bus; /dev/diag does not exist`。这说明该项目已验证的 QRTR DIAG 和 `diagchar` 两条通道在当前 PixelOS 内核/基带组合下均不可用。测试后 helper、ADB 端口转发及临时文件已清理；未尝试写入。
+
+[iamromulan/qfenix](https://github.com/iamromulan/qfenix) 支持常见 USB DIAG 串口，但 macOS 版需要其 `qcseriald` 串口桥；目前未在本机取得 NV 读取结果，不能把它列为已验证方案。第三方 [AndroidWinTool 的机型页](https://androidwintool.com/supported-models/xiaomi/xiaomi-14-pro-shennong) 宣称支持 `shennong` 的双卡 IMEI 维修，[版本记录](https://androidwintool.com/download)又列出 Magisk 30+ root 的条件；这是厂商声明，未在这台 PixelOS/NWRT 设备上验证，也没有公开实现细节。不要把其他设备的 QCN 或 modemst 镜像刷到本机。
