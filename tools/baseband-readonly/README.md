@@ -73,7 +73,7 @@ git clone --depth 1 https://github.com/bkerler/edl.git /tmp/nwrt-edl-readonly
 
 B 槽 `/sys/module/diag` 对应的是 Linux TIPC socket 诊断模块，已通过 `/proc/kallsyms` 中的 `tipc_sock_diag_handler` 等符号核对；它不是 Qualcomm 基带 DIAG。B 槽没有 `/dev/diag` 或 `/dev/diag_mdm`，也没有运行中的 `diag-router`。原厂镜像和本机备份均保持只读，未刷机、未修改设备标识。
 
-[iamromulan/qfenix](https://github.com/iamromulan/qfenix) 支持常见 USB DIAG 串口，但 macOS 版需要其 `qcseriald` 串口桥；目前未在本机取得 NV 读取结果，不能把它列为已验证方案。第三方 [AndroidWinTool 的机型页](https://androidwintool.com/supported-models/xiaomi/xiaomi-14-pro-shennong) 宣称支持 `shennong` 的双卡 IMEI 维修，[版本记录](https://androidwintool.com/download)又列出 Magisk 30+ root 的条件；这是厂商声明，未在这台 PixelOS/NWRT 设备上验证，也没有公开实现细节。不要把其他设备的 QCN 或 modemst 镜像刷到本机。
+[iamromulan/qfenix](https://github.com/iamromulan/qfenix) 支持常见 USB DIAG 串口，但 macOS 版需要其 `qcseriald` 串口桥；目前未在本机取得 NV 读取结果，不能把它列为已验证方案。第三方 [AndroidWinTool 的机型页](https://androidwintool.com/supported-models/xiaomi/xiaomi-14-pro-shennong) 仅宣称对 `shennong` 的 `FACTORY-SHENNONG-23.10.31` 构建支持在线服务，操作名称明确为“一个 IMEI 自定义、一个 IMEI 随机”；这不符合只恢复卡槽 1 且保持卡槽 2 不变的要求。[版本记录](https://androidwintool.com/download)还列出 Magisk 30+ root 的条件。这些都是厂商声明，未在这台 PixelOS/NWRT 设备上验证，也没有公开实现细节。不要把其他设备的 QCN 或 modemst 镜像刷到本机。
 
 ## 2026-11-04：原厂诊断路由实机验证
 
@@ -95,4 +95,4 @@ B 槽 `/sys/module/diag` 对应的是 Linux TIPC socket 诊断模块，已通过
 
 用户确认此前在另一台电脑上修改标识，且没有留下修改过程或改动前的备份。本机 2026-10-10 的 Android 硬件探测已记录当前标识，说明修改至迟发生于该日；2026-10-09 的 `ufs_sdf.img` 虽含同机 `modemst`，但没有证据证明其中仍有用户声称的原号码，不能将它作为已验证的原号恢复包。对旧镜像和现状镜像的只读扫描都未定位到 NV 550 记录的明文编码；连现状镜像中的已知当前号码也不能直接定位，因此该扫描不能证明号码不存在，只说明不能靠简单字节替换恢复。
 
-恢复整份 `modemst` 还会回滚其他 EFS 状态；在无法确认原号记录及完整恢复步骤前，不应直接刷写旧镜像、将 `fsg` 覆盖到 `modemst`，或尝试猜测 EFS 文件路径。需要取得修改前的同机 QCN/EFS 备份，或找到经实机验证且具备写入授权的维修通道。公开第三方工具虽宣称支持 `shennong`，但列出的条件是特定工厂版本和在线服务，尚未在这台当前系统上验证。
+恢复整份 `modemst` 还会回滚其他 EFS 状态；在无法确认原号记录及完整恢复步骤前，不应直接刷写旧镜像、将 `fsg` 覆盖到 `modemst`，或尝试猜测 EFS 文件路径。需要取得修改前的同机 QCN/EFS 备份，或找到经实机验证且具备写入授权、可分别处理卡槽的维修通道；找不到时应使用原厂授权维修途径。
