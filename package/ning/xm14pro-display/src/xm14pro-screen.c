@@ -290,8 +290,26 @@ static uint32_t *rate_background;
 static bool rate_background_valid;
 static bool rate_cache_building;
 static int rate_background_page = -1;
+static time_t rate_background_minute = -1;
+static unsigned rate_background_generation;
+enum meter_index {
+    METER_SIGNAL, METER_CPU, METER_MEMORY, METER_CPU_TEMP,
+    METER_BATTERY, METER_SOH, METER_BATTERY_TEMP,
+    METER_COUNT
+};
+static struct {
+    bool initialized;
+    bool active;
+    double started_at;
+    double from[METER_COUNT];
+    double target[METER_COUNT];
+    double shown[METER_COUNT];
+} meter_motion;
+static bool meter_cache_building;
 static uint32_t *speed_background;
 static bool speed_background_valid;
+static time_t speed_background_minute = -1;
+static unsigned speed_background_generation;
 static bool speed_cache_building;
 static bool speed_update_only;
 static char speed_cached_state[24];
@@ -299,6 +317,9 @@ static char speed_cached_phase[24];
 static int speed_cached_battery;
 static int speed_cached_duration;
 static int speed_cached_threads;
+static uint32_t *dashboard_buffer_pixels[BUFFER_COUNT];
+static int dashboard_buffer_page[BUFFER_COUNT];
+static unsigned dashboard_buffer_generation[BUFFER_COUNT];
 static double speed_dial_position;
 static double speed_dial_target_position;
 static double speed_dial_value;
@@ -415,8 +436,17 @@ static void framed_round_rect(struct canvas *c, int x, int y, int w, int h,
 
 static void circle(struct canvas *c, int cx, int cy, int radius,
                    uint32_t color) {
+    static int16_t half_widths[33][65];
+    static bool widths_ready[33];
+    if (radius <= 32 && radius >= 0 && !widths_ready[radius]) {
+        for (int y = -radius; y <= radius; ++y)
+            half_widths[radius][y + radius] =
+                (int16_t)isqrt_int(radius * radius - y * y);
+        widths_ready[radius] = true;
+    }
     for (int y = -radius; y <= radius; ++y) {
-        int half = isqrt_int(radius * radius - y * y);
+        int half = radius <= 32 ? half_widths[radius][y + radius] :
+            isqrt_int(radius * radius - y * y);
         fill_rect(c, cx - half, cy + y, half * 2 + 1, 1, color);
     }
 }
@@ -1421,6 +1451,56 @@ static int signal_percent(const struct live_data *data) {
     return result;
 }
 
+static void advance_meter_motion(double now) {
+    if (!meter_motion.initialized || !meter_motion.active) return;
+    double fraction = (now - meter_motion.started_at) / 0.72;
+    if (fraction >= 1.0) {
+        memcpy(meter_motion.shown, meter_motion.target,
+               sizeof(meter_motion.shown));
+        meter_motion.active = false;
+        return;
+    }
+    if (fraction < 0.0) fraction = 0.0;
+    double eased = fraction * fraction * (3.0 - 2.0 * fraction);
+    for (int i = 0; i < METER_COUNT; ++i)
+        meter_motion.shown[i] = meter_motion.from[i] +
+            (meter_motion.target[i] - meter_motion.from[i]) * eased;
+}
+
+static void update_meter_targets(const struct live_data *data, double now) {
+    double next[METER_COUNT] = {
+        [METER_SIGNAL] = signal_percent(data),
+        [METER_CPU] = data->cpu,
+        [METER_MEMORY] = data->memory,
+        [METER_CPU_TEMP] = data->cpu_temp,
+        [METER_BATTERY] = data->battery,
+        [METER_SOH] = data->battery_soh,
+        [METER_BATTERY_TEMP] = data->battery_temp
+    };
+    if (!meter_motion.initialized) {
+        memcpy(meter_motion.from, next, sizeof(next));
+        memcpy(meter_motion.target, next, sizeof(next));
+        memcpy(meter_motion.shown, next, sizeof(next));
+        meter_motion.initialized = true;
+        return;
+    }
+    bool changed = false;
+    for (int i = 0; i < METER_COUNT; ++i)
+        if (fabs(meter_motion.target[i] - next[i]) >= 0.01) changed = true;
+    if (!changed) return;
+    advance_meter_motion(now);
+    memcpy(meter_motion.from, meter_motion.shown,
+           sizeof(meter_motion.from));
+    memcpy(meter_motion.target, next, sizeof(next));
+    meter_motion.started_at = now;
+    meter_motion.active = false;
+    for (int i = 0; i < METER_COUNT; ++i)
+        if (fabs(meter_motion.target[i] - meter_motion.from[i]) >= 0.5)
+            meter_motion.active = true;
+    if (!meter_motion.active)
+        memcpy(meter_motion.shown, next, sizeof(next));
+}
+
 static const char *operator_label(const struct live_data *data) {
     const char *name = data->operator_name;
     const char *code = data->operator_code;
@@ -1602,10 +1682,102 @@ static void gauge(struct canvas *c, int cx, int cy, int radius, int percent,
     double start = PI * 0.85;
     double end = PI * 2.15;
     arc(c, cx, cy, radius, start, end, 25, C_TRACK);
-    arc(c, cx, cy, radius, start, start + (end - start) * percent / 100.0,
-        25, color);
-    centered_text(c, cx, cy - 38, value, 52, C_WHITE);
+    if (!meter_cache_building) {
+        arc(c, cx, cy, radius, start, start + (end - start) * percent / 100.0,
+            25, color);
+        centered_text(c, cx, cy - 38, value, 52, C_WHITE);
+    }
     centered_text(c, cx, cy + 30, label, 36, C_MUTED);
+}
+
+struct gauge_arc_pixel {
+    int16_t dx;
+    int16_t dy;
+    uint16_t phase;
+};
+
+struct gauge_arc_cache {
+    int radius;
+    size_t count;
+    struct gauge_arc_pixel *pixels;
+};
+
+static struct gauge_arc_cache gauge_arcs[] = {
+    {.radius = 120}, {.radius = 135},
+    {.radius = 142}, {.radius = 175}
+};
+
+static struct gauge_arc_cache *cached_gauge_arc(int radius) {
+    struct gauge_arc_cache *cache = NULL;
+    for (size_t i = 0; i < sizeof(gauge_arcs) / sizeof(gauge_arcs[0]); ++i)
+        if (gauge_arcs[i].radius == radius) cache = &gauge_arcs[i];
+    if (!cache || cache->pixels) return cache;
+
+    int outer = radius + 12;
+    int inner = radius - 12;
+    size_t count = 0;
+    for (int y = -outer; y <= outer; ++y)
+        for (int x = -outer; x <= outer; ++x) {
+            int distance = x * x + y * y;
+            if (distance >= inner * inner && distance <= outer * outer)
+                ++count;
+        }
+    cache->pixels = malloc(count * sizeof(*cache->pixels));
+    if (!cache->pixels) return NULL;
+
+    const double start = PI * 0.85;
+    const double sweep = PI * 1.3;
+    size_t written = 0;
+    for (int y = -outer; y <= outer; ++y)
+        for (int x = -outer; x <= outer; ++x) {
+            int distance = x * x + y * y;
+            if (distance < inner * inner || distance > outer * outer)
+                continue;
+            double angle = atan2((double)y, (double)x);
+            if (angle < start) angle += PI * 2.0;
+            if (angle < start || angle > start + sweep) continue;
+            cache->pixels[written++] = (struct gauge_arc_pixel){
+                .dx = (int16_t)x, .dy = (int16_t)y,
+                .phase = (uint16_t)lround((angle - start) / sweep * 65535.0)
+            };
+        }
+    cache->count = written;
+    return cache;
+}
+
+static void draw_cached_gauge_arc(struct canvas *c, int cx, int cy,
+                                  int radius, double percent,
+                                  uint32_t color) {
+    struct gauge_arc_cache *cache = cached_gauge_arc(radius);
+    if (!cache) {
+        const double start = PI * 0.85;
+        arc(c, cx, cy, radius, start,
+            start + PI * 1.3 * percent / 100.0, 25, color);
+        return;
+    }
+    uint16_t limit = (uint16_t)lround(percent * 65535.0 / 100.0);
+    for (size_t i = 0; i < cache->count; ++i) {
+        const struct gauge_arc_pixel *pixel = &cache->pixels[i];
+        if (pixel->phase > limit) continue;
+        int x = cx + pixel->dx;
+        int y = cy + pixel->dy;
+        if (x >= 0 && y >= 0 && x < c->width && y < c->height) {
+            uint32_t *row = (uint32_t *)((uint8_t *)c->pixels +
+                                          (size_t)y * c->pitch);
+            row[x] = color;
+        }
+    }
+}
+
+static void gauge_motion(struct canvas *c, int cx, int cy, int radius,
+                         double value, const char *unit, uint32_t color) {
+    double percent = value;
+    if (percent < 0.0) percent = 0.0;
+    if (percent > 100.0) percent = 100.0;
+    draw_cached_gauge_arc(c, cx, cy, radius, percent, color);
+    char shown[32];
+    snprintf(shown, sizeof(shown), "%.1f%s", value, unit);
+    centered_text(c, cx, cy - 38, shown, 47, C_WHITE);
 }
 
 static void icon_download(struct canvas *c, int x, int y, uint32_t color,
@@ -1718,8 +1890,9 @@ static void draw_hero(struct canvas *c, const struct live_data *data) {
 
     centered_text(c, 746, 205, "信号质量", 32, C_MUTED);
     gauge(c, 746, 430, 142, percent, signal_text, "蜂窝信号", C_CYAN);
-    centered_text(c, 746, 620, data->signal, 32,
-                  data->connected ? C_WHITE : C_MUTED);
+    if (!meter_cache_building)
+        centered_text(c, 746, 620, data->signal, 32,
+                      data->connected ? C_WHITE : C_MUTED);
 
     text(c, 1060, 205, "连接状态", 30, C_MUTED);
     circle(c, 1072, 285, 11, live_color);
@@ -1763,10 +1936,12 @@ static void draw_traffic(struct canvas *c, const struct live_data *data) {
     human_bytes(data->rx_bytes, rx, sizeof(rx));
     human_bytes(data->tx_bytes, tx, sizeof(tx));
     text(c, 115, 1330, "下载累计", 37, C_MUTED);
-    bold_text(c, 115, 1390, rx, 67, C_WHITE);
+    if (!meter_cache_building)
+        bold_text(c, 115, 1390, rx, 67, C_WHITE);
     fill_rect(c, 470, 1320, 2, 170, C_TRACK);
     text(c, 545, 1330, "上传累计", 37, C_MUTED);
-    bold_text(c, 545, 1390, tx, 67, C_WHITE);
+    if (!meter_cache_building)
+        bold_text(c, 545, 1390, tx, 67, C_WHITE);
 
     uint64_t total = data->rx_bytes + data->tx_bytes;
     int ratio = total ? (int)(data->rx_bytes * 100ULL / total) : 0;
@@ -1956,8 +2131,10 @@ static void draw_network_page(struct canvas *c, const struct live_data *data) {
               data->connected ? C_WHITE : C_MUTED);
     bold_text(c, 90, 450, operator_label(data), 50, C_WHITE);
     status_pill(c, 90, 555, data->connected);
-    signal_bars(c, 1120, 385, signal_percent(data));
-    bold_text(c, 1080, 555, data->signal, 50, C_WHITE);
+    if (!meter_cache_building) {
+        signal_bars(c, 1120, 385, signal_percent(data));
+        bold_text(c, 1080, 555, data->signal, 50, C_WHITE);
+    }
     text(c, 1080, 630, data->band, 35, C_CYAN);
     text(c, 90, 700, data->operator_code, 34, C_MUTED);
 
@@ -1978,12 +2155,14 @@ static void draw_network_page(struct canvas *c, const struct live_data *data) {
 
     card(c, 44, 1245, 1352, 650);
     bold_text(c, 90, 1290, "无线与小区", 47, C_WHITE);
-    label_value(c, 90, 1380, 570, "RSRP", data->signal, C_WHITE);
-    label_value(c, 750, 1380, 560, "RSRQ", data->rsrq, C_WHITE);
-    label_value(c, 90, 1475, 570, "SINR", data->sinr, C_WHITE);
-    label_value(c, 750, 1475, 560, "PCI", data->pci, C_WHITE);
-    label_value(c, 90, 1570, 570, "Cell ID", data->cell_id, C_WHITE);
-    label_value(c, 750, 1570, 560, "TAC", data->tac, C_WHITE);
+    if (!meter_cache_building) {
+        label_value(c, 90, 1380, 570, "RSRP", data->signal, C_WHITE);
+        label_value(c, 750, 1380, 560, "RSRQ", data->rsrq, C_WHITE);
+        label_value(c, 90, 1475, 570, "SINR", data->sinr, C_WHITE);
+        label_value(c, 750, 1475, 560, "PCI", data->pci, C_WHITE);
+        label_value(c, 90, 1570, 570, "Cell ID", data->cell_id, C_WHITE);
+        label_value(c, 750, 1570, 560, "TAC", data->tac, C_WHITE);
+    }
     label_value(c, 90, 1665, 570, "允许制式", data->allowed_mode, C_CYAN);
     label_value(c, 750, 1665, 560, "首选制式", data->preferred_mode, C_CYAN);
     label_value(c, 90, 1760, 570, "飞行模式", data->airplane_mode ? "已开启" : "已关闭",
@@ -2019,8 +2198,10 @@ static void draw_cellular_details_page(struct canvas *c,
               data->connected ? C_CYAN : C_MUTED);
     text(c, 90, 555, data->band, 38, C_WHITE);
     if (data->cell_show_signal) {
-        signal_bars(c, 1160, 410, signal_percent(data));
-        fit_text(c, 870, 545, 450, data->signal, 38, C_GREEN);
+        if (!meter_cache_building) {
+            signal_bars(c, 1160, 410, signal_percent(data));
+            fit_text(c, 870, 545, 450, data->signal, 38, C_GREEN);
+        }
     } else {
         text(c, 1045, 545, "信号已隐藏", 31, C_MUTED);
     }
@@ -2028,12 +2209,14 @@ static void draw_cellular_details_page(struct canvas *c,
     card(c, 44, 750, 1352, 570);
     bold_text(c, 90, 795, "服务小区", 47, C_WHITE);
     if (data->cell_show_cell) {
-        label_value(c, 90, 900, 570, "小区 ID / NCI", data->cell_id, C_CYAN);
-        label_value(c, 750, 900, 560, "PCI", data->pci, C_WHITE);
-        label_value(c, 90, 1015, 570, "TAC", data->tac, C_WHITE);
-        label_value(c, 750, 1015, 560, "NR ARFCN", data->nr_arfcn, C_WHITE);
-        label_value(c, 90, 1130, 570, "RSRQ", data->rsrq, C_WHITE);
-        label_value(c, 750, 1130, 560, "SINR", data->sinr, C_WHITE);
+        if (!meter_cache_building) {
+            label_value(c, 90, 900, 570, "小区 ID / NCI", data->cell_id, C_CYAN);
+            label_value(c, 750, 900, 560, "PCI", data->pci, C_WHITE);
+            label_value(c, 90, 1015, 570, "TAC", data->tac, C_WHITE);
+            label_value(c, 750, 1015, 560, "NR ARFCN", data->nr_arfcn, C_WHITE);
+            label_value(c, 90, 1130, 570, "RSRQ", data->rsrq, C_WHITE);
+            label_value(c, 750, 1130, 560, "SINR", data->sinr, C_WHITE);
+        }
     } else {
         centered_text(c, 720, 1010, "小区信息已在 LuCI 中隐藏", 38, C_MUTED);
     }
@@ -2094,32 +2277,40 @@ static void draw_traffic_page(struct canvas *c, const struct live_data *data,
     char rx[48], tx[48];
     human_bytes(data->rx_bytes, rx, sizeof(rx));
     human_bytes(data->tx_bytes, tx, sizeof(tx));
-    label_value(c, 90, 1645, 1220, "下载", rx, C_BLUE);
-    label_value(c, 90, 1745, 1220, "上传", tx, C_GREEN);
+    if (!rate_cache_building) {
+        label_value(c, 90, 1645, 1220, "下载", rx, C_BLUE);
+        label_value(c, 90, 1745, 1220, "上传", tx, C_GREEN);
+    }
     char total[48];
     human_bytes(data->rx_bytes + data->tx_bytes, total, sizeof(total));
-    label_value(c, 90, 1845, 1220, "合计", total, C_WHITE);
+    if (!rate_cache_building)
+        label_value(c, 90, 1845, 1220, "合计", total, C_WHITE);
 
     card(c, 44, 2065, 1352, 675);
     bold_text(c, 90, 2115, "链路统计", 47, C_WHITE);
     char value[64];
     snprintf(value, sizeof(value), "%llu", (unsigned long long)data->rx_packets);
-    label_value(c, 90, 2215, 570, "接收包", value, C_WHITE);
+    if (!rate_cache_building)
+        label_value(c, 90, 2215, 570, "接收包", value, C_WHITE);
     snprintf(value, sizeof(value), "%llu", (unsigned long long)data->tx_packets);
-    label_value(c, 750, 2215, 560, "发送包", value, C_WHITE);
+    if (!rate_cache_building)
+        label_value(c, 750, 2215, 560, "发送包", value, C_WHITE);
     snprintf(value, sizeof(value), "%llu", (unsigned long long)data->rx_errors);
-    label_value(c, 90, 2320, 570, "接收错误", value,
-                data->rx_errors ? rgb(255, 69, 58) : C_GREEN);
+    if (!rate_cache_building)
+        label_value(c, 90, 2320, 570, "接收错误", value,
+                    data->rx_errors ? rgb(255, 69, 58) : C_GREEN);
     snprintf(value, sizeof(value), "%llu", (unsigned long long)data->tx_errors);
-    label_value(c, 750, 2320, 560, "发送错误", value,
-                data->tx_errors ? rgb(255, 69, 58) : C_GREEN);
+    if (!rate_cache_building)
+        label_value(c, 750, 2320, 560, "发送错误", value,
+                    data->tx_errors ? rgb(255, 69, 58) : C_GREEN);
     label_value(c, 90, 2425, 1220, "接口", data->interface_name, C_CYAN);
     label_value(c, 90, 2530, 1220, "IPv4", data->ipv4, C_WHITE);
     label_value(c, 90, 2635, 1220, "MTU", data->mtu, C_WHITE);
     draw_footer(c, 3);
 }
 
-static void draw_rate_motion(struct canvas *c, int page) {
+static void draw_rate_motion(struct canvas *c, const struct live_data *data,
+                             int page) {
     int card_y = page == 0 ? 760 : 310;
     char value[40];
     human_rate(rate_motion.shown_rx, value, sizeof(value));
@@ -2135,6 +2326,27 @@ static void draw_rate_motion(struct canvas *c, int page) {
     if (page == 3) {
         graph(c, 100, 930, 1240, 390, rate_motion.shown_rx_history, C_BLUE);
         graph(c, 100, 930, 1240, 390, rate_motion.shown_tx_history, C_GREEN);
+        char value[48];
+        human_bytes(data->rx_bytes, value, sizeof(value));
+        label_value(c, 90, 1645, 1220, "下载", value, C_BLUE);
+        human_bytes(data->tx_bytes, value, sizeof(value));
+        label_value(c, 90, 1745, 1220, "上传", value, C_GREEN);
+        human_bytes(data->rx_bytes + data->tx_bytes, value, sizeof(value));
+        label_value(c, 90, 1845, 1220, "合计", value, C_WHITE);
+        snprintf(value, sizeof(value), "%llu",
+                 (unsigned long long)data->rx_packets);
+        label_value(c, 90, 2215, 570, "接收包", value, C_WHITE);
+        snprintf(value, sizeof(value), "%llu",
+                 (unsigned long long)data->tx_packets);
+        label_value(c, 750, 2215, 560, "发送包", value, C_WHITE);
+        snprintf(value, sizeof(value), "%llu",
+                 (unsigned long long)data->rx_errors);
+        label_value(c, 90, 2320, 570, "接收错误", value,
+                    data->rx_errors ? rgb(255, 69, 58) : C_GREEN);
+        snprintf(value, sizeof(value), "%llu",
+                 (unsigned long long)data->tx_errors);
+        label_value(c, 750, 2320, 560, "发送错误", value,
+                    data->tx_errors ? rgb(255, 69, 58) : C_GREEN);
     }
 }
 
@@ -2155,17 +2367,21 @@ static void draw_device_page(struct canvas *c, const struct live_data *data) {
     bold_text(c, 90, 980, "温度", 47, C_WHITE);
     char value[64];
     snprintf(value, sizeof(value), "%.1f°C", data->cpu_temp);
-    label_value(c, 90, 1080, 520, "CPU", value, C_WHITE);
+    if (!meter_cache_building)
+        label_value(c, 90, 1080, 520, "CPU", value, C_WHITE);
     snprintf(value, sizeof(value), "%.1f°C", data->modem_temp);
-    label_value(c, 90, 1180, 520, "基带", value, C_WHITE);
-    label_value(c, 90, 1280, 520, "状态", data->cpu_temp < 75.0 ? "正常" : "温度较高",
-                data->cpu_temp < 75.0 ? C_GREEN : rgb(255, 159, 10));
+    if (!meter_cache_building) {
+        label_value(c, 90, 1180, 520, "基带", value, C_WHITE);
+        label_value(c, 90, 1280, 520, "状态", data->cpu_temp < 75.0 ? "正常" : "温度较高",
+                    data->cpu_temp < 75.0 ? C_GREEN : rgb(255, 159, 10));
+    }
 
     card(c, 746, 930, 650, 450);
     bold_text(c, 792, 980, "电池", 47, C_WHITE);
     if (data->battery_available) {
         snprintf(value, sizeof(value), "%d%%", data->battery);
-        label_value(c, 792, 1055, 520, "电量", value, C_GREEN);
+        if (!meter_cache_building)
+            label_value(c, 792, 1055, 520, "电量", value, C_GREEN);
         char state[96], protocol[96], thermals[96];
         snprintf(state, sizeof(state), "%s%s%s", data->battery_status,
                  data->battery_charge_type[0] ? " · " : "",
@@ -2205,7 +2421,8 @@ static void draw_device_page(struct canvas *c, const struct live_data *data) {
     snprintf(value, sizeof(value), "%llu 小时 %llu 分钟",
              (unsigned long long)(data->uptime / 3600),
              (unsigned long long)((data->uptime % 3600) / 60));
-    label_value(c, 90, 2220, 1220, "运行时间", value, C_WHITE);
+    if (!meter_cache_building)
+        label_value(c, 90, 2220, 1220, "运行时间", value, C_WHITE);
     snprintf(value, sizeof(value), "%d%%", data->storage);
     label_value(c, 90, 2320, 1220, "存储使用", value, C_WHITE);
     snprintf(value, sizeof(value), "%d", data->qrtr_services);
@@ -2572,27 +2789,32 @@ static void draw_battery_page(struct canvas *c, const struct live_data *data) {
     gauge(c, 720, 640, 175, data->battery_soh, value, "健康度", C_CYAN);
     snprintf(value, sizeof(value), "%.1f°C", data->battery_temp);
     gauge(c, 1140, 640, 175, (int)data->battery_temp, value, "电池温度", C_BLUE);
-	centered_text(c, 270, 790, battery_status_label(data->battery_status), 39, C_GREEN);
+    if (!meter_cache_building)
+        centered_text(c, 270, 790, battery_status_label(data->battery_status), 39, C_GREEN);
     snprintf(value, sizeof(value), "充电模式 %s", data->input_online ?
              (data->battery_protocol[0] ? data->battery_protocol : "未识别") : "未充电");
-	centered_text(c, 720, 790, value, 39, C_CYAN);
+    if (!meter_cache_building)
+        centered_text(c, 720, 790, value, 39, C_CYAN);
     snprintf(value, sizeof(value), "快充 %s", data->input_online ?
              ((data->battery_fastchg_mode > 0 || data->battery_quick_charge_type > 0) ? "已激活" : "待机") : "未充电");
-	centered_text(c, 1170, 790, value, 39,
-	              (data->battery_fastchg_mode > 0 || data->battery_quick_charge_type > 0) ? C_GREEN : C_WHITE);
-	line(c, 495, 780, 495, 838, 2, C_BORDER);
-	line(c, 945, 780, 945, 838, 2, C_BORDER);
+    if (!meter_cache_building)
+        centered_text(c, 1170, 790, value, 39,
+                      (data->battery_fastchg_mode > 0 || data->battery_quick_charge_type > 0) ? C_GREEN : C_WHITE);
+    line(c, 495, 780, 495, 838, 2, C_BORDER);
+    line(c, 945, 780, 945, 838, 2, C_BORDER);
 
     card(c, 44, 910, 650, 530);
     bold_text(c, 90, 960, "充电输入", 47, C_WHITE);
-    snprintf(value, sizeof(value), "%.2f W", data->input_power);
-    label_value(c, 90, 1060, 520, "当前充电功率", data->input_online ? value : "未充电", C_GREEN);
-    snprintf(value, sizeof(value), "%.3f V", data->input_voltage / 1000000.0);
-    label_value(c, 90, 1150, 520, "输入电压", value, C_WHITE);
-    snprintf(value, sizeof(value), "%.3f A", data->input_current / 1000000.0);
-    label_value(c, 90, 1240, 520, "输入电流", value, C_WHITE);
-    snprintf(value, sizeof(value), "%.2f A", data->input_current_limit / 1000000.0);
-    label_value(c, 90, 1330, 520, "电流上限", value, C_MUTED);
+    if (!meter_cache_building) {
+        snprintf(value, sizeof(value), "%.2f W", data->input_power);
+        label_value(c, 90, 1060, 520, "当前充电功率", data->input_online ? value : "未充电", C_GREEN);
+        snprintf(value, sizeof(value), "%.3f V", data->input_voltage / 1000000.0);
+        label_value(c, 90, 1150, 520, "输入电压", value, C_WHITE);
+        snprintf(value, sizeof(value), "%.3f A", data->input_current / 1000000.0);
+        label_value(c, 90, 1240, 520, "输入电流", value, C_WHITE);
+        snprintf(value, sizeof(value), "%.2f A", data->input_current_limit / 1000000.0);
+        label_value(c, 90, 1330, 520, "电流上限", value, C_MUTED);
+    }
 
     card(c, 746, 910, 650, 530);
     bold_text(c, 792, 960, "Type-C / PD", 47, C_WHITE);
@@ -2616,16 +2838,20 @@ static void draw_battery_page(struct canvas *c, const struct live_data *data) {
              data->battery_charge_full / 1000.0,
              data->battery_charge_design / 1000.0);
     label_value(c, 90, 1835, 1220, "满充 / 设计容量", value, C_WHITE);
-    snprintf(value, sizeof(value), "%.3f V · %.0f mA",
-             data->battery_voltage / 1000000.0,
-             data->battery_current / 1000.0);
-    label_value(c, 90, 1935, 1220, "电池电参数", value, C_WHITE);
+    if (!meter_cache_building) {
+        snprintf(value, sizeof(value), "%.3f V · %.0f mA",
+                 data->battery_voltage / 1000000.0,
+                 data->battery_current / 1000.0);
+        label_value(c, 90, 1935, 1220, "电池电参数", value, C_WHITE);
+    }
 
     card(c, 44, 2100, 1352, 640);
     bold_text(c, 90, 2150, "保护与功能", 47, C_WHITE);
-    label_value(c, 90, 2255, 570, "接口温度", data->connector_temp > 0 ? "实时监测" : "--", C_GREEN);
-    snprintf(value, sizeof(value), "%.1f°C", data->connector_temp);
-    label_value(c, 750, 2255, 560, "温度值", value, C_WHITE);
+    if (!meter_cache_building) {
+        label_value(c, 90, 2255, 570, "接口温度", data->connector_temp > 0 ? "实时监测" : "--", C_GREEN);
+        snprintf(value, sizeof(value), "%.1f°C", data->connector_temp);
+        label_value(c, 750, 2255, 560, "温度值", value, C_WHITE);
+    }
     label_value(c, 90, 2355, 570, "进水检测", data->battery_moisture ? "检测到" : "正常",
                 data->battery_moisture ? rgb(255, 69, 58) : C_GREEN);
     label_value(c, 750, 2355, 560, "防烧保护", data->battery_anti_burn ? "已启用" : "未启用", C_GREEN);
@@ -2635,6 +2861,110 @@ static void draw_battery_page(struct canvas *c, const struct live_data *data) {
     label_value(c, 750, 2555, 560, "充电泵", (data->battery_cp_master && data->battery_cp_slave) ? "主从正常" : "检查中", C_GREEN);
     label_value(c, 90, 2655, 1220, "电池材料", data->battery_technology, C_MUTED);
     draw_footer(c, 6);
+}
+
+static void draw_meter_motion(struct canvas *c, const struct live_data *data,
+                              int page) {
+    if (page == 0) {
+        gauge_motion(c, 746, 430, 142, meter_motion.shown[METER_SIGNAL],
+                     "%", C_CYAN);
+        centered_text(c, 746, 620, data->signal, 32,
+                      data->connected ? C_WHITE : C_MUTED);
+        char bytes[48];
+        human_bytes(data->rx_bytes, bytes, sizeof(bytes));
+        bold_text(c, 115, 1390, bytes, 67, C_WHITE);
+        human_bytes(data->tx_bytes, bytes, sizeof(bytes));
+        bold_text(c, 545, 1390, bytes, 67, C_WHITE);
+        gauge_motion(c, 310, 2285, 120, meter_motion.shown[METER_CPU],
+                     "%", C_CYAN);
+        gauge_motion(c, 720, 2285, 120, meter_motion.shown[METER_MEMORY],
+                     "%", C_BLUE);
+        gauge_motion(c, 1130, 2285, 120, meter_motion.shown[METER_CPU_TEMP],
+                     "°C", C_GREEN);
+    } else if (page == 4) {
+        gauge_motion(c, 310, 690, 135, meter_motion.shown[METER_CPU],
+                     "%", C_CYAN);
+        gauge_motion(c, 720, 690, 135, meter_motion.shown[METER_MEMORY],
+                     "%", C_BLUE);
+        gauge_motion(c, 1130, 690, 135, meter_motion.shown[METER_CPU_TEMP],
+                     "°C", C_GREEN);
+        char value[64];
+        snprintf(value, sizeof(value), "%.1f°C", data->cpu_temp);
+        label_value(c, 90, 1080, 520, "CPU", value, C_WHITE);
+        snprintf(value, sizeof(value), "%.1f°C", data->modem_temp);
+        label_value(c, 90, 1180, 520, "基带", value, C_WHITE);
+        label_value(c, 90, 1280, 520, "状态",
+                    data->cpu_temp < 75.0 ? "正常" : "温度较高",
+                    data->cpu_temp < 75.0 ? C_GREEN : rgb(255, 159, 10));
+        if (data->battery_available) {
+            snprintf(value, sizeof(value), "%d%%", data->battery);
+            label_value(c, 792, 1055, 520, "电量", value, C_GREEN);
+        }
+        snprintf(value, sizeof(value), "%llu 小时 %llu 分钟",
+                 (unsigned long long)(data->uptime / 3600),
+                 (unsigned long long)((data->uptime % 3600) / 60));
+        label_value(c, 90, 2220, 1220, "运行时间", value, C_WHITE);
+    } else if (page == 6) {
+        gauge_motion(c, 300, 640, 175, meter_motion.shown[METER_BATTERY],
+                     "%", C_GREEN);
+        gauge_motion(c, 720, 640, 175, meter_motion.shown[METER_SOH],
+                     "%", C_CYAN);
+        gauge_motion(c, 1140, 640, 175, meter_motion.shown[METER_BATTERY_TEMP],
+                     "°C", C_BLUE);
+    }
+}
+
+static void draw_radio_live(struct canvas *c, const struct live_data *data,
+                            int page) {
+    if (page == 1) {
+        signal_bars(c, 1120, 385, signal_percent(data));
+        bold_text(c, 1080, 555, data->signal, 50, C_WHITE);
+        label_value(c, 90, 1380, 570, "RSRP", data->signal, C_WHITE);
+        label_value(c, 750, 1380, 560, "RSRQ", data->rsrq, C_WHITE);
+        label_value(c, 90, 1475, 570, "SINR", data->sinr, C_WHITE);
+        label_value(c, 750, 1475, 560, "PCI", data->pci, C_WHITE);
+        label_value(c, 90, 1570, 570, "Cell ID", data->cell_id, C_WHITE);
+        label_value(c, 750, 1570, 560, "TAC", data->tac, C_WHITE);
+    } else if (page == 9) {
+        if (data->cell_show_signal) {
+            signal_bars(c, 1160, 410, signal_percent(data));
+            fit_text(c, 870, 545, 450, data->signal, 38, C_GREEN);
+        }
+        if (data->cell_show_cell) {
+            label_value(c, 90, 900, 570, "小区 ID / NCI", data->cell_id, C_CYAN);
+            label_value(c, 750, 900, 560, "PCI", data->pci, C_WHITE);
+            label_value(c, 90, 1015, 570, "TAC", data->tac, C_WHITE);
+            label_value(c, 750, 1015, 560, "NR ARFCN", data->nr_arfcn, C_WHITE);
+            label_value(c, 90, 1130, 570, "RSRQ", data->rsrq, C_WHITE);
+            label_value(c, 750, 1130, 560, "SINR", data->sinr, C_WHITE);
+        }
+    }
+}
+
+static void draw_battery_live(struct canvas *c, const struct live_data *data) {
+    char value[128];
+    centered_text(c, 270, 790, battery_status_label(data->battery_status), 39, C_GREEN);
+    snprintf(value, sizeof(value), "充电模式 %s", data->input_online ?
+             (data->battery_protocol[0] ? data->battery_protocol : "未识别") : "未充电");
+    centered_text(c, 720, 790, value, 39, C_CYAN);
+    snprintf(value, sizeof(value), "快充 %s", data->input_online ?
+             ((data->battery_fastchg_mode > 0 || data->battery_quick_charge_type > 0) ? "已激活" : "待机") : "未充电");
+    centered_text(c, 1170, 790, value, 39,
+                  (data->battery_fastchg_mode > 0 || data->battery_quick_charge_type > 0) ? C_GREEN : C_WHITE);
+    snprintf(value, sizeof(value), "%.2f W", data->input_power);
+    label_value(c, 90, 1060, 520, "当前充电功率", data->input_online ? value : "未充电", C_GREEN);
+    snprintf(value, sizeof(value), "%.3f V", data->input_voltage / 1000000.0);
+    label_value(c, 90, 1150, 520, "输入电压", value, C_WHITE);
+    snprintf(value, sizeof(value), "%.3f A", data->input_current / 1000000.0);
+    label_value(c, 90, 1240, 520, "输入电流", value, C_WHITE);
+    snprintf(value, sizeof(value), "%.2f A", data->input_current_limit / 1000000.0);
+    label_value(c, 90, 1330, 520, "电流上限", value, C_MUTED);
+    snprintf(value, sizeof(value), "%.3f V · %.0f mA",
+             data->battery_voltage / 1000000.0, data->battery_current / 1000.0);
+    label_value(c, 90, 1935, 1220, "电池电参数", value, C_WHITE);
+    label_value(c, 90, 2255, 570, "接口温度", data->connector_temp > 0 ? "实时监测" : "--", C_GREEN);
+    snprintf(value, sizeof(value), "%.1f°C", data->connector_temp);
+    label_value(c, 750, 2255, 560, "温度值", value, C_WHITE);
 }
 
 static void state_badge(struct canvas *c, int x, int y, bool ready,
@@ -3125,14 +3455,94 @@ static void render_page(struct canvas *c, const struct live_data *data,
     draw_footer(c, 0);
 }
 
+static int dashboard_buffer_index(const struct canvas *c) {
+    for (int i = 0; i < BUFFER_COUNT; ++i)
+        if (dashboard_buffer_pixels[i] == c->pixels) return i;
+    return -1;
+}
+
+static void invalidate_dashboard_buffers(void) {
+    for (int i = 0; i < BUFFER_COUNT; ++i)
+        dashboard_buffer_page[i] = -1;
+}
+
+static void restore_region(struct canvas *c, const uint32_t *base,
+                           int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > c->width) w = c->width - x;
+    if (y + h > c->height) h = c->height - y;
+    if (w <= 0 || h <= 0) return;
+    const uint8_t *source = (const uint8_t *)base;
+    uint8_t *target = (uint8_t *)c->pixels;
+    for (int row = y; row < y + h; ++row)
+        memcpy(target + (size_t)row * c->pitch + (size_t)x * 4,
+               source + (size_t)row * c->pitch + (size_t)x * 4,
+               (size_t)w * 4);
+}
+
+static void restore_animated_regions(struct canvas *c,
+                                     const uint32_t *base, int page) {
+    if (page == 0 || page == 3) {
+        int y = page == 0 ? 760 : 310;
+        restore_region(c, base, 44, y, 650, 385);
+        restore_region(c, base, 746, y, 650, 385);
+    }
+    if (page == 0) {
+        restore_region(c, base, 575, 260, 350, 430);
+        restore_region(c, base, 100, 1375, 370, 135);
+        restore_region(c, base, 530, 1375, 390, 135);
+        restore_region(c, base, 170, 2140, 280, 300);
+        restore_region(c, base, 580, 2140, 280, 300);
+        restore_region(c, base, 990, 2140, 280, 300);
+    } else if (page == 1) {
+        restore_region(c, base, 1060, 365, 310, 340);
+        restore_region(c, base, 80, 1360, 1250, 270);
+    } else if (page == 3) {
+        restore_region(c, base, 90, 910, 1260, 430);
+        restore_region(c, base, 80, 1620, 1250, 280);
+        restore_region(c, base, 80, 2190, 1250, 190);
+    } else if (page == 4) {
+        restore_region(c, base, 145, 525, 330, 330);
+        restore_region(c, base, 555, 525, 330, 330);
+        restore_region(c, base, 965, 525, 330, 330);
+        restore_region(c, base, 80, 1065, 550, 295);
+        restore_region(c, base, 780, 1040, 550, 85);
+        restore_region(c, base, 80, 2200, 1250, 100);
+    } else if (page == 6) {
+        restore_region(c, base, 100, 440, 400, 405);
+        restore_region(c, base, 520, 440, 400, 405);
+        restore_region(c, base, 940, 440, 400, 405);
+        restore_region(c, base, 70, 760, 1300, 100);
+        restore_region(c, base, 80, 1040, 550, 390);
+        restore_region(c, base, 80, 1915, 1250, 100);
+        restore_region(c, base, 80, 2235, 1250, 100);
+    } else if (page == 9) {
+        restore_region(c, base, 850, 390, 490, 235);
+        restore_region(c, base, 80, 880, 1250, 325);
+    } else if (page == 2) {
+        restore_region(c, base, 230, 430, 980, 990);
+        restore_region(c, base, 90, 1820, 430, 140);
+        restore_region(c, base, 790, 1820, 430, 140);
+    }
+}
+
 static void render(struct canvas *c, const struct live_data *data,
                    double rx_rate, double tx_rate, int page) {
+    int buffer_index = dashboard_buffer_index(c);
+    bool power_menu_visible = access(POWER_MENU_FILE, F_OK) == 0;
+    if (page == 0 || page == 4 || page == 6) {
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        update_meter_targets(data, monotonic_seconds(&now));
+    }
     bool profile = access("/var/run/xm14display/profile-render", F_OK) == 0;
     struct timespec started, finished;
     static struct timespec previous_render;
     static bool previous_render_valid;
     static int previous_render_page = -1;
     double frame_gap_ms = 0.0;
+    double base_ms = 0.0, rate_ms = 0.0, meter_ms = 0.0;
     if (profile) {
         clock_gettime(CLOCK_MONOTONIC, &started);
         if (previous_render_valid && previous_render_page == page)
@@ -3144,29 +3554,73 @@ static void render(struct canvas *c, const struct live_data *data,
     } else {
         previous_render_valid = false;
     }
-    if ((page == 0 || page == 3) && rate_background &&
+    if ((page == 0 || page == 1 || page == 3 || page == 4 ||
+         page == 6 || page == 9) && rate_background &&
         rate_motion.initialized) {
-        if (!rate_background_valid || rate_background_page != page) {
+        time_t current_minute = time(NULL) / 60;
+        if (!rate_background_valid || rate_background_page != page ||
+            rate_background_minute != current_minute) {
             struct canvas base = *c;
             base.pixels = rate_background;
-            rate_cache_building = true;
+            rate_cache_building = page == 0 || page == 3;
+            meter_cache_building = page == 0 || page == 1 || page == 4 ||
+                                   page == 6 || page == 9;
             render_page(&base, data, rx_rate, tx_rate, page);
             rate_cache_building = false;
+            meter_cache_building = false;
             rate_background_valid = true;
             rate_background_page = page;
+            rate_background_minute = current_minute;
+            ++rate_background_generation;
         }
-        memcpy(c->pixels, rate_background, (size_t)c->pitch * c->height);
+        if (buffer_index >= 0 && !power_menu_visible &&
+            dashboard_buffer_page[buffer_index] == page &&
+            dashboard_buffer_generation[buffer_index] ==
+                rate_background_generation)
+            restore_animated_regions(c, rate_background, page);
+        else
+            memcpy(c->pixels, rate_background, (size_t)c->pitch * c->height);
+        if (buffer_index >= 0) {
+            dashboard_buffer_page[buffer_index] = page;
+            dashboard_buffer_generation[buffer_index] =
+                rate_background_generation;
+        }
         struct timespec now;
         clock_gettime(CLOCK_MONOTONIC, &now);
+        if (profile)
+            base_ms = (monotonic_seconds(&now) -
+                       monotonic_seconds(&started)) * 1000.0;
         advance_rate_motion(monotonic_seconds(&now));
-        draw_rate_motion(c, page);
+        advance_meter_motion(monotonic_seconds(&now));
+        if (page == 0 || page == 3) draw_rate_motion(c, data, page);
+        if (profile) {
+            struct timespec after_rate;
+            clock_gettime(CLOCK_MONOTONIC, &after_rate);
+            rate_ms = (monotonic_seconds(&after_rate) -
+                       monotonic_seconds(&now)) * 1000.0;
+            now = after_rate;
+        }
+        if (page == 0 || page == 4 || page == 6)
+            draw_meter_motion(c, data, page);
+        if (page == 1 || page == 9)
+            draw_radio_live(c, data, page);
+        if (page == 6)
+            draw_battery_live(c, data);
+        if (profile) {
+            struct timespec after_meter;
+            clock_gettime(CLOCK_MONOTONIC, &after_meter);
+            meter_ms = (monotonic_seconds(&after_meter) -
+                        monotonic_seconds(&now)) * 1000.0;
+        }
     } else if (page == 2 && speed_background) {
         bool same_state = !strcmp(speed_cached_state, data->speed_state) &&
             !strcmp(speed_cached_phase, data->speed_phase) &&
             speed_cached_battery == data->battery &&
             speed_cached_duration == data->speed_duration &&
             speed_cached_threads == data->speed_threads;
-        if (!speed_background_valid || !same_state) {
+        time_t current_minute = time(NULL) / 60;
+        if (!speed_background_valid || !same_state ||
+            speed_background_minute != current_minute) {
             struct canvas base = *c;
             base.pixels = speed_background;
             speed_cache_building = true;
@@ -3180,24 +3634,41 @@ static void render(struct canvas *c, const struct live_data *data,
             speed_cached_duration = data->speed_duration;
             speed_cached_threads = data->speed_threads;
             speed_background_valid = true;
+            speed_background_minute = current_minute;
+            ++speed_background_generation;
         }
-        memcpy(c->pixels, speed_background, (size_t)c->pitch * c->height);
+        if (buffer_index >= 0 && !power_menu_visible &&
+            dashboard_buffer_page[buffer_index] == page &&
+            dashboard_buffer_generation[buffer_index] ==
+                speed_background_generation)
+            restore_animated_regions(c, speed_background, page);
+        else
+            memcpy(c->pixels, speed_background, (size_t)c->pitch * c->height);
+        if (buffer_index >= 0) {
+            dashboard_buffer_page[buffer_index] = page;
+            dashboard_buffer_generation[buffer_index] =
+                speed_background_generation;
+        }
         speed_update_only = true;
         draw_speedtest_page(c, data, rx_rate, tx_rate);
         speed_update_only = false;
         draw_speed_overlay(c);
     } else {
         render_page(c, data, rx_rate, tx_rate, page);
+        if (buffer_index >= 0) dashboard_buffer_page[buffer_index] = -1;
     }
-    if (access(POWER_MENU_FILE, F_OK) == 0) draw_power_menu(c);
+    if (power_menu_visible) {
+        draw_power_menu(c);
+        if (buffer_index >= 0) dashboard_buffer_page[buffer_index] = -1;
+    }
     if (profile) {
         clock_gettime(CLOCK_MONOTONIC, &finished);
         FILE *output = fopen("/var/run/xm14display/last-render", "w");
         if (output) {
-            fprintf(output, "page=%d\nrender_ms=%.2f\nframe_gap_ms=%.2f\n", page,
+            fprintf(output, "page=%d\nrender_ms=%.2f\nframe_gap_ms=%.2f\nbase_ms=%.2f\nrate_ms=%.2f\nmeter_ms=%.2f\n", page,
                     (monotonic_seconds(&finished) -
                      monotonic_seconds(&started)) * 1000.0,
-                    frame_gap_ms);
+                    frame_gap_ms, base_ms, rate_ms, meter_ms);
             fclose(output);
         }
     }
@@ -3459,8 +3930,9 @@ static bool speed_animation_pending(void) {
 }
 
 static bool page_needs_full_sample(int page) {
-    /* These pages have their own cheap live readers. */
-    return page != 2 && page != 3 && page != 4 && page != 6;
+    /* Speed testing has its own live reader. Other pages need a new snapshot
+     * on entry and periodically for fields outside the cheap live reader. */
+    return page != 2;
 }
 
 static void set_backlight(int percent) {
@@ -3850,6 +4322,11 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     bool page_cache_valid[PAGE_COUNT] = {false};
     struct fast_rate_sampler fast_sampler = {0};
     size_t frame_size = (size_t)display->buffers[0].pitch * display->height;
+    for (int i = 0; i < BUFFER_COUNT; ++i) {
+        dashboard_buffer_pixels[i] = display->buffers[i].pixels;
+        dashboard_buffer_page[i] = -1;
+        dashboard_buffer_generation[i] = 0;
+    }
     rate_background = malloc(frame_size);
     rate_background_valid = false;
     rate_background_page = -1;
@@ -3918,6 +4395,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         bool speed_running = speed_page && !strcmp(data.speed_state, "running");
         bool speed_animating = speed_page && speed_animation_pending();
         bool rate_animating = (page == 0 || page == 3) && rate_motion.active;
+        bool meter_animating = (page == 0 || page == 4 || page == 6) &&
+            meter_motion.active;
         /*
          * Keep touch navigation responsive even while the speed-test page is
          * idle.  Rendering is still conditional below, so this only checks
@@ -3926,7 +4405,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
          */
         useconds_t wait_us = !loop_awake ? 250000U :
             (volume_overlay.active ? 33333U :
-             (speed_running || speed_animating || rate_animating ? 0U :
+             (speed_running || speed_animating || rate_animating ||
+              meter_animating ? 0U :
               previous_footer_dragging ? 16667U : 100000U));
         usleep(wait_us);
         if (!running) break;
@@ -3995,6 +4475,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 display->buffers[next].pixels
             };
             draw_volume_overlay(&overlay_canvas, monotonic_seconds(&now));
+            dashboard_buffer_page[next] = -1;
             if (present(display, next, false) != 0)
                 fprintf(stderr,
                         "xm14pro-screen: volume overlay frame failed: %s\n",
@@ -4005,6 +4486,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         if (overlay_visible && overlay_base && overlay_changed) {
             int next = display->visible ? 0 : 1;
             memcpy(display->buffers[next].pixels, overlay_base, frame_size);
+            dashboard_buffer_page[next] = -1;
             if (present(display, next, false) != 0)
                 fprintf(stderr,
                         "xm14pro-screen: volume overlay restore failed: %s\n",
@@ -4083,7 +4565,9 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         bool full_sample_due = page_needs_full_sample(page) &&
             (page_refresh_pending ||
              sample_time - monotonic_seconds(&last_full_sample) >=
-                 data.refresh_interval);
+                 ((page == 0 || page == 1 || page == 3 || page == 4 ||
+                   page == 6 || page == 9) ? 30.0 :
+                  data.refresh_interval));
         bool active_rate_page = page == 0 || page == 3;
         bool dynamic_sample_due =
             sample_time - monotonic_seconds(&last_dynamic_sample) >=
@@ -4194,7 +4678,52 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 }
             }
             last_dynamic_sample = now;
-            rate_background_valid = false;
+            bool static_changed = false;
+            if (page == 0 || page == 1 || page == 9) {
+                uint64_t old_total = previous.rx_bytes + previous.tx_bytes;
+                uint64_t new_total = data.rx_bytes + data.tx_bytes;
+                int old_ratio = old_total ?
+                    (int)((double)previous.rx_bytes * 100.0 / old_total) : 0;
+                int new_ratio = new_total ?
+                    (int)((double)data.rx_bytes * 100.0 / new_total) : 0;
+                static_changed = previous.battery != data.battery ||
+                    (page == 0 && old_ratio != new_ratio) ||
+                    previous.connected != data.connected ||
+                    strcmp(previous.slot, data.slot) ||
+                    strcmp(previous.operator_name, data.operator_name) ||
+                    strcmp(previous.operator_code, data.operator_code) ||
+                    strcmp(previous.technology, data.technology) ||
+                    strcmp(previous.band, data.band) ||
+                    strcmp(previous.bonding_phase, data.bonding_phase) ||
+                    previous.bonding_balance_active != data.bonding_balance_active ||
+                    previous.bonding_enabled != data.bonding_enabled;
+            } else if (page == 6) {
+                static_changed = previous.battery != data.battery ||
+                    previous.battery_soh != data.battery_soh ||
+                    previous.battery_cycle_count != data.battery_cycle_count ||
+                    previous.battery_moisture != data.battery_moisture ||
+                    previous.battery_anti_burn != data.battery_anti_burn ||
+                    previous.battery_input_suspend != data.battery_input_suspend ||
+                    previous.battery_night_charging != data.battery_night_charging ||
+                    previous.battery_reverse_mode != data.battery_reverse_mode ||
+                    previous.battery_reverse_state != data.battery_reverse_state ||
+                    previous.battery_cp_master != data.battery_cp_master ||
+                    previous.battery_cp_slave != data.battery_cp_slave ||
+                    previous.battery_charge_full != data.battery_charge_full ||
+                    previous.battery_charge_design != data.battery_charge_design ||
+                    strcmp(previous.battery_health, data.battery_health) ||
+                    strcmp(previous.battery_technology, data.battery_technology) ||
+                    strcmp(previous.battery_model, data.battery_model) ||
+                    strcmp(previous.battery_cell_vendor, data.battery_cell_vendor) ||
+                    strcmp(previous.battery_pack_vendor, data.battery_pack_vendor) ||
+                    strcmp(previous.typec_power_mode, data.typec_power_mode) ||
+                    strcmp(previous.typec_data_role, data.typec_data_role) ||
+                    strcmp(previous.typec_power_role, data.typec_power_role) ||
+                    strcmp(previous.typec_pd_revision, data.typec_pd_revision) ||
+                    strcmp(previous.typec_revision, data.typec_revision);
+            }
+            if (static_changed)
+                rate_background_valid = false;
             if (!memcmp(&previous, &data, sizeof(data)) &&
                 old_rx_rate == rx_rate && old_tx_rate == tx_rate &&
                 time(NULL) / 60 == last_clock_minute) {
@@ -4203,8 +4732,10 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 previous_footer_dragging = footer_dragging;
                 continue;
             }
-        } else if (active_rate_page && rate_motion.active) {
-            /* Draw only the animated rate cards and graph between samples. */
+        } else if ((active_rate_page && rate_motion.active) ||
+                   ((page == 0 || page == 4 || page == 6) &&
+                    meter_motion.active)) {
+            /* Animate cached rates and gauges between hardware samples. */
         } else {
             previous_page = page;
             previous_footer_position = next_footer_position;
@@ -4227,6 +4758,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                             "xm14pro-screen: page transition failed: %s\n",
                             strerror(errno));
             }
+            invalidate_dashboard_buffers();
             apply_backlight(&data);
             fast_sampler.initialized = false;
             rx_rate = 0.0;
@@ -4253,6 +4785,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                                     display->buffers[next].pitch,
                                     display->buffers[next].pixels};
             draw_footer(&canvas, page);
+            dashboard_buffer_page[next] = -1;
             if (present(display, next, false) != 0)
                 fprintf(stderr, "xm14pro-screen: footer frame failed: %s\n",
                         strerror(errno));
