@@ -26,7 +26,7 @@ define Device/xiaomi_14_pro
 	xm14pro-openclash-compat \
 	qcom-rmtfs qcom-pd-mapper qcom-tqftpserv \
 	xm14pro-cellular-webui xm14pro-battery xm14pro-power-profile xm14pro-display xm14pro-display-webui \
-	alsa-utils evtest input-support video-support libdrm libdrm-tests
+	alsa-utils evtest input-support video-support libdrm libdrm-tests openssh-sftp-server
   SUPPORTED_DEVICES := xiaomi,shennong
   FILESYSTEMS := erofs
   IMAGES := rootfs.erofs
