@@ -2,6 +2,13 @@
 
 TAG=xm14-cellular
 UIM_SETTLE_SECONDS=8
+DATA_PROBE_INTERVAL=120
+DATA_PROBE_RETRY=20
+DATA_RECOVERY_COOLDOWN=300
+data_probe_due=0
+data_probe_failures=0
+data_last_recovery=0
+data_last_cell=
 
 log() {
 	logger -t "$TAG" "$*"
@@ -14,6 +21,82 @@ interface_active() {
 	printf '%s\n' "$status" | jsonfilter -e '@.up' 2>/dev/null | grep -qx true &&
 		return 0
 	printf '%s\n' "$status" | jsonfilter -e '@.pending' 2>/dev/null | grep -qx true
+}
+
+interface_up() {
+	ubus call network.interface.cellular status 2>/dev/null |
+		jsonfilter -e '@.up' 2>/dev/null | grep -qx true
+}
+
+# The modem and network decide cell/RAT mobility.  This checks only whether
+# the existing DSI bearer still carries packets after a move.  A transient
+# outage or a change of signal level must never tear down a working call.
+data_path_ok() {
+	local device
+	device="$(sed -n 's/^device=//p' /var/run/xm14pro/dsi-cellular.state 2>/dev/null | tail -n 1)"
+	case "$device" in ''|*[!A-Za-z0-9_.-]*) return 1 ;; esac
+	[ -e "/sys/class/net/$device" ] || return 1
+	ping -I "$device" -c 1 -W 2 -q 119.29.29.29 >/dev/null 2>&1 && return 0
+	ping -I "$device" -c 1 -W 2 -q 223.5.5.5 >/dev/null 2>&1
+}
+
+recover_data_session() {
+	local count=0
+	log "data bearer unreachable on repeated probes; renewing DSI session"
+	ifdown cellular >/dev/null 2>&1 || return 1
+	while [ -d /var/run/xm14pro/dsi-cellular.lock ] && [ "$count" -lt 40 ]; do
+		count=$((count + 1))
+		sleep 1
+	done
+	[ ! -d /var/run/xm14pro/dsi-cellular.lock ] || {
+		log "DSI teardown is still pending; deferred renewal"
+		return 1
+	}
+	[ "$(uci -q get xm14cellular.main.enabled)" != 0 ] || return 0
+	[ "$(uci -q get xm14cellular.main.autoconnect)" != 0 ] || return 0
+	[ -s /var/run/xm14pro/qmi-subscription ] || return 0
+	[ ! -e /var/run/xm14pro/data-slot-switching ] || return 0
+	ifup cellular >/dev/null 2>&1
+}
+
+check_data_path() {
+	local now cell registration packet
+	now="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
+	case "$now" in ''|*[!0-9]*) return 0 ;; esac
+	if ! interface_up; then
+		data_probe_failures=0
+		data_probe_due=$((now + DATA_PROBE_INTERVAL))
+		return 0
+	fi
+	registration="$(sed -n 's/^nas_registration_state=//p' /var/run/xm14pro/radio-state 2>/dev/null | tail -n 1)"
+	packet="$(sed -n 's/^packet_service=//p' /var/run/xm14pro/radio-state 2>/dev/null | tail -n 1)"
+	[ "$registration" = registered ] && [ "$packet" = attached ] || {
+		data_probe_failures=0
+		return 0
+	}
+	cell="$(sed -n -e 's/^cell_id=//p' -e 's/^arfcn=//p' -e 's/^access_technologies=//p' \
+		/var/run/xm14pro/radio-state 2>/dev/null | tr '\n' ':')"
+	if [ -n "$data_last_cell" ] && [ "$cell" != "$data_last_cell" ]; then
+		# Recheck after mobility without polling on every rapid cell change.
+		[ "$data_probe_due" -le $((now + DATA_PROBE_RETRY)) ] ||
+			data_probe_due=$((now + DATA_PROBE_RETRY))
+	fi
+	data_last_cell="$cell"
+	[ "$now" -ge "$data_probe_due" ] || return 0
+	if data_path_ok; then
+		data_probe_failures=0
+		data_probe_due=$((now + DATA_PROBE_INTERVAL))
+		return 0
+	fi
+	data_probe_failures=$((data_probe_failures + 1))
+	data_probe_due=$((now + DATA_PROBE_RETRY))
+	[ "$data_probe_failures" -ge 3 ] || return 0
+	[ "$data_last_recovery" -eq 0 ] ||
+		[ "$now" -ge $((data_last_recovery + DATA_RECOVERY_COOLDOWN)) ] || return 0
+	data_last_recovery="$now"
+	data_probe_failures=0
+	recover_data_session || log "automatic DSI renewal did not finish; will retry after cooldown"
+	data_probe_due=$((now + DATA_PROBE_INTERVAL))
 }
 
 refresh_radio_state() {
@@ -76,6 +159,7 @@ while :; do
 	fi
 	refresh_radio_state
 	refresh_telecom_state
+	check_data_path
 	interval=$(uci -q get xm14cellular.main.reconnect_interval)
 	case "$interval" in ''|*[!0-9]*) interval=20 ;; esac
 	[ "$interval" -ge 5 ] || interval=5

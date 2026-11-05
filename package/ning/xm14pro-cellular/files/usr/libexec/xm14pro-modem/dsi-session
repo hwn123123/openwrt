@@ -42,7 +42,7 @@ stop_dial() {
 	local count=0
 	: > "$stop_file"
 	while [ -n "$dial_pid" ] && kill -0 "$dial_pid" 2>/dev/null &&
-	      [ "$count" -lt 10 ]; do
+	      [ "$count" -lt 35 ]; do
 		count=$((count + 1))
 		sleep 1
 	done

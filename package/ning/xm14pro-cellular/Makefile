@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-cellular
 PKG_VERSION:=1.0
-PKG_RELEASE:=101
+PKG_RELEASE:=102
 PKG_LICENSE:=GPL-2.0-only BSD-3-Clause
 
 include $(INCLUDE_DIR)/package.mk
