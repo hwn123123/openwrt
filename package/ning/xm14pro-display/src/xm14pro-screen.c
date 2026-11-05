@@ -274,6 +274,31 @@ static uint64_t previous_tx;
 static time_t previous_sample;
 static double rx_history[HISTORY];
 static double tx_history[HISTORY];
+struct rate_motion_state {
+    bool initialized;
+    bool active;
+    double started_at;
+    double from_rx, from_tx;
+    double target_rx, target_tx;
+    double shown_rx, shown_tx;
+    double from_rx_history[HISTORY], from_tx_history[HISTORY];
+    double target_rx_history[HISTORY], target_tx_history[HISTORY];
+    double shown_rx_history[HISTORY], shown_tx_history[HISTORY];
+};
+static struct rate_motion_state rate_motion;
+static uint32_t *rate_background;
+static bool rate_background_valid;
+static bool rate_cache_building;
+static int rate_background_page = -1;
+static uint32_t *speed_background;
+static bool speed_background_valid;
+static bool speed_cache_building;
+static bool speed_update_only;
+static char speed_cached_state[24];
+static char speed_cached_phase[24];
+static int speed_cached_battery;
+static int speed_cached_duration;
+static int speed_cached_threads;
 static double speed_dial_position;
 static double speed_dial_target_position;
 static double speed_dial_value;
@@ -1087,7 +1112,9 @@ static void start_screen_sample(struct screen_sample *sample, int page, int drm_
     pid_t child = fork();
     if (child < 0) return;
     if (child == 0) {
+        (void)setpgid(0, 0);
         close(drm_fd);
+        (void)nice(10);
         int output = open(sample->path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
         if (output < 0) _exit(127);
         if (dup2(output, STDOUT_FILENO) < 0) _exit(127);
@@ -1100,6 +1127,7 @@ static void start_screen_sample(struct screen_sample *sample, int page, int drm_
         execl(collector, collector, page_arg, (char *)NULL);
         _exit(127);
     }
+    (void)setpgid(child, child);
     sample->pid = child;
     sample->page = page;
 }
@@ -1458,6 +1486,66 @@ static void update_rates(const struct live_data *data, double *rx_rate,
     push_history(tx_history, *tx_rate);
 }
 
+static void advance_rate_motion(double now) {
+    if (!rate_motion.initialized || !rate_motion.active) return;
+    double fraction = (now - rate_motion.started_at) / 0.72;
+    if (fraction < 0.0) fraction = 0.0;
+    if (fraction >= 1.0) {
+        fraction = 1.0;
+        rate_motion.active = false;
+    }
+    double eased = fraction * fraction * (3.0 - 2.0 * fraction);
+    rate_motion.shown_rx = rate_motion.from_rx +
+        (rate_motion.target_rx - rate_motion.from_rx) * eased;
+    rate_motion.shown_tx = rate_motion.from_tx +
+        (rate_motion.target_tx - rate_motion.from_tx) * eased;
+    for (int i = 0; i < HISTORY; ++i) {
+        rate_motion.shown_rx_history[i] = rate_motion.from_rx_history[i] +
+            (rate_motion.target_rx_history[i] -
+             rate_motion.from_rx_history[i]) * eased;
+        rate_motion.shown_tx_history[i] = rate_motion.from_tx_history[i] +
+            (rate_motion.target_tx_history[i] -
+             rate_motion.from_tx_history[i]) * eased;
+    }
+}
+
+static void begin_rate_motion(double rx_rate, double tx_rate) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double seconds = monotonic_seconds(&now);
+    if (!rate_motion.initialized) {
+        rate_motion.shown_rx = rx_rate;
+        rate_motion.shown_tx = tx_rate;
+        memcpy(rate_motion.shown_rx_history, rx_history, sizeof(rx_history));
+        memcpy(rate_motion.shown_tx_history, tx_history, sizeof(tx_history));
+        rate_motion.initialized = true;
+    } else {
+        advance_rate_motion(seconds);
+    }
+    rate_motion.from_rx = rate_motion.shown_rx;
+    rate_motion.from_tx = rate_motion.shown_tx;
+    rate_motion.target_rx = rx_rate;
+    rate_motion.target_tx = tx_rate;
+    memcpy(rate_motion.from_rx_history, rate_motion.shown_rx_history,
+           sizeof(rx_history));
+    memcpy(rate_motion.from_tx_history, rate_motion.shown_tx_history,
+           sizeof(tx_history));
+    memcpy(rate_motion.target_rx_history, rx_history, sizeof(rx_history));
+    memcpy(rate_motion.target_tx_history, tx_history, sizeof(tx_history));
+    rate_motion.started_at = seconds;
+    rate_motion.active =
+        fabs(rate_motion.target_rx - rate_motion.from_rx) > 0.5 ||
+        fabs(rate_motion.target_tx - rate_motion.from_tx) > 0.5 ||
+        memcmp(rate_motion.from_rx_history, rate_motion.target_rx_history,
+               sizeof(rx_history)) != 0 ||
+        memcmp(rate_motion.from_tx_history, rate_motion.target_tx_history,
+               sizeof(tx_history)) != 0;
+    if (!rate_motion.active) {
+        rate_motion.shown_rx = rx_rate;
+        rate_motion.shown_tx = tx_rate;
+    }
+}
+
 static void background(struct canvas *c) {
     for (int y = 0; y < c->height; ++y) {
         int green = y < 2000 ? 8 - y * 4 / 2000 : 4;
@@ -1653,11 +1741,13 @@ static void draw_rate_card(struct canvas *c, int x, int y, int w,
     card(c, x, y, w, 385);
     icon_download(c, x + 65, y + 55, color, up);
     bold_text(c, x + 180, y + 70, label, 44, C_WHITE);
-    char value[40];
-    human_rate(rate, value, sizeof(value));
-    bold_text(c, x + 190, y + 143, value, 86, C_WHITE);
-    text(c, x + 410, y + 180, rate_unit(rate), 38, C_MUTED);
-    graph(c, x + 55, y + 265, w - 110, 82, history, color);
+    if (!rate_cache_building) {
+        char value[40];
+        human_rate(rate, value, sizeof(value));
+        bold_text(c, x + 190, y + 143, value, 86, C_WHITE);
+        text(c, x + 410, y + 180, rate_unit(rate), 38, C_MUTED);
+        graph(c, x + 55, y + 265, w - 110, 82, history, color);
+    }
     chevron(c, x + w - 55, y + 90);
 }
 
@@ -1992,8 +2082,10 @@ static void draw_traffic_page(struct canvas *c, const struct live_data *data,
     draw_rate_card(c, 746, 310, 650, "上传", tx_rate, tx_history, C_GREEN, true);
     card(c, 44, 735, 1352, 720);
     bold_text(c, 90, 785, "速率趋势", 47, C_WHITE);
-    graph(c, 100, 930, 1240, 390, rx_history, C_BLUE);
-    graph(c, 100, 930, 1240, 390, tx_history, C_GREEN);
+    if (!rate_cache_building) {
+        graph(c, 100, 930, 1240, 390, rx_history, C_BLUE);
+        graph(c, 100, 930, 1240, 390, tx_history, C_GREEN);
+    }
     text(c, 90, 1360, "蓝色 下载", 32, C_BLUE);
     text(c, 330, 1360, "绿色 上传", 32, C_GREEN);
 
@@ -2025,6 +2117,25 @@ static void draw_traffic_page(struct canvas *c, const struct live_data *data,
     label_value(c, 90, 2530, 1220, "IPv4", data->ipv4, C_WHITE);
     label_value(c, 90, 2635, 1220, "MTU", data->mtu, C_WHITE);
     draw_footer(c, 3);
+}
+
+static void draw_rate_motion(struct canvas *c, int page) {
+    int card_y = page == 0 ? 760 : 310;
+    char value[40];
+    human_rate(rate_motion.shown_rx, value, sizeof(value));
+    bold_text(c, 234, card_y + 143, value, 86, C_WHITE);
+    text(c, 454, card_y + 180, rate_unit(rate_motion.shown_rx), 38, C_MUTED);
+    graph(c, 99, card_y + 265, 540, 82,
+          rate_motion.shown_rx_history, C_BLUE);
+    human_rate(rate_motion.shown_tx, value, sizeof(value));
+    bold_text(c, 936, card_y + 143, value, 86, C_WHITE);
+    text(c, 1156, card_y + 180, rate_unit(rate_motion.shown_tx), 38, C_MUTED);
+    graph(c, 801, card_y + 265, 540, 82,
+          rate_motion.shown_tx_history, C_GREEN);
+    if (page == 3) {
+        graph(c, 100, 930, 1240, 390, rate_motion.shown_rx_history, C_BLUE);
+        graph(c, 100, 930, 1240, 390, rate_motion.shown_tx_history, C_GREEN);
+    }
 }
 
 static void draw_device_page(struct canvas *c, const struct live_data *data) {
@@ -2154,8 +2265,9 @@ static void draw_scifi_dial(struct canvas *c, int cx, int cy, int radius,
     if (percent < 0.0) percent = 0.0;
     if (percent > 1.0) percent = 1.0;
     arc(c, cx, cy, radius + 42, start, start + sweep, 3, mix(C_BORDER, C_CYAN, 35));
-    arc(c, cx, cy, radius + 28, start, start + sweep * percent, 7,
-        mix(color, C_WHITE, 30));
+    if (!speed_cache_building)
+        arc(c, cx, cy, radius + 28, start, start + sweep * percent, 7,
+            mix(color, C_WHITE, 30));
     for (int segment = 0; segment < 32; ++segment) {
         double t0 = (double)segment / 32.0;
         double t1 = (double)(segment + 1) / 32.0;
@@ -2183,14 +2295,16 @@ static void draw_scifi_dial(struct canvas *c, int cx, int cy, int radius,
                       cy + (int)(sin(a) * (radius - 115)) - 15,
                       labels[i], 29, values[i] <= mbps ? C_WHITE : C_MUTED);
     }
-    double needle = start + sweep * percent;
-    line(c, cx, cy, cx + (int)(cos(needle) * (radius - 92)),
-         cy + (int)(sin(needle) * (radius - 92)), 16, C_WHITE);
-    line(c, cx, cy, cx + (int)(cos(needle) * (radius - 110)),
-         cy + (int)(sin(needle) * (radius - 110)), 7, color);
-    circle(c, cx, cy, 43, mix(C_CARD_2, color, 28));
-    circle(c, cx, cy, 25, C_WHITE);
-    circle(c, cx, cy, 12, color);
+    if (!speed_cache_building) {
+        double needle = start + sweep * percent;
+        line(c, cx, cy, cx + (int)(cos(needle) * (radius - 92)),
+             cy + (int)(sin(needle) * (radius - 92)), 16, C_WHITE);
+        line(c, cx, cy, cx + (int)(cos(needle) * (radius - 110)),
+             cy + (int)(sin(needle) * (radius - 110)), 7, color);
+        circle(c, cx, cy, 43, mix(C_CARD_2, color, 28));
+        circle(c, cx, cy, 25, C_WHITE);
+        circle(c, cx, cy, 12, color);
+    }
 }
 
 static void csv_item(const char *input, int wanted, char *output, size_t size) {
@@ -2288,11 +2402,6 @@ static void draw_speed_telemetry(struct canvas *c,
 
 static void draw_speedtest_page(struct canvas *c, const struct live_data *data,
                                 double rx_rate, double tx_rate) {
-    background(c);
-    char subtitle[128];
-    snprintf(subtitle, sizeof(subtitle), "每方向 %d 秒 · %d 线程 · 国内 IPv4",
-             data->speed_duration, data->speed_threads);
-    page_title(c, data, "聚合测速", subtitle);
     bool running_test = !strcmp(data->speed_state, "running");
     double instant_download = data->speed_download_mbps;
     double instant_upload = data->speed_upload_mbps;
@@ -2362,6 +2471,13 @@ static void draw_speedtest_page(struct canvas *c, const struct live_data *data,
     if (fabs(speed_upload_display - speed_upload_peak) < 0.05)
         speed_upload_display = speed_upload_peak;
     double dial_value = speed_dial_value;
+    if (speed_update_only) return;
+
+    background(c);
+    char subtitle[128];
+    snprintf(subtitle, sizeof(subtitle), "每方向 %d 秒 · %d 线程 · 国内 IPv4",
+             data->speed_duration, data->speed_threads);
+    page_title(c, data, "聚合测速", subtitle);
 
     card(c, 44, 300, 1352, 1320);
     for (int x = 110; x < 1340; x += 80)
@@ -2371,11 +2487,14 @@ static void draw_speedtest_page(struct canvas *c, const struct live_data *data,
     centered_text(c, 720, 365, speed_phase_label(data), 39,
                   !strcmp(data->speed_state, "error") ? rgb(255, 69, 58) : C_CYAN);
     uint32_t dial_color = speed_color_for_percent(speed_dial_position);
-    draw_scifi_dial(c, 720, 930, 445, dial_value,
-                    speed_dial_position, dial_color);
+    draw_scifi_dial(c, 720, 930, 445,
+                    speed_cache_building ? 0.0 : dial_value,
+                    speed_cache_building ? 0.0 : speed_dial_position,
+                    dial_color);
     char value[48];
     snprintf(value, sizeof(value), "%.1f", dial_value);
-    centered_text(c, 720, 745, value, 145, C_WHITE);
+    if (!speed_cache_building)
+        centered_text(c, 720, 745, value, 145, C_WHITE);
     centered_text(c, 720, 900, "Mbps", 47, C_MUTED);
     framed_round_rect(c, 320, 1390, 800, 130, 65, 3,
                       running_test ? C_BORDER : C_CYAN,
@@ -2387,7 +2506,8 @@ static void draw_speedtest_page(struct canvas *c, const struct live_data *data,
     icon_download(c, 100, 1720, C_BLUE, false);
     bold_text(c, 215, 1735, "下载", 43, C_MUTED);
     snprintf(value, sizeof(value), "%.1f", speed_download_display);
-    bold_text(c, 100, 1840, value, 86, C_WHITE);
+    if (!speed_cache_building)
+        bold_text(c, 100, 1840, value, 86, C_WHITE);
     text(c, 430, 1880, "Mbps", 37, C_MUTED);
     text(c, 100, 1970, "本轮最高 · 聚合下行", 31, C_BLUE);
 
@@ -2395,13 +2515,42 @@ static void draw_speedtest_page(struct canvas *c, const struct live_data *data,
     icon_download(c, 802, 1720, C_GREEN, true);
     bold_text(c, 917, 1735, "上传", 43, C_MUTED);
     snprintf(value, sizeof(value), "%.1f", speed_upload_display);
-    bold_text(c, 802, 1840, value, 86, C_WHITE);
+    if (!speed_cache_building)
+        bold_text(c, 802, 1840, value, 86, C_WHITE);
     text(c, 1132, 1880, "Mbps", 37, C_MUTED);
     text(c, 802, 1970, "本轮最高 · 聚合上行", 31, C_GREEN);
 
     card(c, 44, 2090, 1352, 650);
     draw_speed_telemetry(c, data);
     draw_footer(c, 2);
+}
+
+static void draw_speed_overlay(struct canvas *c) {
+    const double start = PI * 0.72;
+    const double sweep = PI * 1.56;
+    const double position = speed_dial_position;
+    uint32_t color = speed_color_for_percent(position);
+    if (position > 0.001) {
+        arc(c, 720, 930, 473, start, start + sweep * position, 9,
+            mix(color, C_WHITE, 30));
+        arc(c, 720, 930, 445, start, start + sweep * position, 11,
+            mix(color, C_WHITE, 18));
+    }
+    double needle = start + sweep * position;
+    line(c, 720, 930, 720 + (int)(cos(needle) * 353),
+         930 + (int)(sin(needle) * 353), 16, C_WHITE);
+    line(c, 720, 930, 720 + (int)(cos(needle) * 335),
+         930 + (int)(sin(needle) * 335), 7, color);
+    circle(c, 720, 930, 43, mix(C_CARD_2, color, 28));
+    circle(c, 720, 930, 25, C_WHITE);
+    circle(c, 720, 930, 12, color);
+    char value[48];
+    snprintf(value, sizeof(value), "%.1f", speed_dial_value);
+    centered_text(c, 720, 745, value, 145, C_WHITE);
+    snprintf(value, sizeof(value), "%.1f", speed_download_display);
+    bold_text(c, 100, 1840, value, 86, C_WHITE);
+    snprintf(value, sizeof(value), "%.1f", speed_upload_display);
+    bold_text(c, 802, 1840, value, 86, C_WHITE);
 }
 
 static const char *battery_status_label(const char *status) {
@@ -2978,8 +3127,80 @@ static void render_page(struct canvas *c, const struct live_data *data,
 
 static void render(struct canvas *c, const struct live_data *data,
                    double rx_rate, double tx_rate, int page) {
-    render_page(c, data, rx_rate, tx_rate, page);
+    bool profile = access("/var/run/xm14display/profile-render", F_OK) == 0;
+    struct timespec started, finished;
+    static struct timespec previous_render;
+    static bool previous_render_valid;
+    static int previous_render_page = -1;
+    double frame_gap_ms = 0.0;
+    if (profile) {
+        clock_gettime(CLOCK_MONOTONIC, &started);
+        if (previous_render_valid && previous_render_page == page)
+            frame_gap_ms = (monotonic_seconds(&started) -
+                            monotonic_seconds(&previous_render)) * 1000.0;
+        previous_render = started;
+        previous_render_page = page;
+        previous_render_valid = true;
+    } else {
+        previous_render_valid = false;
+    }
+    if ((page == 0 || page == 3) && rate_background &&
+        rate_motion.initialized) {
+        if (!rate_background_valid || rate_background_page != page) {
+            struct canvas base = *c;
+            base.pixels = rate_background;
+            rate_cache_building = true;
+            render_page(&base, data, rx_rate, tx_rate, page);
+            rate_cache_building = false;
+            rate_background_valid = true;
+            rate_background_page = page;
+        }
+        memcpy(c->pixels, rate_background, (size_t)c->pitch * c->height);
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        advance_rate_motion(monotonic_seconds(&now));
+        draw_rate_motion(c, page);
+    } else if (page == 2 && speed_background) {
+        bool same_state = !strcmp(speed_cached_state, data->speed_state) &&
+            !strcmp(speed_cached_phase, data->speed_phase) &&
+            speed_cached_battery == data->battery &&
+            speed_cached_duration == data->speed_duration &&
+            speed_cached_threads == data->speed_threads;
+        if (!speed_background_valid || !same_state) {
+            struct canvas base = *c;
+            base.pixels = speed_background;
+            speed_cache_building = true;
+            render_page(&base, data, rx_rate, tx_rate, page);
+            speed_cache_building = false;
+            copy_value(speed_cached_state, sizeof(speed_cached_state),
+                       data->speed_state);
+            copy_value(speed_cached_phase, sizeof(speed_cached_phase),
+                       data->speed_phase);
+            speed_cached_battery = data->battery;
+            speed_cached_duration = data->speed_duration;
+            speed_cached_threads = data->speed_threads;
+            speed_background_valid = true;
+        }
+        memcpy(c->pixels, speed_background, (size_t)c->pitch * c->height);
+        speed_update_only = true;
+        draw_speedtest_page(c, data, rx_rate, tx_rate);
+        speed_update_only = false;
+        draw_speed_overlay(c);
+    } else {
+        render_page(c, data, rx_rate, tx_rate, page);
+    }
     if (access(POWER_MENU_FILE, F_OK) == 0) draw_power_menu(c);
+    if (profile) {
+        clock_gettime(CLOCK_MONOTONIC, &finished);
+        FILE *output = fopen("/var/run/xm14display/last-render", "w");
+        if (output) {
+            fprintf(output, "page=%d\nrender_ms=%.2f\nframe_gap_ms=%.2f\n", page,
+                    (monotonic_seconds(&finished) -
+                     monotonic_seconds(&started)) * 1000.0,
+                    frame_gap_ms);
+            fclose(output);
+        }
+    }
 }
 
 static int read_integer_file(const char *path) {
@@ -3484,10 +3705,12 @@ static int run_boot_animation(struct display *display) {
     if (present(display, 0, true) != 0) return -1;
     complete_early_handoff();
 
+    int refresh_hz = display->mode.vrefresh;
+    if (refresh_hz < 30 || refresh_hz > 120) refresh_hz = 60;
     double last_frame = 0.0;
     while (running && access(DASHBOARD_READY_FILE, F_OK) != 0) {
         double now = boottime_seconds();
-        if (now - last_frame >= 1.0 / 20.0) {
+        if (now - last_frame >= 1.0 / refresh_hz) {
             int next = display->visible ? 0 : 1;
             struct xm14_splash_canvas canvas = {
                 display->width, display->height,
@@ -3498,7 +3721,7 @@ static int run_boot_animation(struct display *display) {
             if (present(display, next, false) != 0) return -1;
             last_frame = now;
         }
-        usleep(6000);
+        usleep(2000);
     }
     return running ? 0 : -1;
 }
@@ -3506,17 +3729,10 @@ static int run_boot_animation(struct display *display) {
 static int animate_page_transition(struct display *display,
                                    const struct live_data *data,
                                    double rx_rate, double tx_rate,
-                                   int old_page, int new_page) {
-    const int frames = 10;
+                                   int old_page, int new_page,
+                                   uint32_t *old_frame, uint32_t *new_frame) {
+    if (!old_frame || !new_frame) return -1;
     size_t frame_size = (size_t)display->buffers[0].pitch * display->height;
-    uint32_t *old_frame = malloc(frame_size);
-    uint32_t *new_frame = malloc(frame_size);
-    if (!old_frame || !new_frame) {
-        free(old_frame);
-        free(new_frame);
-        return -1;
-    }
-
     memcpy(old_frame, display->buffers[display->visible].pixels, frame_size);
     int work = display->visible ? 0 : 1;
     struct canvas target = {display->width, display->height,
@@ -3527,10 +3743,26 @@ static int animate_page_transition(struct display *display,
 
     int direction = new_page >= old_page ? 1 : -1;
     int stride = (int)(display->buffers[0].pitch / sizeof(uint32_t));
-    for (int frame = 1; frame <= frames && running; ++frame) {
-        double progress = (double)frame / frames;
+    int refresh_hz = display->mode.vrefresh;
+    if (refresh_hz < 30 || refresh_hz > 120) refresh_hz = 60;
+    const double duration = 0.28;
+    const long long period_ns = 1000000000LL / refresh_hz;
+    struct timespec started;
+    clock_gettime(CLOCK_MONOTONIC, &started);
+    int completed_frames = 0;
+    double previous_present_time = 0.0;
+    double largest_frame_gap = 0.0;
+    for (int frame = 1; running; ++frame) {
+        if (current_page() != new_page) break;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double progress = (monotonic_seconds(&now) -
+                           monotonic_seconds(&started) +
+                           1.0 / refresh_hz) / duration;
+        if (progress > 1.0) progress = 1.0;
         double eased = progress * progress * (3.0 - 2.0 * progress);
         int shift = (int)lround(eased * display->width);
+        int blend = (int)lround(eased * 256.0);
         int output = display->visible ? 0 : 1;
         uint32_t *destination = display->buffers[output].pixels;
         for (int y = 0; y < display->height; ++y) {
@@ -3538,8 +3770,20 @@ static int animate_page_transition(struct display *display,
             const uint32_t *from = old_frame + (size_t)y * stride;
             const uint32_t *to = new_frame + (size_t)y * stride;
             if (y >= FOOTER_TOP) {
-                memcpy(dst, frame == frames ? to : from,
-                       (size_t)display->width * sizeof(uint32_t));
+                if (blend >= 256) {
+                    memcpy(dst, to, (size_t)display->width * sizeof(uint32_t));
+                } else {
+                    for (int x = 0; x < display->width; ++x) {
+                        uint32_t a = from[x], b = to[x];
+                        uint32_t rb = (((a & 0x00ff00ffU) * (256 - blend) +
+                                        (b & 0x00ff00ffU) * blend) >> 8) &
+                                      0x00ff00ffU;
+                        uint32_t green = (((a & 0x0000ff00U) * (256 - blend) +
+                                           (b & 0x0000ff00U) * blend) >> 8) &
+                                         0x0000ff00U;
+                        dst[x] = (a & 0xff000000U) | rb | green;
+                    }
+                }
                 continue;
             }
             if (direction > 0) {
@@ -3561,14 +3805,41 @@ static int animate_page_transition(struct display *display,
             }
         }
         if (present(display, output, false) != 0) {
-            free(old_frame);
-            free(new_frame);
             return -1;
         }
-        if (frame != frames) usleep(12000);
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double presented_at = monotonic_seconds(&now);
+        if (previous_present_time > 0.0 &&
+            presented_at - previous_present_time > largest_frame_gap)
+            largest_frame_gap = presented_at - previous_present_time;
+        previous_present_time = presented_at;
+        completed_frames = frame;
+        if (progress >= 1.0) break;
+        long long offset = frame * period_ns;
+        struct timespec deadline = {
+            .tv_sec = started.tv_sec + offset / 1000000000LL,
+            .tv_nsec = started.tv_nsec + offset % 1000000000LL
+        };
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+        int sleep_result;
+        do {
+            sleep_result = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME,
+                                           &deadline, NULL);
+        } while (sleep_result == EINTR && running);
     }
-    free(old_frame);
-    free(new_frame);
+    struct timespec finished;
+    clock_gettime(CLOCK_MONOTONIC, &finished);
+    FILE *metrics = fopen("/var/run/xm14display/last-animation", "w");
+    if (metrics) {
+        fprintf(metrics, "frames=%d\nduration_ms=%.1f\nmax_frame_gap_ms=%.1f\n",
+                completed_frames,
+                (monotonic_seconds(&finished) - monotonic_seconds(&started)) * 1000.0,
+                largest_frame_gap * 1000.0);
+        fclose(metrics);
+    }
     return 0;
 }
 
@@ -3579,7 +3850,14 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     bool page_cache_valid[PAGE_COUNT] = {false};
     struct fast_rate_sampler fast_sampler = {0};
     size_t frame_size = (size_t)display->buffers[0].pitch * display->height;
+    rate_background = malloc(frame_size);
+    rate_background_valid = false;
+    rate_background_page = -1;
+    speed_background = malloc(frame_size);
+    speed_background_valid = false;
     uint32_t *overlay_base = malloc(frame_size);
+    uint32_t *transition_old = malloc(frame_size);
+    uint32_t *transition_new = malloc(frame_size);
     bool overlay_visible = false;
     bool power_menu_was_visible = access(POWER_MENU_FILE, F_OK) == 0;
     int previous_power_choice = power_menu_choice();
@@ -3590,6 +3868,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     copy_value(sampled_speed_phase, sizeof(sampled_speed_phase),
                data.speed_phase);
     update_rates(&data, &rx_rate, &tx_rate);
+    begin_rate_motion(rx_rate, tx_rate);
     int previous_page = current_page();
     if (previous_page != 2 || !strcmp(data.speed_state, "running"))
         sample_fast_rates(&fast_sampler, data.interface_name,
@@ -3618,6 +3897,12 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     if (present(display, first_buffer, !already_modeset) != 0) {
         fprintf(stderr, "xm14pro-screen: initial atomic commit failed: %s\n", strerror(errno));
         free(overlay_base);
+        free(transition_old);
+        free(transition_new);
+        free(rate_background);
+        rate_background = NULL;
+        free(speed_background);
+        speed_background = NULL;
         return 1;
     }
     complete_early_handoff();
@@ -3632,6 +3917,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         bool speed_page = page == 2;
         bool speed_running = speed_page && !strcmp(data.speed_state, "running");
         bool speed_animating = speed_page && speed_animation_pending();
+        bool rate_animating = (page == 0 || page == 3) && rate_motion.active;
         /*
          * Keep touch navigation responsive even while the speed-test page is
          * idle.  Rendering is still conditional below, so this only checks
@@ -3640,8 +3926,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
          */
         useconds_t wait_us = !loop_awake ? 250000U :
             (volume_overlay.active ? 33333U :
-             (speed_running || speed_animating || previous_footer_dragging ?
-              16667U : 100000U));
+             (speed_running || speed_animating || rate_animating ? 0U :
+              previous_footer_dragging ? 16667U : 100000U));
         usleep(wait_us);
         if (!running) break;
 		if (reload_requested) {
@@ -3669,7 +3955,11 @@ static int run_dashboard(struct display *display, bool already_modeset) {
 
         bool sample_updated = finish_screen_sample(&sample, &data,
                                                    current_page());
-        if (sample_updated) apply_backlight(&data);
+        if (sample_updated) {
+            rate_background_valid = false;
+            speed_background_valid = false;
+            apply_backlight(&data);
+        }
 
         bool power_menu_visible = access(POWER_MENU_FILE, F_OK) == 0;
         int selected_power_choice = power_menu_visible ? power_menu_choice() : 0;
@@ -3725,6 +4015,12 @@ static int run_dashboard(struct display *display, bool already_modeset) {
 
         page = current_page();
         bool page_changed = page != previous_page;
+        if (page_changed) {
+            rate_background_valid = false;
+            speed_background_valid = false;
+        }
+        if (page_changed && sample.pid > 0 && sample.page != page)
+            (void)kill(-sample.pid, SIGTERM);
         if (page_changed && page >= 0 && page < PAGE_COUNT &&
             page_cache_valid[page])
             data = page_cache[page];
@@ -3848,6 +4144,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 last_dynamic_sample = now;
                 dynamic_sample_completed =
                     memcmp(&previous, &data, sizeof(data)) != 0;
+                if (dynamic_sample_completed)
+                    speed_background_valid = false;
             }
             speed_animating = speed_animation_pending();
             if (!page_changed && !speed_state_changed && !speed_running &&
@@ -3877,7 +4175,9 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                                   &rx_rate, &tx_rate)) {
                 push_history(rx_history, rx_rate);
                 push_history(tx_history, tx_rate);
+                begin_rate_motion(rx_rate, tx_rate);
             }
+            rate_background_valid = false;
             page_refresh_pending = false;
             clock_gettime(CLOCK_MONOTONIC, &last_full_sample);
             last_dynamic_sample = now;
@@ -3890,9 +4190,11 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                                       &rx_rate, &tx_rate)) {
                     push_history(rx_history, rx_rate);
                     push_history(tx_history, tx_rate);
+                    begin_rate_motion(rx_rate, tx_rate);
                 }
             }
             last_dynamic_sample = now;
+            rate_background_valid = false;
             if (!memcmp(&previous, &data, sizeof(data)) &&
                 old_rx_rate == rx_rate && old_tx_rate == tx_rate &&
                 time(NULL) / 60 == last_clock_minute) {
@@ -3901,6 +4203,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 previous_footer_dragging = footer_dragging;
                 continue;
             }
+        } else if (active_rate_page && rate_motion.active) {
+            /* Draw only the animated rate cards and graph between samples. */
         } else {
             previous_page = page;
             previous_footer_position = next_footer_position;
@@ -3911,7 +4215,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         if (page_changed) {
             footer_scroll_px = next_footer_position;
             if (animate_page_transition(display, &data, rx_rate, tx_rate,
-                                        previous_page, page) != 0) {
+                                        previous_page, page, transition_old,
+                                        transition_new) != 0) {
                 int next = display->visible ? 0 : 1;
                 struct canvas canvas = {display->width, display->height,
                                         display->buffers[next].pitch,
@@ -3935,6 +4240,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         }
 
         if (footer_refresh) {
+            rate_background_valid = false;
+            speed_background_valid = false;
             int next = display->visible ? 0 : 1;
             size_t frame_size = (size_t)display->buffers[0].pitch *
                                 display->height;
@@ -3974,6 +4281,12 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         previous_footer_dragging = footer_dragging;
     }
     free(overlay_base);
+    free(transition_old);
+    free(transition_new);
+    free(rate_background);
+    rate_background = NULL;
+    free(speed_background);
+    speed_background = NULL;
     return 0;
 }
 

@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-display
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=70
+PKG_RELEASE:=79
 PKG_LICENSE:=GPL-2.0-only
 
 include $(INCLUDE_DIR)/package.mk
