@@ -320,6 +320,23 @@ static int speed_cached_threads;
 static uint32_t *dashboard_buffer_pixels[BUFFER_COUNT];
 static int dashboard_buffer_page[BUFFER_COUNT];
 static unsigned dashboard_buffer_generation[BUFFER_COUNT];
+static struct {
+    bool valid;
+    int page;
+    unsigned generation;
+    double value;
+} gauge_buffer_state[BUFFER_COUNT][METER_COUNT];
+enum retained_text_index { TEXT_SIGNAL, TEXT_RX_TOTAL, TEXT_TX_TOTAL, TEXT_COUNT };
+static struct {
+    bool valid;
+    int page;
+    unsigned generation;
+    uint32_t color;
+    char text[96];
+} text_buffer_state[BUFFER_COUNT][TEXT_COUNT];
+static int dashboard_buffer_index(const struct canvas *c);
+static void restore_region(struct canvas *c, const uint32_t *base,
+                           int x, int y, int w, int h);
 static double speed_dial_position;
 static double speed_dial_target_position;
 static double speed_dial_value;
@@ -1780,6 +1797,50 @@ static void gauge_motion(struct canvas *c, int cx, int cy, int radius,
     centered_text(c, cx, cy - 38, shown, 47, C_WHITE);
 }
 
+/* Each KMS buffer keeps its own gauge pixels. Throughput animation must not
+ * repaint an unchanged memory, temperature or battery gauge every frame. */
+static void retained_gauge_motion(struct canvas *c, int page, int meter,
+                                  int cx, int cy, int radius,
+                                  double value, const char *unit,
+                                  uint32_t color) {
+    int buffer = dashboard_buffer_index(c);
+    if (buffer >= 0 && gauge_buffer_state[buffer][meter].valid &&
+        gauge_buffer_state[buffer][meter].page == page &&
+        gauge_buffer_state[buffer][meter].generation ==
+            rate_background_generation &&
+        gauge_buffer_state[buffer][meter].value == value)
+        return;
+    if (rate_background)
+        restore_region(c, rate_background, cx - radius - 30,
+                       cy - radius - 30, radius * 2 + 60, radius * 2 + 60);
+    gauge_motion(c, cx, cy, radius, value, unit, color);
+    if (buffer >= 0) {
+        gauge_buffer_state[buffer][meter].valid = true;
+        gauge_buffer_state[buffer][meter].page = page;
+        gauge_buffer_state[buffer][meter].generation = rate_background_generation;
+        gauge_buffer_state[buffer][meter].value = value;
+    }
+}
+
+static bool retained_text_changed(struct canvas *c, int page, int index,
+                                  const char *text, uint32_t color) {
+    int buffer = dashboard_buffer_index(c);
+    if (buffer < 0) return true;
+    if (text_buffer_state[buffer][index].valid &&
+        text_buffer_state[buffer][index].page == page &&
+        text_buffer_state[buffer][index].generation == rate_background_generation &&
+        text_buffer_state[buffer][index].color == color &&
+        !strcmp(text_buffer_state[buffer][index].text, text))
+        return false;
+    text_buffer_state[buffer][index].valid = true;
+    text_buffer_state[buffer][index].page = page;
+    text_buffer_state[buffer][index].generation = rate_background_generation;
+    text_buffer_state[buffer][index].color = color;
+    copy_value(text_buffer_state[buffer][index].text,
+               sizeof(text_buffer_state[buffer][index].text), text);
+    return true;
+}
+
 static void icon_download(struct canvas *c, int x, int y, uint32_t color,
                           bool up) {
     framed_round_rect(c, x, y, 88, 88, 44, 3, color, mix(C_CARD_2, color, 12));
@@ -2866,27 +2927,36 @@ static void draw_battery_page(struct canvas *c, const struct live_data *data) {
 static void draw_meter_motion(struct canvas *c, const struct live_data *data,
                               int page) {
     if (page == 0) {
-        gauge_motion(c, 746, 430, 142, meter_motion.shown[METER_SIGNAL],
+        retained_gauge_motion(c, page, METER_SIGNAL, 746, 430, 142, meter_motion.shown[METER_SIGNAL],
                      "%", C_CYAN);
-        centered_text(c, 746, 620, data->signal, 32,
-                      data->connected ? C_WHITE : C_MUTED);
+        uint32_t signal_color = data->connected ? C_WHITE : C_MUTED;
+        if (retained_text_changed(c, page, TEXT_SIGNAL, data->signal, signal_color)) {
+            restore_region(c, rate_background, 575, 610, 350, 80);
+            centered_text(c, 746, 620, data->signal, 32, signal_color);
+        }
         char bytes[48];
         human_bytes(data->rx_bytes, bytes, sizeof(bytes));
-        bold_text(c, 115, 1390, bytes, 67, C_WHITE);
+        if (retained_text_changed(c, page, TEXT_RX_TOTAL, bytes, C_WHITE)) {
+            restore_region(c, rate_background, 100, 1375, 370, 135);
+            bold_text(c, 115, 1390, bytes, 67, C_WHITE);
+        }
         human_bytes(data->tx_bytes, bytes, sizeof(bytes));
-        bold_text(c, 545, 1390, bytes, 67, C_WHITE);
-        gauge_motion(c, 310, 2285, 120, meter_motion.shown[METER_CPU],
+        if (retained_text_changed(c, page, TEXT_TX_TOTAL, bytes, C_WHITE)) {
+            restore_region(c, rate_background, 530, 1375, 390, 135);
+            bold_text(c, 545, 1390, bytes, 67, C_WHITE);
+        }
+        retained_gauge_motion(c, page, METER_CPU, 310, 2285, 120, meter_motion.shown[METER_CPU],
                      "%", C_CYAN);
-        gauge_motion(c, 720, 2285, 120, meter_motion.shown[METER_MEMORY],
+        retained_gauge_motion(c, page, METER_MEMORY, 720, 2285, 120, meter_motion.shown[METER_MEMORY],
                      "%", C_BLUE);
-        gauge_motion(c, 1130, 2285, 120, meter_motion.shown[METER_CPU_TEMP],
+        retained_gauge_motion(c, page, METER_CPU_TEMP, 1130, 2285, 120, meter_motion.shown[METER_CPU_TEMP],
                      "°C", C_GREEN);
     } else if (page == 4) {
-        gauge_motion(c, 310, 690, 135, meter_motion.shown[METER_CPU],
+        retained_gauge_motion(c, page, METER_CPU, 310, 690, 135, meter_motion.shown[METER_CPU],
                      "%", C_CYAN);
-        gauge_motion(c, 720, 690, 135, meter_motion.shown[METER_MEMORY],
+        retained_gauge_motion(c, page, METER_MEMORY, 720, 690, 135, meter_motion.shown[METER_MEMORY],
                      "%", C_BLUE);
-        gauge_motion(c, 1130, 690, 135, meter_motion.shown[METER_CPU_TEMP],
+        retained_gauge_motion(c, page, METER_CPU_TEMP, 1130, 690, 135, meter_motion.shown[METER_CPU_TEMP],
                      "°C", C_GREEN);
         char value[64];
         snprintf(value, sizeof(value), "%.1f°C", data->cpu_temp);
@@ -2905,11 +2975,11 @@ static void draw_meter_motion(struct canvas *c, const struct live_data *data,
                  (unsigned long long)((data->uptime % 3600) / 60));
         label_value(c, 90, 2220, 1220, "运行时间", value, C_WHITE);
     } else if (page == 6) {
-        gauge_motion(c, 300, 640, 175, meter_motion.shown[METER_BATTERY],
+        retained_gauge_motion(c, page, METER_BATTERY, 300, 640, 175, meter_motion.shown[METER_BATTERY],
                      "%", C_GREEN);
-        gauge_motion(c, 720, 640, 175, meter_motion.shown[METER_SOH],
+        retained_gauge_motion(c, page, METER_SOH, 720, 640, 175, meter_motion.shown[METER_SOH],
                      "%", C_CYAN);
-        gauge_motion(c, 1140, 640, 175, meter_motion.shown[METER_BATTERY_TEMP],
+        retained_gauge_motion(c, page, METER_BATTERY_TEMP, 1140, 640, 175, meter_motion.shown[METER_BATTERY_TEMP],
                      "°C", C_BLUE);
     }
 }
@@ -3464,6 +3534,8 @@ static int dashboard_buffer_index(const struct canvas *c) {
 static void invalidate_dashboard_buffers(void) {
     for (int i = 0; i < BUFFER_COUNT; ++i)
         dashboard_buffer_page[i] = -1;
+    memset(gauge_buffer_state, 0, sizeof(gauge_buffer_state));
+    memset(text_buffer_state, 0, sizeof(text_buffer_state));
 }
 
 static void restore_region(struct canvas *c, const uint32_t *base,
@@ -3488,14 +3560,7 @@ static void restore_animated_regions(struct canvas *c,
         restore_region(c, base, 44, y, 650, 385);
         restore_region(c, base, 746, y, 650, 385);
     }
-    if (page == 0) {
-        restore_region(c, base, 575, 260, 350, 430);
-        restore_region(c, base, 100, 1375, 370, 135);
-        restore_region(c, base, 530, 1375, 390, 135);
-        restore_region(c, base, 170, 2140, 280, 300);
-        restore_region(c, base, 580, 2140, 280, 300);
-        restore_region(c, base, 990, 2140, 280, 300);
-    } else if (page == 1) {
+    if (page == 1) {
         restore_region(c, base, 1060, 365, 310, 340);
         restore_region(c, base, 80, 1360, 1250, 270);
     } else if (page == 3) {
@@ -3503,16 +3568,10 @@ static void restore_animated_regions(struct canvas *c,
         restore_region(c, base, 80, 1620, 1250, 280);
         restore_region(c, base, 80, 2190, 1250, 190);
     } else if (page == 4) {
-        restore_region(c, base, 145, 525, 330, 330);
-        restore_region(c, base, 555, 525, 330, 330);
-        restore_region(c, base, 965, 525, 330, 330);
         restore_region(c, base, 80, 1065, 550, 295);
         restore_region(c, base, 780, 1040, 550, 85);
         restore_region(c, base, 80, 2200, 1250, 100);
     } else if (page == 6) {
-        restore_region(c, base, 100, 440, 400, 405);
-        restore_region(c, base, 520, 440, 400, 405);
-        restore_region(c, base, 940, 440, 400, 405);
         restore_region(c, base, 70, 760, 1300, 100);
         restore_region(c, base, 80, 1040, 550, 390);
         restore_region(c, base, 80, 1915, 1250, 100);
@@ -3578,8 +3637,15 @@ static void render(struct canvas *c, const struct live_data *data,
             dashboard_buffer_generation[buffer_index] ==
                 rate_background_generation)
             restore_animated_regions(c, rate_background, page);
-        else
+        else {
             memcpy(c->pixels, rate_background, (size_t)c->pitch * c->height);
+            if (buffer_index >= 0)
+                memset(gauge_buffer_state[buffer_index], 0,
+                       sizeof(gauge_buffer_state[buffer_index]));
+            if (buffer_index >= 0)
+                memset(text_buffer_state[buffer_index], 0,
+                       sizeof(text_buffer_state[buffer_index]));
+        }
         if (buffer_index >= 0) {
             dashboard_buffer_page[buffer_index] = page;
             dashboard_buffer_generation[buffer_index] =
@@ -4421,12 +4487,17 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         if (!awake) {
             if (was_awake) {
                 set_backlight(0);
+                if (sample.pid > 0)
+                    (void)kill(-sample.pid, SIGTERM);
                 fast_sampler.initialized = false;
                 fast_cpu_previous_total = 0;
                 fast_cpu_previous_idle = 0;
                 rx_rate = 0.0;
                 tx_rate = 0.0;
             }
+            /* Reap a cancelled collector while asleep, without applying its
+             * snapshot or starting any new modem/peripheral collection. */
+            (void)finish_screen_sample(&sample, &data, -1);
             was_awake = false;
             volume_overlay.active = false;
             overlay_visible = false;
