@@ -9,8 +9,9 @@ Android system partitions, or Android's Xiaomi logo and boot animation.
 `build-b-slot.sh` may produce only these B-slot artifacts:
 
 - `boot_b`: exact Xiaomi-compatible kernel image;
-- `init_boot_b`: the small static `xm14pro-boot-shim`, the fail-open native
-  DRM startup animation, and minimum files;
+- `init_boot_b`: the small static `xm14pro-boot-shim`, the matching PixelOS 17
+  recovery first-stage init, the fail-open native DRM startup animation, and
+  minimum files;
 - `vendor_boot_b`: exact stock vendor ramdisk/DTB plus a bounded rescue payload;
 - `dtbo_b`: exact stock matching DTBO unless a reviewed device overlay is needed;
 - `vbmeta_b`: controlled AVB metadata for the unlocked device.
@@ -18,7 +19,12 @@ Android system partitions, or Android's Xiaomi logo and boot animation.
 It is a host-side packer, not a flasher. It contains no `fastboot` command, no
 block-device `dd`, no slot switch and no partitioning operation.
 
-The static PID 1 performs this sequence:
+When the bootloader has loaded the recovery ramdisk, its `/system/bin/init` is
+present. The generic B-slot ramdisk's `/init` then executes the exact-hash-gated
+PixelOS 17 first-stage init before mounting anything. That init starts the
+shared A/B recovery image. In normal B-slot boot the recovery binary is absent.
+
+The static PID 1 then performs this sequence for a normal NWRT boot:
 
 1. create a bounded static `/dev` set (the stock kernel has no `devtmpfs`) and
    mount `proc`, `sysfs` and `tmpfs`;

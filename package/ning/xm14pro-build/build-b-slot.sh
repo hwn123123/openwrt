@@ -24,6 +24,8 @@ VBMETA_SIZE=131072
 AVB_SALT='ab614a37b99ce6eef3903ef481d5c6af42a539f4e6dfa631979c7eacf39b609a'
 BOOT_A_SHA256='1dab6b5799ed7db7e84648e761981b2001e5b5b22dee1fac040a97b2c337e923'
 INIT_BOOT_A_SHA256='d0bb4390db0bcc54014e985743076a01ba896d43d66d1d5921e10cafff3f16da'
+PIXEL_RECOVERY_INIT_BOOT_SHA256='645784732fe937b052b15c71b4a219d3d0606be0194119f1d7bf0e9a0fb4d326'
+PIXEL_RECOVERY_FIRST_STAGE_SHA256='5f2b3f295c45e60668dc596169389a38a198e4693e107e77ab5e705d488f2ac6'
 VENDOR_BOOT_A_SHA256='07ec90a770c41ea5a0a7a03698c26773a15426dcf87fd4b2c4eac350f1ec7acc'
 DTBO_A_SHA256='2300821865c3dff04c2e25f0ec0cd6bc460c03e1176202ad2b87623a92c6eaf1'
 MAGISK_APK_SHA256='e0d32d2123532860f97123d927b1bb86c4e08e6fd8a48bfc6b5bee0afae9ebd5'
@@ -31,6 +33,7 @@ RESCUE_BUSYBOX_SHA256='4d60ab3f5a59ebb2ca863f2f514e6924401b581e9b64f602665c00817
 
 BOOT_A="$INPUT_DIR/boot_a.img"
 INIT_BOOT_A="$INPUT_DIR/init_boot_a.img"
+PIXEL_RECOVERY_INIT_BOOT="$INPUT_DIR/pixelos17-init_boot.img"
 VENDOR_BOOT_A="$INPUT_DIR/vendor_boot_a.img"
 DTBO_A="$INPUT_DIR/dtbo_a.img"
 
@@ -51,6 +54,7 @@ require_size() {
 
 require_hash "$BOOT_A" "$BOOT_A_SHA256"
 require_hash "$INIT_BOOT_A" "$INIT_BOOT_A_SHA256"
+require_hash "$PIXEL_RECOVERY_INIT_BOOT" "$PIXEL_RECOVERY_INIT_BOOT_SHA256"
 require_hash "$VENDOR_BOOT_A" "$VENDOR_BOOT_A_SHA256"
 require_hash "$DTBO_A" "$DTBO_A_SHA256"
 require_size "$BOOT_A" "$BOOT_SIZE"
@@ -123,6 +127,19 @@ VENDOR_UNPACK="$WORK_DIR/vendor-unpack"
 mkdir -p -- "$INIT_ROOT" "$RESCUE_OUTER/nwrt-rescue" "$VENDOR_UNPACK"
 install -m 0755 "$SHIM" "$INIT_ROOT/init"
 install -m 0755 "$EARLY_SPLASH" "$INIT_ROOT/early-splash"
+# A/B recovery concatenates its ramdisk before this generic ramdisk. Keep the
+# matching PixelOS 17 first-stage init for the recovery-only dispatch in /init.
+mkdir -p "$WORK_DIR/pixel-init"
+(
+    cd "$WORK_DIR/pixel-init"
+    "$MAGISKBOOT" unpack "$PIXEL_RECOVERY_INIT_BOOT" >/dev/null
+    "$MAGISKBOOT" cpio ramdisk.cpio \
+        "extract init pixelos-first-stage-init" >/dev/null
+)
+require_hash "$WORK_DIR/pixel-init/pixelos-first-stage-init" \
+    "$PIXEL_RECOVERY_FIRST_STAGE_SHA256"
+install -m 0755 "$WORK_DIR/pixel-init/pixelos-first-stage-init" \
+    "$INIT_ROOT/android-first-stage-init"
 mkdir -p -- "$INIT_ROOT/dev" "$INIT_ROOT/proc" "$INIT_ROOT/sys" "$INIT_ROOT/run" \
     "$INIT_ROOT/mnt" "$INIT_ROOT/newroot" "$INIT_ROOT/rom"
 
@@ -294,8 +311,10 @@ commit="$(git -c safe.directory="$TOPDIR" -C "$TOPDIR" rev-parse HEAD)"
     printf 'source_commit=%s\n' "$commit"
     printf 'boot_b_source=exact-stock-boot_a\n'
     printf 'dtbo_b_source=exact-stock-dtbo_a\n'
-    printf 'init_boot_b=static-xm14pro-boot-shim-plus-fail-open-drm-splash\n'
-    printf 'boot_shim_version=0.25-linux-root-ext4-size-guard\n'
+    printf 'init_boot_b=static-xm14pro-boot-shim-plus-pixelos-recovery-init-plus-drm-splash\n'
+    printf 'boot_shim_version=0.25-r4-recovery-ramdisk-dispatch\n'
+    printf 'pixelos_recovery_init_boot_sha256=%s\n' "$PIXEL_RECOVERY_INIT_BOOT_SHA256"
+    printf 'pixelos_recovery_first_stage_sha256=%s\n' "$PIXEL_RECOVERY_FIRST_STAGE_SHA256"
     printf 'boot_shim_sha256=%s\n' "$(sha256sum "$SHIM" | awk '{print $1}')"
     printf 'early_splash_sha256=%s\n' "$(sha256sum "$EARLY_SPLASH" | awk '{print $1}')"
     printf 'vendor_boot_b=stock-platform-ramdisk-plus-bounded-static-rescue-fragment\n'

@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-cellular
 PKG_VERSION:=1.0
-PKG_RELEASE:=100
+PKG_RELEASE:=101
 PKG_LICENSE:=GPL-2.0-only BSD-3-Clause
 
 include $(INCLUDE_DIR)/package.mk
@@ -84,7 +84,11 @@ define Package/xm14pro-cellular/install
 	$(INSTALL_BIN) ./files/android-root/vendor/bin/diag-router \
 		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin/diag-router
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-qwes/android-root/vendor/lib64
-	$(INSTALL_DATA) ./files/android-root/vendor/lib64/*.so \
+	# These two DIAG-specific libraries can share the stock vendor namespace.
+	# Never install generic libbase/libcutils from a different Android build:
+	# they override the radio sidecar's namespace and break vndservicemanager.
+	$(INSTALL_DATA) ./files/android-root/vendor/lib64/libqsocket.so \
+		./files/android-root/vendor/lib64/vendor.qti.diaghal@1.0.so \
 		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/lib64/
 	$(INSTALL_DIR) $(1)/usr/share/licenses/xm14pro-cellular
 	$(INSTALL_DATA) ./src/nv550/LICENSE $(1)/usr/share/licenses/xm14pro-cellular/qcom-efs-browser

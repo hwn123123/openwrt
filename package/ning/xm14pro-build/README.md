@@ -39,6 +39,12 @@ system is flashed only to the independent 200 GiB `linux_root` partition. It
 is mounted directly as ext4 and grows from the 8 GiB staging size to the full
 partition only after the runtime exact-size guard passes.
 
+For B-slot recovery, put the unmodified `init_boot.img` from
+`Fasrtboot_PixelOS_shennong-17.0-20261007-0237.zip` at
+`$INPUT_DIR/pixelos17-init_boot.img`. The packer verifies its SHA-256 and the
+first-stage init extracted from it before embedding that init in the B-slot
+generic ramdisk. The normal NWRT path remains independent of Android userspace.
+
 Android A-slot partitions and `userdata` are not part of the nwrt rootfs. The
 B slot contains only the Xiaomi-compatible boot chain and bounded rescue
 payload; generated manifests are marked `flashable=yes` only after validation.

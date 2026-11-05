@@ -34,6 +34,8 @@
 #define PERSISTENT_LOG_DIRECTORY NEW_ROOT "/root/nwrt-logs"
 #define PERSISTENT_BOOT_LOG PERSISTENT_LOG_DIRECTORY "/boot-shim-last.log"
 #define EARLY_SPLASH_PATH "/early-splash"
+#define RECOVERY_INIT_PATH "/system/bin/init"
+#define ANDROID_FIRST_STAGE_INIT_PATH "/android-first-stage-init"
 
 static pid_t early_splash_pid = -1;
 #define MAX_MODULES 512
@@ -787,6 +789,21 @@ int main(int argc, char **argv) {
     if (getpid() != 1) {
         fprintf(stderr, "xm14pro-boot-shim must run as PID 1\n");
         return 2;
+    }
+    /* On this A/B device the bootloader concatenates recovery and generic
+     * ramdisks. Our generic /init replaces recovery's /init symlink, but the
+     * recovery-only second-stage binary remains. Hand that ramdisk to the
+     * matching PixelOS first-stage init before mounting or loading anything;
+     * normal B-slot boot has no /system/bin/init in its ramdisks. */
+    if (access(RECOVERY_INIT_PATH, X_OK) == 0) {
+        if (access(ANDROID_FIRST_STAGE_INIT_PATH, X_OK) != 0) {
+            fprintf(stderr, "xm14pro-boot-shim: recovery init missing\n");
+            for (;;) pause();
+        }
+        execl(ANDROID_FIRST_STAGE_INIT_PATH, "/init", NULL);
+        fprintf(stderr, "xm14pro-boot-shim: recovery exec failed: %s\n",
+                strerror(errno));
+        for (;;) pause();
     }
     signal(SIGCHLD, reap_children);
     mount_early_filesystems();
