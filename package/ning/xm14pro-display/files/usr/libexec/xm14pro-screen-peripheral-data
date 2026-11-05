@@ -1,0 +1,124 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Collect only the visible peripheral page; never query the modem here.
+
+line() {
+	case "$2" in
+		*"$nl"*|*"$cr"*) printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')" ;;
+		*) printf '%s=%s\n' "$1" "$2" ;;
+	esac
+}
+nl='
+'
+cr="$(printf '\r')"
+read_value() {
+	local value=
+	[ -r "$2" ] && IFS= read -r value <"$2"
+	line "$1" "$value"
+}
+running() {
+	if pgrep -f "$2" >/dev/null 2>&1; then line "$1" true; else line "$1" false; fi
+}
+count_files() {
+	local path count=0 file
+	path="$1"
+	for file in "$path"/*."$2"; do
+		[ -f "$file" ] && count=$((count + 1))
+	done
+	line "$3" "$count"
+}
+
+case "$1" in
+5)
+	ssid="$(uci -q get xm14wifi.main.ssid_5g)"
+	[ -n "$ssid" ] || ssid="$(uci -q get wireless.nwrt_5g.ssid)"
+	line wifi_ssid "$ssid"
+	line wifi_key "$(uci -q get wireless.nwrt_5g.key)"
+	line wifi_encryption "$(uci -q get wireless.nwrt_5g.encryption)"
+	wifi_iface="$(uci -q get wireless.nwrt_5g.ifname)"
+	[ -n "$wifi_iface" ] || wifi_iface=nwrt-ap
+	if ip link show dev "$wifi_iface" 2>/dev/null | grep -q '<[^>]*UP[^>]*>'; then
+		line wifi_up true
+	else
+		line wifi_up false
+	fi
+	clients="$(ubus call "hostapd.$wifi_iface" get_clients 2>/dev/null |
+		jsonfilter -e '@.clients.*.authorized' 2>/dev/null |
+		awk '$1 == "true" { n++ } END { print n + 0 }')"
+	line wifi_clients "$clients"
+	wifi_net="$(ubus call network.interface.wifi_lan status 2>/dev/null)"
+	line wifi_ipv4 "$(printf '%s' "$wifi_net" | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)"
+	usb_net="$(ubus call network.interface.usb_lan status 2>/dev/null)"
+	line usb_ipv4 "$(printf '%s' "$usb_net" | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null)"
+	if [ "$(uci -q get xm14usb.main.mode)" != charge_only ] &&
+		[ "$(printf '%s' "$usb_net" | jsonfilter -e '@.up' 2>/dev/null)" = true ] &&
+		[ "$(cat /sys/class/net/usb0/carrier 2>/dev/null)" = 1 ]; then
+		line usb_up true
+	else
+		line usb_up false
+	fi
+	;;
+7)
+	line nfc_enabled "$(uci -q get xm14peripherals.main.nfc)"
+	[ -c /dev/nq-nci ] && line nfc_node true || line nfc_node false
+	running nfc_hal_running /odm/bin/hw/android.hardware.nqnfc-service.nxp
+	running nfc_service_running /vendor/bin/xm14pro-nfc-service
+	mode="$(uci -q get xm14peripherals.main.nfc_mode)"
+	case "$mode" in share|copy) ;; *) mode=share ;; esac
+	line nfc_mode "$mode"
+	status=/usr/libexec/xm14pro-qwes/android-root/data/vendor/nfc/xm14/status.json
+	stage="$(jsonfilter -i "$status" -e '@.stage' 2>/dev/null)"
+	line nfc_stage "$stage"
+	line nfc_detail "$(jsonfilter -i "$status" -e '@.detail' 2>/dev/null)"
+	line nfc_source_bytes "$(jsonfilter -i "$status" -e '@.source_bytes' 2>/dev/null)"
+	case "$stage" in
+		share_active|await_source|reading_source|await_target|writing_target|copy_complete|mct_detected|mct_reading_source|mct_await_target|mct_writing_target)
+			line nfc_ndef_available true ;;
+		*) line nfc_ndef_available false ;;
+	esac
+	count_files /etc/xm14pro-peripherals/nfc ndef nfc_saved
+	selected=
+	[ -r /etc/xm14pro-peripherals/nfc-selected ] &&
+		IFS= read -r selected </etc/xm14pro-peripherals/nfc-selected
+	name=
+	[ -n "$selected" ] && [ -r "/etc/xm14pro-peripherals/nfc/$selected.ndef.name" ] &&
+		IFS= read -r name <"/etc/xm14pro-peripherals/nfc/$selected.ndef.name"
+	line nfc_selected_name "${name:-未选择}"
+	result="$(sed -n 's/^result=//p' /var/run/xm14peripherals/nfc-probe 2>/dev/null | head -n 1)"
+	line nfc_last_result "${result:-尚未执行硬件自检}"
+	;;
+8)
+	line infrared_enabled "$(uci -q get xm14peripherals.main.infrared)"
+	[ -c /dev/ir_spi ] && line infrared_node true || line infrared_node false
+	running infrared_hal_running /vendor/bin/hw/android.hardware.ir-service.example
+	count_files /etc/xm14pro-peripherals/remotes remote infrared_saved
+	catalog=0
+	for file in /usr/share/xm14pro-ir/catalog.tsv /usr/share/xm14pro-ac/protocols.tsv; do
+		[ -r "$file" ] || continue
+		lines="$(wc -l <"$file")"
+		catalog=$((catalog + lines))
+	done
+	line infrared_catalog "$catalog"
+	selected=
+	[ -r /etc/xm14pro-peripherals/infrared-selected ] &&
+		IFS= read -r selected </etc/xm14pro-peripherals/infrared-selected
+	base="/etc/xm14pro-peripherals/remotes/$selected.remote"
+	name=
+	[ -n "$selected" ] && [ -r "$base.name" ] && IFS= read -r name <"$base.name"
+	line infrared_selected_name "${name:-未选择}"
+	source=
+	[ -n "$selected" ] && [ -r "$base.source" ] && IFS= read -r source <"$base.source"
+	case "$source" in ac:*:*) line infrared_selected_ac true ;; *) line infrared_selected_ac false ;; esac
+	if [ -r "$base.state" ]; then
+		while IFS='=' read -r key value; do
+			case "$key" in
+				power|mode|temp|fan|swingv|swingh) line "infrared_ac_$key" "$value" ;;
+			esac
+		done <"$base.state"
+	fi
+	result="$(sed -n 's/^result=//p' /var/run/xm14peripherals/infrared-send 2>/dev/null | head -n 1)"
+	[ -n "$result" ] || result="$(sed -n 's/^result=//p' /var/run/xm14peripherals/infrared-test 2>/dev/null | head -n 1)"
+	line infrared_last_result "${result:-尚未执行发射测试}"
+	;;
+*) exit 2 ;;
+esac

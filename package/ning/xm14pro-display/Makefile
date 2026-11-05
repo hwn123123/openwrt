@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-display
 PKG_VERSION:=1.0.0
-PKG_RELEASE:=65
+PKG_RELEASE:=70
 PKG_LICENSE:=GPL-2.0-only
 
 include $(INCLUDE_DIR)/package.mk
@@ -63,6 +63,7 @@ define Package/xm14pro-display/install
 	$(INSTALL_DIR) $(1)/usr/libexec
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-display $(1)/usr/libexec/xm14pro-display
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-screen-data $(1)/usr/libexec/xm14pro-screen-data
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-screen-peripheral-data $(1)/usr/libexec/xm14pro-screen-peripheral-data
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-speedtest $(1)/usr/libexec/xm14pro-speedtest
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14
 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/xm14pro-early-splash $(1)/usr/libexec/xm14/early-splash

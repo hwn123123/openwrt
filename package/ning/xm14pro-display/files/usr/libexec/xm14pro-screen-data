@@ -27,8 +27,15 @@ j() {
 line() {
 	# The native renderer consumes one key/value per line. Strip control bytes
 	# so modem or UCI text can never alter the protocol.
-	printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')"
+	case "$2" in
+		*"$carriage_return"*|*"$newline"*)
+			printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr '\r\n' '  ')" ;;
+		*) printf '%s=%s\n' "$1" "$2" ;;
+	esac
 }
+carriage_return="$(printf '\r')"
+newline='
+'
 
 line connected "$(j .connected)"
 operator_name="$(j .operator_name)"

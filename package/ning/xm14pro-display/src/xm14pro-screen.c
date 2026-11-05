@@ -13,6 +13,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -1070,6 +1071,67 @@ static int load_data(struct live_data *data) {
     if (data->voice_call_volume > 100) data->voice_call_volume = 100;
     active_page_count = data->telephony_pages ? PAGE_COUNT : BASE_PAGE_COUNT;
     return status;
+}
+
+/* Slow modem and peripheral collection must never block touch rendering. */
+struct screen_sample {
+    pid_t pid;
+    int page;
+    char path[96];
+};
+
+static void start_screen_sample(struct screen_sample *sample, int page, int drm_fd) {
+    if (sample->pid > 0) return;
+    snprintf(sample->path, sizeof(sample->path),
+             "/var/run/xm14display/screen-sample-%ld", (long)getpid());
+    pid_t child = fork();
+    if (child < 0) return;
+    if (child == 0) {
+        close(drm_fd);
+        int output = open(sample->path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        if (output < 0) _exit(127);
+        if (dup2(output, STDOUT_FILENO) < 0) _exit(127);
+        close(output);
+        char page_arg[12];
+        snprintf(page_arg, sizeof(page_arg), "%d", page);
+        const char *collector = (page == 5 || page == 7 || page == 8) ?
+            "/usr/libexec/xm14pro-screen-peripheral-data" :
+            "/usr/libexec/xm14pro-screen-data";
+        execl(collector, collector, page_arg, (char *)NULL);
+        _exit(127);
+    }
+    sample->pid = child;
+    sample->page = page;
+}
+
+static bool finish_screen_sample(struct screen_sample *sample,
+                                 struct live_data *data, int page) {
+    if (sample->pid <= 0) return false;
+    int status = 0;
+    pid_t result = waitpid(sample->pid, &status, WNOHANG);
+    if (result == 0) return false;
+    sample->pid = 0;
+    bool updated = false;
+    if (result > 0 && WIFEXITED(status) && WEXITSTATUS(status) == 0 &&
+        sample->page == page) {
+        FILE *input = fopen(sample->path, "r");
+        if (input) {
+            struct live_data previous = *data;
+            char line_buffer[320];
+            while (fgets(line_buffer, sizeof(line_buffer), input)) {
+                char *newline = strpbrk(line_buffer, "\r\n");
+                if (newline) *newline = 0;
+                char *separator = strchr(line_buffer, '=');
+                if (!separator) continue;
+                *separator = 0;
+                assign_field(data, line_buffer, separator + 1);
+            }
+            fclose(input);
+            updated = memcmp(&previous, data, sizeof(*data)) != 0;
+        }
+    }
+    unlink(sample->path);
+    return updated;
 }
 
 static void read_runtime_text(const char *path, char *value, size_t size) {
@@ -2937,7 +2999,12 @@ static int64_t read_i64_file(const char *path) {
     return (int64_t)value;
 }
 
-static void refresh_fast_hardware(struct live_data *data) {
+static void refresh_fast_hardware(struct live_data *data, int page) {
+    bool device_page = page == 0 || page == 4;
+    bool radio_page = page == 0 || page == 1 || page == 9;
+    bool traffic_page = page == 0 || page == 3;
+    bool battery_page = page == 6;
+    if (device_page) {
     uint64_t minimum = 0, maximum = 0;
     for (int cpu = 0; cpu < 16; ++cpu) {
         char path[128];
@@ -2996,7 +3063,9 @@ static void refresh_fast_hardware(struct live_data *data) {
         if (temperature > modem_maximum) modem_maximum = temperature;
     }
     if (modem_maximum > 0) data->modem_temp = modem_maximum / 1000.0;
+    }
 
+    if (radio_page) {
     FILE *radio = fopen("/var/run/xm14pro/radio-state", "r");
     if (radio) {
         char line_buffer[256];
@@ -3036,7 +3105,9 @@ static void refresh_fast_hardware(struct live_data *data) {
         }
         fclose(uim);
     }
+    }
 
+    if (page == 0 || page == 1) {
     FILE *bonding = fopen("/var/run/xm14pro-bonding/runtime", "r");
     if (bonding) {
         char line_buffer[160];
@@ -3063,7 +3134,9 @@ static void refresh_fast_hardware(struct live_data *data) {
         }
         fclose(bonding);
     }
+    }
 
+    if (traffic_page) {
     if (data->interface_name[0] && strcmp(data->interface_name, "--")) {
         char path[160];
         snprintf(path, sizeof(path), "/sys/class/net/%s/statistics/rx_bytes",
@@ -3085,7 +3158,9 @@ static void refresh_fast_hardware(struct live_data *data) {
                  data->interface_name);
         data->tx_errors = read_i64_file(path);
     }
+    }
 
+    if (device_page) {
     FILE *uptime = fopen("/proc/uptime", "r");
     double uptime_seconds = 0.0;
     if (uptime) {
@@ -3093,12 +3168,45 @@ static void refresh_fast_hardware(struct live_data *data) {
             data->uptime = (uint64_t)uptime_seconds;
         fclose(uptime);
     }
+    }
 
+    /* The header needs only charge and level on every page. */
     const char *battery = "/sys/class/power_supply/battery";
     char path[160];
     snprintf(path, sizeof(path), "%s/capacity", battery);
     int capacity = read_integer_file(path);
     if (capacity >= 0 && capacity <= 100) data->battery = capacity;
+    if (!battery_page) return;
+#define BATTERY_TEXT(field, source) \
+    read_runtime_text(source, data->field, sizeof(data->field))
+    BATTERY_TEXT(battery_status, "/sys/class/power_supply/battery/status");
+    BATTERY_TEXT(battery_charge_type, "/sys/class/power_supply/battery/charge_type");
+    BATTERY_TEXT(battery_protocol, "/sys/class/qcom-battery/usb_real_type");
+    if (!data->battery_protocol[0])
+        BATTERY_TEXT(battery_protocol, "/sys/class/qcom-battery/real_type");
+    BATTERY_TEXT(battery_health, "/sys/class/power_supply/battery/health");
+    BATTERY_TEXT(battery_technology, "/sys/class/power_supply/battery/technology");
+    BATTERY_TEXT(battery_model, "/sys/class/power_supply/battery/model_name");
+    BATTERY_TEXT(battery_cell_vendor, "/sys/class/qcom-battery/cell_vendor");
+    BATTERY_TEXT(battery_pack_vendor, "/sys/class/qcom-battery/pack_vendor_str");
+    BATTERY_TEXT(typec_data_role, "/sys/class/typec/port0/data_role");
+    BATTERY_TEXT(typec_power_role, "/sys/class/typec/port0/power_role");
+    BATTERY_TEXT(typec_power_mode, "/sys/class/typec/port0/power_operation_mode");
+    BATTERY_TEXT(typec_pd_revision, "/sys/class/typec/port0/usb_power_delivery_revision");
+    BATTERY_TEXT(typec_revision, "/sys/class/typec/port0/usb_typec_revision");
+#undef BATTERY_TEXT
+    data->battery_soh = read_integer_file("/sys/class/qcom-battery/soh");
+    data->battery_cycle_count = read_integer_file("/sys/class/power_supply/battery/cycle_count");
+    data->battery_moisture = read_integer_file("/sys/class/qcom-battery/moisture_detection_status");
+    data->battery_anti_burn = read_integer_file("/sys/class/qcom-battery/anti_burn");
+    data->battery_input_suspend = read_integer_file("/sys/class/qcom-battery/input_suspend");
+    data->battery_night_charging = read_integer_file("/sys/class/qcom-battery/night_charging");
+    data->battery_reverse_mode = read_integer_file("/sys/class/qcom-battery/reverse_chg_mode");
+    data->battery_reverse_state = read_integer_file("/sys/class/qcom-battery/reverse_chg_state");
+    data->battery_cp_master = read_integer_file("/sys/class/qcom-battery/bq2597x_chip_ok");
+    data->battery_cp_slave = read_integer_file("/sys/class/qcom-battery/bq2597x_slave_chip_ok");
+    data->battery_charge_full = read_i64_file("/sys/class/power_supply/battery/charge_full");
+    data->battery_charge_design = read_i64_file("/sys/class/power_supply/battery/charge_full_design");
     snprintf(path, sizeof(path), "%s/temp", battery);
     int battery_temperature = read_integer_file(path);
     if (battery_temperature) data->battery_temp = battery_temperature / 10.0;
@@ -3127,6 +3235,11 @@ static bool speed_animation_pending(void) {
            fabs(speed_dial_value) >= 0.05 ||
            fabs(speed_download_display - speed_download_peak) >= 0.05 ||
            fabs(speed_upload_display - speed_upload_peak) >= 0.05;
+}
+
+static bool page_needs_full_sample(int page) {
+    /* These pages have their own cheap live readers. */
+    return page != 2 && page != 3 && page != 4 && page != 6;
 }
 
 static void set_backlight(int percent) {
@@ -3473,6 +3586,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     char sampled_speed_phase[24] = "";
     double rx_rate = 0.0, tx_rate = 0.0;
     load_data(&data);
+    struct screen_sample sample = {0};
     copy_value(sampled_speed_phase, sizeof(sampled_speed_phase),
                data.speed_phase);
     update_rates(&data, &rx_rate, &tx_rate);
@@ -3483,6 +3597,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     bool page_refresh_pending = false;
     struct timespec last_full_sample;
     struct timespec last_dynamic_sample;
+    time_t last_clock_minute = time(NULL) / 60;
     clock_gettime(CLOCK_MONOTONIC, &last_full_sample);
     last_dynamic_sample = last_full_sample;
     bool was_awake = screen_is_awake(&data);
@@ -3531,8 +3646,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         if (!running) break;
 		if (reload_requested) {
 			reload_requested = 0;
-			load_data(&data);
-			apply_backlight(&data);
+			page_refresh_pending = true;
 		}
 
         struct timespec now;
@@ -3552,6 +3666,10 @@ static int run_dashboard(struct display *display, bool already_modeset) {
             overlay_visible = false;
             continue;
         }
+
+        bool sample_updated = finish_screen_sample(&sample, &data,
+                                                   current_page());
+        if (sample_updated) apply_backlight(&data);
 
         bool power_menu_visible = access(POWER_MENU_FILE, F_OK) == 0;
         int selected_power_choice = power_menu_visible ? power_menu_choice() : 0;
@@ -3619,8 +3737,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                                    !previous_footer_dragging;
         bool footer_refresh = footer_changed || footer_drag_started;
         if (!was_awake) {
-            load_data(&data);
-            refresh_fast_hardware(&data);
+            refresh_fast_hardware(&data, page);
             fast_sampler.initialized = false;
             sample_fast_rates(&fast_sampler, data.interface_name,
                               &rx_rate, &tx_rate);
@@ -3628,7 +3745,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
             tx_rate = 0.0;
             last_full_sample = now;
             last_dynamic_sample = now;
-            page_refresh_pending = false;
+            page_refresh_pending = page_needs_full_sample(page);
             footer_scroll_px = next_footer_position;
             int next = display->visible ? 0 : 1;
             struct canvas canvas = {display->width, display->height,
@@ -3667,12 +3784,14 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 page_refresh_pending = true;
             }
         }
-        bool full_sample_due = page_refresh_pending ||
-            sample_time - monotonic_seconds(&last_full_sample) >=
-                data.refresh_interval;
+        bool full_sample_due = page_needs_full_sample(page) &&
+            (page_refresh_pending ||
+             sample_time - monotonic_seconds(&last_full_sample) >=
+                 data.refresh_interval);
         bool active_rate_page = page == 0 || page == 3;
         bool dynamic_sample_due =
-            sample_time - monotonic_seconds(&last_dynamic_sample) >= 1.0;
+            sample_time - monotonic_seconds(&last_dynamic_sample) >=
+                (page == 6 ? 2.0 : 1.0);
 
         if (footer_dragging && !page_changed && !footer_refresh) {
             /*
@@ -3721,18 +3840,14 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 rx_rate = 0.0;
                 tx_rate = 0.0;
             }
-            bool full_sample_completed = false;
-            if (!speed_running && !page_changed && full_sample_due) {
-                load_data(&data);
-                page_refresh_pending = false;
-                clock_gettime(CLOCK_MONOTONIC, &last_full_sample);
-                full_sample_completed = true;
-            }
+            bool full_sample_completed = sample_updated;
             bool dynamic_sample_completed = false;
             if (!page_changed && dynamic_sample_due) {
-                refresh_fast_hardware(&data);
+                struct live_data previous = data;
+                refresh_fast_hardware(&data, page);
                 last_dynamic_sample = now;
-                dynamic_sample_completed = true;
+                dynamic_sample_completed =
+                    memcmp(&previous, &data, sizeof(data)) != 0;
             }
             speed_animating = speed_animation_pending();
             if (!page_changed && !speed_state_changed && !speed_running &&
@@ -3750,12 +3865,13 @@ static int run_dashboard(struct display *display, bool already_modeset) {
              * made a valid 120 Hz touch feel delayed; the normal periodic
              * refresh below replaces the cached values shortly afterwards.
              */
-        } else if (telephony_fast_refresh) {
+        } else if (telephony_fast_refresh || sample_updated) {
             /* Draft edits are local tmpfs reads. Keep the touch keyboard
              * responsive without rerunning the full modem collector. */
         } else if (full_sample_due) {
-            load_data(&data);
-            refresh_fast_hardware(&data);
+            if (sample.pid == 0)
+                start_screen_sample(&sample, page, display->fd);
+            refresh_fast_hardware(&data, page);
             if (active_rate_page &&
                 sample_fast_rates(&fast_sampler, data.interface_name,
                                   &rx_rate, &tx_rate)) {
@@ -3766,7 +3882,9 @@ static int run_dashboard(struct display *display, bool already_modeset) {
             clock_gettime(CLOCK_MONOTONIC, &last_full_sample);
             last_dynamic_sample = now;
         } else if (dynamic_sample_due) {
-            refresh_fast_hardware(&data);
+            struct live_data previous = data;
+            double old_rx_rate = rx_rate, old_tx_rate = tx_rate;
+            refresh_fast_hardware(&data, page);
             if (active_rate_page) {
                 if (sample_fast_rates(&fast_sampler, data.interface_name,
                                       &rx_rate, &tx_rate)) {
@@ -3775,6 +3893,14 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                 }
             }
             last_dynamic_sample = now;
+            if (!memcmp(&previous, &data, sizeof(data)) &&
+                old_rx_rate == rx_rate && old_tx_rate == tx_rate &&
+                time(NULL) / 60 == last_clock_minute) {
+                previous_page = page;
+                previous_footer_position = next_footer_position;
+                previous_footer_dragging = footer_dragging;
+                continue;
+            }
         } else {
             previous_page = page;
             previous_footer_position = next_footer_position;
@@ -3801,7 +3927,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
             rx_rate = 0.0;
             tx_rate = 0.0;
             last_dynamic_sample = now;
-            page_refresh_pending = true;
+            page_refresh_pending = page_needs_full_sample(page);
             previous_page = page;
             previous_footer_position = next_footer_position;
             previous_footer_dragging = footer_dragging;
@@ -3835,6 +3961,7 @@ static int run_dashboard(struct display *display, bool already_modeset) {
                                 display->buffers[next].pitch,
                                 display->buffers[next].pixels};
         render(&canvas, &data, rx_rate, tx_rate, page);
+        last_clock_minute = time(NULL) / 60;
         if (present(display, next, false) != 0)
             fprintf(stderr, "xm14pro-screen: atomic frame failed: %s\n", strerror(errno));
         apply_backlight(&data);
