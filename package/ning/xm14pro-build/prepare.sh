@@ -121,9 +121,13 @@ cp -- "$KMSCON_PATCH_SOURCE" "$KMSCON_PATCH_DIR/900-ignore-virtual-connectors-wh
 
 if [[ -s "$CONFIG" ]]; then
     cp -- "$CONFIG" "$BACKUP"
-    printf 'previous config saved to %s\n' "$BACKUP"
+    printf 'keeping existing config; backup saved to %s\n' "$BACKUP"
+else
+    # Seed only a new checkout. Replacing .config on every preparation loses
+    # packages explicitly selected by the user in make menuconfig.
+    cp -- "$SEED" "$CONFIG"
+    printf 'initialized config from %s\n' "$SEED"
 fi
-cp -- "$SEED" "$CONFIG"
 
 # Go 1.4, which OpenWrt uses as its default first bootstrap stage, has no
 # linux/arm64 host support.  The ARM64 build VM already provides a current Go
