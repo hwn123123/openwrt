@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define SAMPLE_RATE 48000U
@@ -59,6 +60,57 @@ static int load_symbol(void **target, const char *name)
 {
 	*target = dlsym(pal.library, name);
 	return *target ? 0 : -1;
+}
+
+/* Audio's DIAG logging is optional. On NWRT there is normally no Android
+ * diag-router. Letting the stock library initialize against an absent socket
+ * creates a reader that loops on EOF and consumes an entire CPU core. Keep
+ * the failure at the initialization boundary; real audio/PAL and Android
+ * error logging remain available. Delegate when a real transport exists. */
+static int diag_transport_available(void)
+{
+	struct stat st;
+	char line[512];
+	FILE *sockets;
+	int available = 0;
+
+	if (stat("/dev/diag", &st) == 0 && S_ISCHR(st.st_mode))
+		return 1;
+	sockets = fopen("/proc/net/unix", "r");
+	if (!sockets)
+		return 0;
+	while (fgets(line, sizeof(line), sockets)) {
+		char path[256];
+		unsigned int flags, type;
+		if (sscanf(line, "%*s %*s %*s %x %x %*s %*s %255s",
+			   &flags, &type, path) != 3)
+			continue;
+		if (!(flags & 0x10000U) && type != SOCK_DGRAM)
+			continue;
+		if (!strncmp(path, "@diag", 5) ||
+		    !strncmp(path, "/dev/socket/diag", 16)) {
+			available = 1;
+			break;
+		}
+	}
+	fclose(sockets);
+	return available;
+}
+
+unsigned char Diag_LSM_Init(unsigned char *parameter)
+{
+	static unsigned char (*original)(unsigned char *);
+	void *library;
+
+	if (getenv("XM14_PROPERTY_SERVICE_ABSENT") && !diag_transport_available())
+		return 0;
+	if (!original) {
+		library = dlopen("/vendor/lib64/libdiag.so", RTLD_NOW | RTLD_NOLOAD);
+		if (library)
+			original = (unsigned char (*)(unsigned char *))dlsym(
+				library, "Diag_LSM_Init");
+	}
+	return original ? original(parameter) : 0;
 }
 
 /*
@@ -478,14 +530,15 @@ static void handle_client(int client)
 			"\"volume\":%u,\"duration_ms\":%u,\"result\":%d}\n",
 			result ? "false" : "true", route, volume, duration, result);
 	} else if (strncmp(request, "status", 6) == 0) {
-		result = load_pal();
+		/* Reading status must not initialize a DSP session or vendor logging. */
+		result = 0;
 		snprintf(response, sizeof(response),
 			"{\"ok\":%s,\"pal_ready\":%s,\"media_volume\":%u,"
 			"\"call_volume\":%u,\"voice_active\":%s,"
 			"\"voice_route\":\"%s\",\"voice_slot\":%u,"
 			"\"voice_vsid\":\"0x%08x\",\"mic_muted\":%s,"
 			"\"voice_capable\":true,\"result\":%d}\n",
-			result ? "false" : "true", result ? "false" : "true",
+			"true", pal.library ? "true" : "false",
 			media_volume, call_volume, voice_stream ? "true" : "false",
 			voice_route, voice_slot, voice_vsid,
 			voice_muted ? "true" : "false", result);

@@ -103,12 +103,12 @@ return view.extend({
 	},
 	render: function(data) {
 		var system = data[1], pal = data[2];
-		var route = pal.voice_route === 'speaker' ? '扬声器 + 扬声器麦克风' : '听筒 + 手机麦克风';
+		var route = pal.voice_route === 'speaker' ? '扬声器 + 扬声器麦克风' : '听筒 + 内置麦克风';
 		return E('div', { 'class': 'audio-page' }, [
 			E('section', { 'class': 'audio-hero' }, [
 				E('div', { 'class': 'audio-hero-icon' }, '♫'),
 				E('div', {}, [ E('small', {}, 'XIAOMI AUDIO'), E('h1', {}, '音频与通话声路'), E('p', {}, '扬声器、听筒、麦克风与通话声路控制。') ]),
-				E('b', { 'class': pal.pal_ready ? 'ready' : 'down' }, pal.pal_ready ? 'PAL 已就绪' : 'PAL 未就绪')
+				E('b', { 'class': system.hal_running ? 'ready' : 'down' }, pal.pal_ready ? '音频已就绪' : (system.hal_running ? '音频待机' : '音频不可用'))
 			]),
 			E('section', { 'class': 'audio-services' }, [
 				service('声卡', !!system.card_ready, system.pcm_links + ' 条 PCM 链路'),

@@ -776,6 +776,21 @@ static int present(struct display *d, int index, bool modeset) {
     return 0;
 }
 
+/* Backlight zero alone leaves the CRTC and panel logically on. Use KMS's
+ * normal DPMS transition so the stock DSI driver also receives panel sleep
+ * and wake notifications; retain the mode and framebuffers for fast wake. */
+static int set_display_active(struct display *d, bool active) {
+    drmModeAtomicReq *request = drmModeAtomicAlloc();
+    if (!request) return -1;
+    int result = atomic_add(d, request, d->crtc_id, DRM_MODE_OBJECT_CRTC,
+                            "ACTIVE", active ? 1 : 0);
+    if (result == 0)
+        result = drmModeAtomicCommit(d->fd, request,
+                                    DRM_MODE_ATOMIC_ALLOW_MODESET, NULL);
+    drmModeAtomicFree(request);
+    return result;
+}
+
 static int open_display(struct display *d) {
     memset(d, 0, sizeof(*d));
     d->fd = open("/dev/dri/card0", O_RDWR | O_CLOEXEC);
@@ -4423,6 +4438,8 @@ static int run_dashboard(struct display *display, bool already_modeset) {
     clock_gettime(CLOCK_MONOTONIC, &last_full_sample);
     last_dynamic_sample = last_full_sample;
     bool was_awake = screen_is_awake(&data);
+    bool panel_suspended = false;
+    bool panel_sleep_attempted = false;
     if (previous_page >= 0 && previous_page < PAGE_COUNT) {
         page_cache[previous_page] = data;
         page_cache_valid[previous_page] = true;
@@ -4485,6 +4502,14 @@ static int run_dashboard(struct display *display, bool already_modeset) {
         clock_gettime(CLOCK_MONOTONIC, &now);
         bool awake = screen_is_awake(&data);
         if (!awake) {
+            if (!panel_sleep_attempted) {
+                set_backlight(0);
+                panel_suspended = set_display_active(display, false) == 0;
+                panel_sleep_attempted = true;
+                if (!panel_suspended)
+                    fprintf(stderr, "xm14pro-screen: panel suspend failed: %s\n",
+                            strerror(errno));
+            }
             if (was_awake) {
                 set_backlight(0);
                 if (sample.pid > 0)
@@ -4503,6 +4528,19 @@ static int run_dashboard(struct display *display, bool already_modeset) {
             overlay_visible = false;
             continue;
         }
+
+        if (panel_suspended) {
+            if (set_display_active(display, true) != 0) {
+                fprintf(stderr, "xm14pro-screen: panel resume failed: %s\n",
+                        strerror(errno));
+                /* procd can recover a failed modeset by reopening DRM. */
+                running = 0;
+                break;
+            }
+            panel_suspended = false;
+            invalidate_dashboard_buffers();
+        }
+        panel_sleep_attempted = false;
 
         bool sample_updated = finish_screen_sample(&sample, &data,
                                                    current_page());
