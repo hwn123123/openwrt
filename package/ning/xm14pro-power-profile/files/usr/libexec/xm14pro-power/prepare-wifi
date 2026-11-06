@@ -1,0 +1,33 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# A non-NULL cfg80211 WoWLAN configuration preserves APs across system sleep.
+# Without it Linux's wiphy_suspend() explicitly calls cfg80211_leave_all().
+set -eu
+
+# Keep sysfs writes atomic even if invoked from a procd-logged hotplug helper.
+case "${LD_PRELOAD:-}" in
+	*/lib/libsetlbf.so*) exec /usr/bin/env -u LD_PRELOAD /bin/sh "$0" "$@" ;;
+esac
+
+ready=/usr/libexec/xm14pro-qwes/android-root/data/vendor/nwrt-power
+boot_id=$(cat /proc/sys/kernel/random/boot_id)
+mkdir -p "$ready"
+found=0
+for radio in /sys/class/ieee80211/phy*; do
+	[ -d "$radio" ] || continue
+	found=1
+	phy=${radio##*/}
+	# `any` keeps normal association/traffic wakeups available to a router.
+	# A magic-packet-only policy would leave ordinary clients unable to wake it.
+	iw phy "$phy" wowlan enable any || exit 1
+	iw phy "$phy" wowlan show | grep -q 'special any trigger' || exit 1
+	if [ -w "$radio/device/power/wakeup" ]; then
+		printf 'enabled\n' > "$radio/device/power/wakeup"
+	fi
+	# The minimal image has ls but does not ship the standalone stat applet.
+	inode=$(ls -di "$radio/" | awk '{print $1; exit}')
+	case "$inode" in ''|*[!0-9]*) exit 1 ;; esac
+	printf '%s %s\n' "$boot_id" "$inode" > "$ready/$phy.ready.$$"
+	mv "$ready/$phy.ready.$$" "$ready/$phy.ready"
+done
+[ "$found" -eq 1 ]

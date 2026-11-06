@@ -1,0 +1,11 @@
+#!/bin/sh
+# Reapply the standard wake policy if the WLAN driver registers a new wiphy.
+[ "$ACTION" = add ] || exit 0
+(
+	attempt=0
+	until /usr/libexec/xm14pro-power/prepare-wifi >/dev/null 2>&1; do
+		attempt=$((attempt + 1))
+		[ "$attempt" -lt 20 ] || exit 1
+		sleep 1
+	done
+) &

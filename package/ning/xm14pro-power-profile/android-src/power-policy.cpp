@@ -21,6 +21,7 @@
 #include <linux/input.h>
 #include <poll.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 
@@ -139,6 +140,36 @@ static bool audio_active()
     return active;
 }
 
+static bool wifi_ready()
+{
+    char current_boot[80]{};
+    if (!read_text("/proc/sys/kernel/random/boot_id", current_boot, sizeof(current_boot)))
+        return false;
+    current_boot[std::strcspn(current_boot, "\r\n")] = '\0';
+    glob_t paths{};
+    if (glob("/sys/class/ieee80211/phy*", 0, nullptr, &paths) != 0) {
+        globfree(&paths);
+        return false;
+    }
+    bool ready = paths.gl_pathc > 0;
+    for (size_t i = 0; i < paths.gl_pathc; i++) {
+        const char *phy = std::strrchr(paths.gl_pathv[i], '/') + 1;
+        char path[192], boot[80]{};
+        unsigned long long inode = 0;
+        struct stat state{};
+        std::snprintf(path, sizeof(path), "/data/vendor/nwrt-power/%s.ready", phy);
+        FILE *file = std::fopen(path, "r");
+        const bool valid = file && std::fscanf(file, "%79s %llu", boot, &inode) == 2 &&
+            stat(paths.gl_pathv[i], &state) == 0 &&
+            inode == static_cast<unsigned long long>(state.st_ino) &&
+            std::strcmp(boot, current_boot) == 0;
+        if (file) std::fclose(file);
+        if (!valid) ready = false;
+    }
+    globfree(&paths);
+    return ready;
+}
+
 static uint64_t traffic_bytes()
 {
     DIR *directory = opendir("/sys/class/net");
@@ -206,8 +237,8 @@ int main(int argc, char **argv)
     if (!acquire_lock(suspend.get(), lock)) return 2;
     if (check) {
         if (!release_lock(lock, lock_cls)) return 2;
-        std::printf("SystemSuspend ready; display_awake=%d usb_active=%d audio_active=%d\n",
-            display_awake(), usb_active(), audio_active());
+        std::printf("SystemSuspend ready; display_awake=%d usb_active=%d audio_active=%d wifi_ready=%d\n",
+            display_awake(), usb_active(), audio_active(), wifi_ready());
         return 0;
     }
     ndk::ScopedAIBinder_DeathRecipient death(AIBinder_DeathRecipient_new(service_died));
@@ -261,7 +292,8 @@ int main(int argc, char **argv)
         if (bytes >= previous_bytes && (bytes - previous_bytes) / elapsed >= 32)
             awake_until = std::max(awake_until, now + 5000);
         previous_bytes = bytes; last_sample = now;
-        const bool busy = now < awake_until || display_awake() || usb_active() || audio_active();
+        const bool busy = now < awake_until || display_awake() || usb_active() ||
+            audio_active() || !wifi_ready();
         if (busy && !lock.get() && !acquire_lock(suspend.get(), lock)) return 2;
         if (!busy && !release_lock(lock, lock_cls)) return 2;
     }

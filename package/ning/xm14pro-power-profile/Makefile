@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-power-profile
 PKG_VERSION:=1.1.0
-PKG_RELEASE:=3
+PKG_RELEASE:=5
 PKG_LICENSE:=GPL-2.0-only Apache-2.0
 
 # Preserve the Android PIE metadata consumed by Bionic's linker.
@@ -37,6 +37,9 @@ define Package/xm14pro-power-profile/install
 	$(INSTALL_DATA) ./files/etc/config/xm14power $(1)/etc/config/xm14power
 	$(INSTALL_DIR) $(1)/usr/sbin
 	$(INSTALL_BIN) ./files/usr/sbin/xm14pro-power-sample $(1)/usr/sbin/xm14pro-power-sample
+	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-power $(1)/etc/hotplug.d/ieee80211
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-power/* $(1)/usr/libexec/xm14pro-power/
+	$(INSTALL_BIN) ./files/etc/hotplug.d/ieee80211/60-nwrt-power $(1)/etc/hotplug.d/ieee80211/60-nwrt-power
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin
 	$(INSTALL_BIN) ./files/android-root/vendor/bin/nwrt-power-policy \
 		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin/nwrt-power-policy

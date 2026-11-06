@@ -1,0 +1,20 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-2.0-only
+# Hold off the framework autosuspend registration until Wi-Fi can survive it.
+attempt=0
+until /usr/libexec/xm14pro-power/prepare-wifi 2>/tmp/nwrt-power-wifi-error; do
+	attempt=$((attempt + 1))
+	[ "$attempt" -lt 60 ] || {
+		cat /tmp/nwrt-power-wifi-error >&2
+		echo 'Wi-Fi wake setup failed; automatic suspend was not started' >&2
+		exit 1
+	}
+	sleep 2
+done
+
+# procd adds the host's libsetlbf to LD_PRELOAD. Replace it after that wrapper
+# has started so Bionic sees only its own compatibility libraries.
+exec /usr/bin/env \
+	LD_PRELOAD=/vendor/lib64/libxm14pro_hidl_compat.so:/vendor/lib64/libxm14pro_telephony_compat.so \
+	/usr/sbin/chroot /usr/libexec/xm14pro-qwes/android-root \
+	/system/bin/bootstrap/linker64 /vendor/bin/nwrt-power-policy --run

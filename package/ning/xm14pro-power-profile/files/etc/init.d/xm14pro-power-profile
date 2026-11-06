@@ -125,12 +125,9 @@ start_service() {
 	config_get_bool autosuspend main autosuspend 1
 	[ "$autosuspend" -eq 1 ] || return 0
 	procd_open_instance autosuspend
-	# procd injects musl's libsetlbf into LD_PRELOAD for captured output. Set the
-	# Android preload after that host-side wrapper, before entering Bionic.
-	procd_set_param command /usr/bin/env \
-		LD_PRELOAD=/vendor/lib64/libxm14pro_hidl_compat.so:/vendor/lib64/libxm14pro_telephony_compat.so \
-		/usr/sbin/chroot /usr/libexec/xm14pro-qwes/android-root \
-		/system/bin/bootstrap/linker64 /vendor/bin/nwrt-power-policy --run
+	# Remove procd's host stdio preload before shell sysfs writes; the launcher
+	# sets Bionic's compatibility preload only after host-side Wi-Fi setup.
+	procd_set_param command /usr/bin/env -u LD_PRELOAD /usr/libexec/xm14pro-power/run
 	procd_set_param env XM14_BINDER_MANAGERS_READY=1 XM14_PROPERTY_SERVICE_ABSENT=1
 	procd_set_param respawn 3600 5 3
 	procd_set_param stdout 1
