@@ -59,6 +59,12 @@ add_ap() {
 	uci -q set "wireless.$section.key=$key"
 	uci -q set "wireless.$section.disabled=0"
 	uci -q set "wireless.$section.isolate=0"
+	# The generic hostapd default rebuilds the BSS Load beacon element every
+	# six seconds. On this stock Android WLAN driver each SET_BEACON also
+	# restarts vendor policy/TWT configuration, even with TWT disabled. Leave
+	# optional BSS Load reporting off; firmware keeps transmitting beacons and
+	# LuCI gets associated clients from hostapd's own cache.
+	uci -q set "wireless.$section.bss_load_update_period=0"
 	# Qualcomm's Android driver pre-creates wlan/P2P/NAN interfaces. OpenWrt
 	# removes the original managed wlan0 before creating an AP; reusing that
 	# name then collides with the driver's NAN rename path. Use a unique AP
