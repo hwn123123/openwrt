@@ -1,0 +1,170 @@
+#!/bin/sh
+
+# Write one NV 550 record through Xiaomi's stock QMI service.  Keep the
+# original value on disk until a direct modem read confirms the new value.
+. /usr/share/libubox/jshn.sh
+
+ROOT=/usr/libexec/xm14pro-qwes/android-root
+MTB=$ROOT/vendor/bin/mtb
+CONTROL=/usr/libexec/xm14pro-modem/control
+STATE=/var/lib/xm14pro/imei-write-pending
+BASELINE=/var/lib/xm14pro/imei-restore-baseline
+LOCK=/var/run/xm14pro/imei-write.lock
+MTB_SHA256=40e47744cd10cf441324f667c8795bacc81570564b75258632b78ab616d4606f
+changed=0
+log=
+
+reply_error() {
+	json_init
+	json_add_boolean ok 0
+	json_add_string error "$1"
+	json_dump
+	exit 1
+}
+
+valid_imei() {
+	[ "${#1}" -eq 15 ] || return 1
+	case "$1" in *[!0-9]*) return 1 ;; esac
+	printf '%s\n' "$1" | awk '
+		{ for (i = 1; i <= 15; i++) {
+			digit = substr($0, i, 1) + 0
+			if (i % 2 == 0) { digit *= 2; if (digit > 9) digit -= 9 }
+			sum += digit
+		} }
+		END { exit (sum % 10 == 0 ? 0 : 1) }
+	'
+}
+
+load_baseline() {
+	[ -s "$BASELINE" ] || reply_error '没有之前号码的私有恢复记录'
+	read -r saved_first saved_second < "$BASELINE" || reply_error '无法读取之前号码的恢复记录'
+	valid_imei "$saved_first" && valid_imei "$saved_second" || reply_error '之前号码的恢复记录无效'
+}
+
+imei_bytes() {
+	printf '%s\n' "$1" | awk '
+		{ printf "8 %d", (substr($0, 1, 1) + 0) * 16 + 10
+		  for (i = 2; i <= 14; i += 2)
+			printf " %d", (substr($0, i, 1) + 0) + 16 * (substr($0, i + 1, 1) + 0)
+		  print "" }
+	'
+}
+
+read_ids() {
+	local output
+	# control may start diag-router in the background; it must not inherit our lock.
+	output="$("$CONTROL" read-identities refresh 9>&- 2>/dev/null)" || return 1
+	first="$(printf '%s\n' "$output" | jsonfilter -e '@.imei1')" || return 1
+	second="$(printf '%s\n' "$output" | jsonfilter -e '@.imei2')" || return 1
+	valid_imei "$first" && valid_imei "$second"
+}
+
+write_nv() {
+	local sub="$1" value="$2" bytes
+	bytes="$(imei_bytes "$value")" || return 1
+	# Values come only from valid_imei(), so word splitting yields nine bytes.
+	timeout -k 1 8 chroot "$ROOT" /system/bin/bootstrap/linker64 \
+		/vendor/bin/mtb 4 2 "$sub" 550 $bytes 9>&- > "$log" 2>&1 || return 1
+	grep -q 'xiaomi_nv_write_ex: result = 0, rsp.result = 0' "$log"
+}
+
+restore_pending() {
+	local pending_slot original_first original_second original attempt
+	[ -s "$STATE" ] || return 0
+	read -r pending_slot original_first original_second < "$STATE" || return 1
+	case "$pending_slot" in 1|2) ;; *) return 1 ;; esac
+	valid_imei "$original_first" && valid_imei "$original_second" || return 1
+	if [ "$pending_slot" = 1 ]; then original="$original_first"; else original="$original_second"; fi
+	attempt=0
+	while [ "$attempt" -lt 3 ]; do
+		attempt=$((attempt + 1))
+		write_nv "$((pending_slot - 1))" "$original" || true
+		if read_ids && [ "$first" = "$original_first" ] && [ "$second" = "$original_second" ]; then
+			rm -f "$STATE"
+			sync
+			changed=0
+			return 0
+		fi
+		sleep 1
+	done
+	return 1
+}
+
+cleanup() {
+	[ "$changed" -eq 0 ] || restore_pending >/dev/null 2>&1 || true
+	[ -z "$log" ] || rm -f "$log"
+}
+
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+
+case "$1" in
+	baseline)
+		load_baseline
+		json_init
+		json_add_boolean ok 1
+		json_add_string imei1 "$saved_first"
+		json_add_string imei2 "$saved_second"
+		json_dump
+		exit 0
+		;;
+	restore-saved)
+		case "$2" in 1|2) ;; *) reply_error '请选择要恢复的卡槽' ;; esac
+		load_baseline
+		if [ "$2" = 1 ]; then saved_target="$saved_first"; else saved_target="$saved_second"; fi
+		set -- "$2" "$saved_target"
+		;;
+	1|2|recover) ;;
+	*) reply_error '请选择卡槽 1 或卡槽 2' ;;
+esac
+if [ "$1" != recover ]; then
+	valid_imei "$2" || reply_error '请输入校验正确的 15 位 IMEI'
+fi
+[ -r "$MTB" ] || reply_error '缺少原厂基带工具，无法写入'
+[ "$(sha256sum "$MTB" | cut -d ' ' -f 1)" = "$MTB_SHA256" ] || reply_error '原厂基带工具校验失败'
+mkdir -p /var/run/xm14pro /var/lib/xm14pro || reply_error '无法建立写入状态目录'
+umask 077
+exec 9> "$LOCK" || reply_error '无法锁定基带写入'
+flock -n 9 || reply_error '基带正在执行另一项写入操作'
+log="$(mktemp /var/run/xm14pro/imei-write.XXXXXX)" || reply_error '无法创建私有日志'
+
+if [ -s "$STATE" ]; then
+	restore_pending || reply_error '上次写入未完成，原值恢复失败；请停止操作并保留备份'
+fi
+if [ "$1" = recover ]; then
+	json_init; json_add_boolean ok 1; json_add_string message '已确认没有未恢复的写入'; json_dump
+	exit 0
+fi
+
+read_ids || reply_error '无法读取双卡真实基带值'
+slot="$1"
+target="$2"
+original_first="$first"
+original_second="$second"
+if [ "$slot" = 1 ]; then current="$first"; else current="$second"; fi
+
+if [ "$target" != "$current" ]; then
+	printf '%s %s %s\n' "$slot" "$original_first" "$original_second" > "$STATE" || reply_error '无法保存写入前的恢复记录'
+	sync
+	changed=1
+	write_nv "$((slot - 1))" "$target" || {
+		restore_pending && reply_error '基带拒绝写入；已恢复原值'
+		reply_error '写入未确认且自动恢复失败；请停止操作并保留备份'
+	}
+	if ! read_ids || [ "$first" != "$([ "$slot" = 1 ] && printf '%s' "$target" || printf '%s' "$original_first")" ] || \
+		[ "$second" != "$([ "$slot" = 2 ] && printf '%s' "$target" || printf '%s' "$original_second")" ]; then
+		restore_pending && reply_error '写入后回读不一致；已恢复原值'
+		reply_error '写入后回读不一致且自动恢复失败；请停止操作并保留备份'
+	fi
+	rm -f "$STATE" || reply_error '无法清除恢复记录'
+	sync
+	changed=0
+fi
+
+json_init
+json_add_boolean ok 1
+json_add_string slot "$slot"
+json_add_string imei1 "$first"
+json_add_string imei2 "$second"
+json_add_string message '基带 NV 写入并回读成功；运营商侧识别需重新注册后另行验证'
+json_dump

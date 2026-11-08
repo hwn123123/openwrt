@@ -3,7 +3,7 @@ include $(TOPDIR)/rules.mk
 
 PKG_NAME:=xm14pro-cellular
 PKG_VERSION:=1.0
-PKG_RELEASE:=102
+PKG_RELEASE:=106
 PKG_LICENSE:=GPL-2.0-only BSD-3-Clause
 
 include $(INCLUDE_DIR)/package.mk
@@ -70,6 +70,7 @@ define Package/xm14pro-cellular/install
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/autoconnect $(1)/usr/libexec/xm14pro-modem/autoconnect
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/bringup $(1)/usr/libexec/xm14pro-modem/bringup
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/control $(1)/usr/libexec/xm14pro-modem/control
+	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/imei-write $(1)/usr/libexec/xm14pro-modem/imei-write
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/dsi-session $(1)/usr/libexec/xm14pro-modem/dsi-session
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/resolve-apn $(1)/usr/libexec/xm14pro-modem/resolve-apn
 	$(INSTALL_BIN) ./files/usr/libexec/xm14pro-modem/radio-status $(1)/usr/libexec/xm14pro-modem/radio-status
@@ -83,6 +84,8 @@ define Package/xm14pro-cellular/install
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin
 	$(INSTALL_BIN) ./files/android-root/vendor/bin/diag-router \
 		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin/diag-router
+	$(INSTALL_BIN) ./files/android-root/vendor/bin/mtb \
+		$(1)/usr/libexec/xm14pro-qwes/android-root/vendor/bin/mtb
 	$(INSTALL_DIR) $(1)/usr/libexec/xm14pro-qwes/android-root/vendor/lib64
 	# These two DIAG-specific libraries can share the stock vendor namespace.
 	# Never install generic libbase/libcutils from a different Android build:

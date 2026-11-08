@@ -270,7 +270,7 @@ status_json() {
 	local usb_net usb_mode usb_udc usb_udc_path usb_up usb_ip cpe_enabled cpe_active ip_forward
 	local mm_state mm_registration access operator_name operator_code
 	local cpu_usage cpu_cores load1 load5 load15 mem_total mem_available mem_used mem_usage
-	local cpu_temp modem_temp battery_temp imei imei1_nv imei2_nv iccid1 iccid2 imei_sv meid own_numbers imei_display_override
+	local cpu_temp modem_temp battery_temp imei imei_qmi imei1_nv imei2_nv iccid1 iccid2 imei_sv meid own_numbers imei_display_override
 	local storage_total storage_used storage_available storage_usage storage_fs kernel_release architecture hostname slot_suffix audio_cards voice_bridge
 	local audio_state audio_active audio_route audio_muted audio_volume active_count active_state voice_slot sms_receive_slot selected_voice_slot
 	id="$(modem_id)"
@@ -412,6 +412,8 @@ status_json() {
 	[ -n "$imei" ] || imei="$(file_value "$RADIO_STATE" imei)"
 	imei1_nv="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.imei1' 2>/dev/null)"
 	imei2_nv="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.imei2' 2>/dev/null)"
+	imei_qmi="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.qmi_imei' 2>/dev/null)"
+	if valid_display_imei "$imei_qmi"; then imei="$imei_qmi"; else imei_qmi=; fi
 	iccid1="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.iccid1' 2>/dev/null)"
 	iccid2="$(jsonfilter -i "$IDENTITY_CACHE" -e '@.iccid2' 2>/dev/null)"
 	imei_display_override="$(uci -q get xm14display.main.cell_custom_imei 2>/dev/null)"
@@ -482,6 +484,7 @@ status_json() {
 	json_add_string registration_state "$registration"
 	json_add_string nas_registration_state "$(file_value "$RADIO_STATE" nas_registration_state)"
 	json_add_string imei "$imei"
+	json_add_string imei_qmi "$imei_qmi"
 	json_add_string imei1_nv "$imei1_nv"
 	json_add_string imei2_nv "$imei2_nv"
 	json_add_string sim1_iccid "$iccid1"
@@ -1334,11 +1337,12 @@ valid_display_imei() {
 }
 
 read_modem_identities() {
-	local mode="$1" output imei1 imei2 iccid1 iccid2 primary_slot card_status raw_iccid attempt temp
+	local mode="$1" output imei1 imei2 qmi_imei iccid1 iccid2 primary_slot card_status raw_iccid attempt temp
 	if [ "$mode" != refresh ] && [ -s "$IDENTITY_CACHE" ]; then
 		output="$(cat "$IDENTITY_CACHE")"
 		imei1="$(json_value "$output" '@.imei1')"
 		imei2="$(json_value "$output" '@.imei2')"
+			qmi_imei="$(json_value "$output" '@.qmi_imei')"
 		if ! valid_display_imei "$imei1" || ! valid_display_imei "$imei2"; then
 			imei1=; imei2=
 		fi
@@ -1360,6 +1364,9 @@ read_modem_identities() {
 		imei2="$(json_value "$output" '@.imei2')"
 		valid_display_imei "$imei1" && valid_display_imei "$imei2" || fail "基带返回的标识无效"
 	fi
+	qmi_imei="$(timeout -k 1 5 qmicli -d qrtr://0 --dms-get-ids 2>/dev/null |
+		awk -F "'" '/^[[:space:]]*IMEI:/ { print $2; exit }')"
+	valid_display_imei "$qmi_imei" || qmi_imei=
 	card_status="$(timeout -k 1 5 qmicli -d qrtr://0 --uim-get-card-status 2>/dev/null)" || card_status=
 	primary_slot="$(printf '%s\n' "$card_status" | awk -F "'" '/Primary GW:/ { print $2; exit }')"
 	case "$primary_slot" in
@@ -1380,6 +1387,7 @@ read_modem_identities() {
 	json_add_boolean ok 1
 	json_add_string imei1 "$imei1"
 	json_add_string imei2 "$imei2"
+	json_add_string qmi_imei "$qmi_imei"
 	json_add_string iccid1 "$iccid1"
 	json_add_string iccid2 "$iccid2"
 	output="$(json_dump)"
@@ -1419,6 +1427,10 @@ screen_telephony() {
 case "${1:-status}" in
 	status) status_json ;;
 	read-identities) read_modem_identities "$2" ;;
+	write-baseband-imei) exec /usr/libexec/xm14pro-modem/imei-write "$2" "$3" ;;
+	imei-restore-baseline) exec /usr/libexec/xm14pro-modem/imei-write baseline ;;
+	restore-saved-imei) exec /usr/libexec/xm14pro-modem/imei-write restore-saved "$2" ;;
+	recover-baseband-imei) exec /usr/libexec/xm14pro-modem/imei-write recover ;;
 	set-imei-display) set_imei_display "$2" ;;
 	set-data) set_data "$2" "$3" "$4" "$5" "$6" ;;
 	set-slot) set_slot "$2" "$3" ;;
